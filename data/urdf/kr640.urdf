@@ -1,0 +1,79 @@
+<?xml version="1.0"?>
+<!--
+  NOTICE: Kinematic parameters approximated from public KUKA KR 640 R2800-2 documentation.
+  Inspired by ROS-Industrial kuka_kr640_support (BSD-3-Clause, ros-industrial/kuka_experimental).
+  Used for K-0 structural/loader testing only. Not for motion planning or production use.
+-->
+<robot name="kuka_kr640_r2800_2">
+
+  <link name="base_link"/>
+  <link name="link_1"/>
+  <link name="link_2"/>
+  <link name="link_3"/>
+  <link name="link_4"/>
+  <link name="link_5"/>
+  <link name="link_6"/>
+  <link name="tool0"/>
+
+  <!-- A1: rotation about Z, base vertical -->
+  <joint name="joint_a1" type="revolute">
+    <parent link="base_link"/>
+    <child  link="link_1"/>
+    <origin xyz="0.0 0.0 0.750" rpy="0.0 0.0 0.0"/>
+    <axis   xyz="0.0 0.0 1.0"/>
+    <limit  lower="-3.2288" upper="3.2288" velocity="1.2217" effort="3000"/>
+  </joint>
+
+  <!-- A2: shoulder pitch -->
+  <joint name="joint_a2" type="revolute">
+    <parent link="link_1"/>
+    <child  link="link_2"/>
+    <origin xyz="0.350 0.0 0.0" rpy="0.0 0.0 0.0"/>
+    <axis   xyz="0.0 1.0 0.0"/>
+    <limit  lower="-2.0944" upper="0.6109" velocity="1.0472" effort="3000"/>
+  </joint>
+
+  <!-- A3: elbow -->
+  <joint name="joint_a3" type="revolute">
+    <parent link="link_2"/>
+    <child  link="link_3"/>
+    <origin xyz="0.0 0.0 1.150" rpy="0.0 0.0 0.0"/>
+    <axis   xyz="0.0 1.0 0.0"/>
+    <limit  lower="-2.0944" upper="2.7576" velocity="1.0472" effort="3000"/>
+  </joint>
+
+  <!-- A4: wrist roll -->
+  <joint name="joint_a4" type="revolute">
+    <parent link="link_3"/>
+    <child  link="link_4"/>
+    <origin xyz="1.250 0.0 0.145" rpy="0.0 0.0 0.0"/>
+    <axis   xyz="1.0 0.0 0.0"/>
+    <limit  lower="-6.1087" upper="6.1087" velocity="1.3963" effort="500"/>
+  </joint>
+
+  <!-- A5: wrist pitch -->
+  <joint name="joint_a5" type="revolute">
+    <parent link="link_4"/>
+    <child  link="link_5"/>
+    <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+    <axis   xyz="0.0 1.0 0.0"/>
+    <limit  lower="-2.1817" upper="2.1817" velocity="1.3963" effort="500"/>
+  </joint>
+
+  <!-- A6: wrist yaw -->
+  <joint name="joint_a6" type="revolute">
+    <parent link="link_5"/>
+    <child  link="link_6"/>
+    <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+    <axis   xyz="1.0 0.0 0.0"/>
+    <limit  lower="-6.1087" upper="6.1087" velocity="1.9199" effort="500"/>
+  </joint>
+
+  <!-- Flange (fixed) — skipped in kinematic chain, emits Info diagnostic -->
+  <joint name="joint_a6_to_tool0" type="fixed">
+    <parent link="link_6"/>
+    <child  link="tool0"/>
+    <origin xyz="0.0 0.0 0.290" rpy="0.0 0.0 0.0"/>
+  </joint>
+
+</robot>

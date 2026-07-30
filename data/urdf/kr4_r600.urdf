@@ -1,0 +1,200 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  KUKA KR 4 R600 (AGILUS) — czysty URDF, standalone (bez ROS)
+  Źródło: kroshu/kuka_robot_descriptions, kuka_agilus_support/urdf/kr4_r600_macro.xacro
+  Licencja źródła: Apache-2.0
+
+  Xacro rozwinięty z prefix="" — brak zależności od ROS/xacro, gotowy do parsowania standalone.
+  Meshe usunięte (ścieżki package:// nie działają bez ROS).
+  Inertia zachowana z oryginalnymi wartościami.
+
+  Parametry geometryczne (origin jointów) — OFICJALNE z kroshu:
+    joint_1: xyz="0 0 0.1494",        rpy="pi 0 0"
+    joint_2: xyz="0 -0.0636 -0.1806", rpy="pi/2 0 0"
+    joint_3: xyz="0.29 0 -0.0046",    rpy="0 0 0"
+    joint_4: xyz="0.1694 -0.02 -0.059", rpy="pi/2 0 -pi/2"
+    joint_5: xyz="0 0.045 -0.1406",   rpy="0 pi/2 pi/2"
+    joint_6: xyz="0.0465 0 -0.045",   rpy="pi/2 0 -pi/2"
+    flange:  xyz="0 0 -0.0285",       rpy="0 pi/2 0"
+    tool0:   xyz="0 0 -0.0285",       rpy="pi ~0 pi"
+
+  Limity [rad], prędkości [rad/s], momenty [N·m] — OFICJALNE z kroshu:
+    joint_1: ±2.9671   5.8643  119.016
+    joint_2: -3.4034/+0.6981  5.8643  105.851
+    joint_3: -2.0071/+2.6180  8.5085   54.315
+    joint_4: ±3.2289   10.472   11.812
+    joint_5: ±2.0944    9.235   12.328
+    joint_6: ±6.1087   13.963    6.916
+
+  Fizyczny robot: KUKA ready2_educate KR 4
+    Nr artykułu: 16008988, Nr seryjny: 2001458, rok prod. 02/2024
+-->
+<robot name="kuka_kr4_r600">
+
+  <!-- ══════════════════════════════
+       LINKI
+       ══════════════════════════════ -->
+
+  <link name="base_link">
+    <inertial>
+      <mass value="7.9199"/>
+      <origin rpy="-1.72836 -0.81522 -0.00120"
+              xyz="-0.034492 0.000277 0.078098"/>
+      <inertia ixx="0.017746" ixy="0.0" ixz="0.0"
+               iyy="0.028907" iyz="0.0"
+               izz="0.029333"/>
+    </inertial>
+  </link>
+
+  <link name="base"/>
+
+  <link name="link_1">
+    <inertial>
+      <mass value="4.389"/>
+      <origin rpy="1.05339 0.79057 -0.75861"
+              xyz="-0.018848 -0.032015 -0.095940"/>
+      <inertia ixx="0.030028" ixy="0.0" ixz="0.0"
+               iyy="0.038141" iyz="0.0"
+               izz="0.046762"/>
+    </inertial>
+  </link>
+
+  <link name="link_2">
+    <inertial>
+      <mass value="7.3011"/>
+      <origin rpy="1.22716 -1.44708 0.34774"
+              xyz="0.094644 -0.002869 -0.046185"/>
+      <inertia ixx="0.093950" ixy="0.0" ixz="0.0"
+               iyy="0.020567" iyz="0.0"
+               izz="0.100438"/>
+    </inertial>
+  </link>
+
+  <link name="link_3">
+    <inertial>
+      <mass value="2.6794"/>
+      <origin rpy="0.75850 -0.04492 -0.03729"
+              xyz="0.041279 -0.012458 -0.050697"/>
+      <inertia ixx="0.004598" ixy="0.0" ixz="0.0"
+               iyy="0.011788" iyz="0.0"
+               izz="0.013565"/>
+    </inertial>
+  </link>
+
+  <link name="link_4">
+    <inertial>
+      <mass value="2.3085"/>
+      <origin rpy="1.07462 -1.41949 -1.39655"
+              xyz="0.002945 0.010512 -0.047277"/>
+      <inertia ixx="0.003465" ixy="0.0" ixz="0.0"
+               iyy="0.010430" iyz="0.0"
+               izz="0.011551"/>
+    </inertial>
+  </link>
+
+  <link name="link_5">
+    <inertial>
+      <mass value="1.2008"/>
+      <origin rpy="1.69977 -1.50001 3.01247"
+              xyz="0.011414 0.0000016 -0.040395"/>
+      <inertia ixx="0.001374" ixy="0.0" ixz="0.0"
+               iyy="0.000853" iyz="0.0"
+               izz="0.001561"/>
+    </inertial>
+  </link>
+
+  <link name="link_6">
+    <inertial>
+      <mass value="0.2348"/>
+      <origin rpy="-1.97274 -1.57040 2.62527"
+              xyz="0.0000028 -0.0000028 -0.014385"/>
+      <inertia ixx="0.0000396" ixy="0.0" ixz="0.0"
+               iyy="0.0000644" iyz="0.0"
+               izz="0.0000644"/>
+    </inertial>
+  </link>
+
+  <link name="flange"/>
+  <link name="tool0"/>
+
+  <!-- ══════════════════════════════
+       PRZEGUBY
+       ══════════════════════════════ -->
+
+  <joint name="base_link-base" type="fixed">
+    <parent link="base_link"/>
+    <child  link="base"/>
+    <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+  </joint>
+
+  <joint name="joint_1" type="revolute">
+    <parent link="base_link"/>
+    <child  link="link_1"/>
+    <origin xyz="0.0 0.0 0.1494" rpy="3.141592653589793 0.0 0.0"/>
+    <axis   xyz="0.0 0.0 1.0"/>
+    <limit  lower="-2.967059725" upper="2.967059725"
+            velocity="5.8643062867" effort="119.016"/>
+  </joint>
+
+  <joint name="joint_2" type="revolute">
+    <parent link="link_1"/>
+    <child  link="link_2"/>
+    <origin xyz="0.0 -0.0636 -0.1806" rpy="1.5707963267948966 0.0 0.0"/>
+    <axis   xyz="0.0 0.0 1.0"/>
+    <limit  lower="-3.4033920375" upper="0.6981317"
+            velocity="5.8643062867" effort="105.851"/>
+  </joint>
+
+  <joint name="joint_3" type="revolute">
+    <parent link="link_2"/>
+    <child  link="link_3"/>
+    <origin xyz="0.29 0.0 -0.0046" rpy="0.0 0.0 0.0"/>
+    <axis   xyz="0.0 0.0 1.0"/>
+    <limit  lower="-2.0071286375" upper="2.617993875"
+            velocity="8.5084763635" effort="54.315"/>
+  </joint>
+
+  <joint name="joint_4" type="revolute">
+    <parent link="link_3"/>
+    <child  link="link_4"/>
+    <origin xyz="0.1694 -0.02 -0.059"
+            rpy="1.5707963267948966 0.0 -1.5707963267948966"/>
+    <axis   xyz="0.0 0.0 1.0"/>
+    <limit  lower="-3.2288591125" upper="3.2288591125"
+            velocity="10.471962422" effort="11.812"/>
+  </joint>
+
+  <joint name="joint_5" type="revolute">
+    <parent link="link_4"/>
+    <child  link="link_5"/>
+    <origin xyz="0.0 0.045 -0.1406"
+            rpy="0.0 1.5707963267948966 1.5707963267948966"/>
+    <axis   xyz="0.0 0.0 1.0"/>
+    <limit  lower="-2.0943951" upper="2.0943951"
+            velocity="9.2345347637" effort="12.328"/>
+  </joint>
+
+  <joint name="joint_6" type="revolute">
+    <parent link="link_5"/>
+    <child  link="link_6"/>
+    <origin xyz="0.0465 0.0 -0.045"
+            rpy="1.5707963267948966 0.0 -1.5707963267948966"/>
+    <axis   xyz="0.0 0.0 1.0"/>
+    <limit  lower="-6.108652375" upper="6.108652375"
+            velocity="13.9626340160" effort="6.916"/>
+  </joint>
+
+  <joint name="link6-flange" type="fixed">
+    <parent link="link_6"/>
+    <child  link="flange"/>
+    <origin xyz="0.0 0.0 -0.0285" rpy="0.0 1.5707963267948966 0.0"/>
+  </joint>
+
+  <joint name="link6-tool0" type="fixed">
+    <parent link="link_6"/>
+    <child  link="tool0"/>
+    <origin xyz="0.0 0.0 -0.0285"
+            rpy="3.141592653589793 1.2246467991473532e-16 3.141592653589793"/>
+  </joint>
+
+</robot>
