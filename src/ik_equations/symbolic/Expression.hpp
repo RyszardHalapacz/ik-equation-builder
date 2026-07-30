@@ -67,6 +67,9 @@ using ExpressionNode = std::variant<
 class Expression
 {
 public:
+    // Defaults to the constant 0 — lets SymbolicMatrix default-construct
+    // its cells without needing a placeholder "empty" expression state.
+    Expression() : node_(ConstantExpression{0.0}) {}
     explicit Expression(ExpressionNode node);
 
     ExpressionType type() const;

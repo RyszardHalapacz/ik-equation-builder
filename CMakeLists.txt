@@ -25,17 +25,18 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(pugixml)
 
-add_library(kinemaforge_core STATIC
+add_library(kinemaforge_ik STATIC
     src/Kinematics.cpp
     src/kinematics/robot_model.cpp
     src/kinematics/robot_model_loader.cpp
+    src/ik_equations/IkEquationBuilder.cpp
     src/ik_equations/UrdfModelLoader.cpp
 )
-target_include_directories(kinemaforge_core PUBLIC src)
-target_link_libraries(kinemaforge_core PUBLIC pugixml::pugixml)
+target_include_directories(kinemaforge_ik PUBLIC src)
+target_link_libraries(kinemaforge_ik PUBLIC pugixml::pugixml)
 
 add_executable(${PROJECT_NAME} src/main.cpp)
-target_link_libraries(${PROJECT_NAME} PRIVATE kinemaforge_core)
+target_link_libraries(${PROJECT_NAME} PRIVATE kinemaforge_ik)
 
 enable_testing()
 add_subdirectory(tests)

@@ -1,8 +1,9 @@
 #include <iostream>
 
-#include "Kinematics.h"
+#include "ik_equations/IkEquationBuilder.hpp"
 
 int main() {
-    std::cout << "KinemaForge: " << kinemaforge::example_forward(0.0) << '\n';
+    kinemaforge::ik::IkEquationBuilder builder;
+    std::cout << "IkEquationBuilder ready.\n";
     return 0;
 }

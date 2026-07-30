@@ -4,7 +4,7 @@ Part of the KinemaForge project.
 
 Most robot software treats kinematics as a black box: you feed in joint angles, a solver crunches numbers, and a pose comes out. Somewhere underneath, someone once derived the actual equations — usually by hand, on a whiteboard, for one specific robot. **KinemaForge doesn't want to do that by hand anymore.**
 
-The goal of this project is to build a system that, given nothing but a robot's **URDF description**, automatically derives its **forward kinematics as a symbolic analytical model** — not a number, an *equation*. Feed it a KUKA, feed it a UR arm, feed it something that doesn't exist yet — as long as it has a URDF, the same machinery should be able to walk the kinematic chain and produce the math.
+The goal of this project is to build a system that, given nothing but a robot's **URDF description**, automatically derives its **symbolic forward-kinematics equations** — not a number, an *equation*. Feed it a KUKA, feed it a UR arm, feed it something that doesn't exist yet — as long as it has a URDF, the same machinery should be able to walk the kinematic chain and produce the math.
 
 ## Why bother with symbolic instead of numeric?
 
