@@ -31,7 +31,7 @@ struct Vec3 {
 struct Joint {
     std::string name;
     JointType   type        = JointType::revolute;
-    Vec3        axis        = {0.0, 0.0, 1.0};  // unit vector in parent's local frame
+    Vec3        axis        = {1.0, 0.0, 0.0};  // Unit vector in the joint frame.
     Vec3        origin_xyz  = {};               // [m]
     Vec3        origin_rpy  = {};               // [rad], roll-pitch-yaw
     std::string parent_link;

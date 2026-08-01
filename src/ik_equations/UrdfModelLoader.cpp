@@ -45,18 +45,35 @@ UrdfJoint mapJoint(mt::kinematics::Joint const& joint)
     return result;
 }
 
-std::string describe(mt::kinematics::LoadError error)
+std::string describeCode(mt::kinematics::LoadErrorCode code)
 {
-    using mt::kinematics::LoadError;
-    switch (error)
+    using Code = mt::kinematics::LoadErrorCode;
+    switch (code)
     {
-    case LoadError::file_not_found:             return "URDF file not found";
-    case LoadError::parse_failure:              return "failed to parse URDF XML";
-    case LoadError::unsupported_joint_type:     return "unsupported joint type in URDF";
-    case LoadError::incomplete_kinematic_chain: return "URDF does not describe a complete kinematic chain";
-    case LoadError::invalid_limits:             return "invalid or missing joint limits in URDF";
+    case Code::file_not_found:             return "URDF file not found";
+    case Code::parse_failure:              return "failed to parse URDF XML";
+    case Code::unsupported_joint_type:     return "unsupported joint type in URDF";
+    case Code::incomplete_kinematic_chain: return "URDF does not describe a complete kinematic chain";
+    case Code::invalid_limits:             return "invalid or missing joint limits in URDF";
+    case Code::malformed_vector:           return "malformed vector attribute";
+    case Code::degenerate_axis:            return "actuated joint has a zero-length axis";
     }
     return "unknown URDF load error";
+}
+
+// The lower layer returns data, not prose; the message is assembled here.
+std::string describe(const mt::kinematics::LoadError& error)
+{
+    std::string message = describeCode(error.code);
+    if (!error.jointName.empty())
+        message += " in joint '" + error.jointName + "'";
+    if (!error.attribute.empty())
+        message += ", attribute '" + error.attribute + "'";
+    // Printed whenever a raw value applies, including when it is empty —
+    // xyz="" is exactly the case a reader needs to see quoted.
+    if (error.rawValue)
+        message += ": \"" + *error.rawValue + "\"";
+    return message;
 }
 
 } // namespace
