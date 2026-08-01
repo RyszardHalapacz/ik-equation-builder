@@ -12,6 +12,9 @@ add_executable(kinemaforge_tests
     test_kinematics.cpp
     test_urdf_model_loader.cpp
     test_kinematic_chain_builder.cpp
+    test_symbolic_expression.cpp
+    test_expression_factory.cpp
+    test_symbolic_matrix.cpp
 )
 target_link_libraries(kinemaforge_tests PRIVATE kinemaforge_ik GTest::gtest_main)
 target_compile_definitions(kinemaforge_tests PRIVATE

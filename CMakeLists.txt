@@ -32,6 +32,8 @@ add_library(kinemaforge_ik STATIC
     src/ik_equations/IkEquationBuilder.cpp
     src/ik_equations/UrdfModelLoader.cpp
     src/ik_equations/builders/KinematicChainBuilder.cpp
+    src/ik_equations/symbolic/Expression.cpp
+    src/ik_equations/symbolic/ExpressionFactory.cpp
 )
 target_include_directories(kinemaforge_ik PUBLIC src)
 target_link_libraries(kinemaforge_ik PUBLIC pugixml::pugixml)
