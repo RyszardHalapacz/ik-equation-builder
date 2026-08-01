@@ -11,6 +11,7 @@ FetchContent_MakeAvailable(googletest)
 add_executable(kinemaforge_tests
     test_kinematics.cpp
     test_urdf_model_loader.cpp
+    test_kinematic_chain_builder.cpp
 )
 target_link_libraries(kinemaforge_tests PRIVATE kinemaforge_ik GTest::gtest_main)
 target_compile_definitions(kinemaforge_tests PRIVATE
