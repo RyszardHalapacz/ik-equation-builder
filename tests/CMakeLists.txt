@@ -12,6 +12,7 @@ add_executable(kinemaforge_tests
     test_kinematics.cpp
     test_urdf_model_loader.cpp
     test_kinematic_chain_builder.cpp
+    test_joint_transform_builder.cpp
     test_symbolic_expression.cpp
     test_expression_factory.cpp
     test_symbolic_matrix.cpp

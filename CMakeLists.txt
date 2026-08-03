@@ -32,6 +32,7 @@ add_library(kinemaforge_ik STATIC
     src/ik_equations/IkEquationBuilder.cpp
     src/ik_equations/UrdfModelLoader.cpp
     src/ik_equations/builders/KinematicChainBuilder.cpp
+    src/ik_equations/builders/JointTransformBuilder.cpp
     src/ik_equations/symbolic/Expression.cpp
     src/ik_equations/symbolic/ExpressionFactory.cpp
 )
