@@ -2,7 +2,7 @@
 
 **Last updated:** 2026-08-03
 **Branch:** `main`
-**Build:** clean · **Tests:** 161/161 passing
+**Build:** clean · **Tests:** 221/221 passing
 
 A snapshot of what actually exists in this repo today, and what is still
 declaration-only. The pipeline this project is working toward is described in
@@ -14,8 +14,8 @@ Two numbers, because they differ a lot depending on where the finish line is:
 
 | Scope | Progress |
 |---|---|
-| **Phase 1** — URDF → symbolic forward kinematics | **~85%** |
-| **Full vision** — including IK solver and code generation | **~40%** by component count |
+| **Phase 1** — URDF → symbolic forward kinematics | **done** |
+| **Full vision** — including IK solver and code generation | **~50%** by component count |
 
 The second number is misleading and worth stating plainly: **what is done is the
 easy part.** Parsing XML, walking a tree and building an expression engine are
@@ -24,11 +24,15 @@ equations — research-grade work, plausibly larger on its own than everything
 built so far. Measured by effort rather than component count, the honest figure
 is closer to **25%**.
 
-Phase 1 is at ~85% rather than done: the symbolic FK equation now falls out of a
-URDF end to end, but **nothing yet checks that it is numerically right** (see
-`ExpressionEvaluator` under known gaps), and the facade is still undefined.
+**Phase 1 is done.** A symbolic FK equation falls out of a URDF end to end
+through one public API, and its **values** agree with an independently written
+quaternion implementation to within a few ULP across 18 joint configurations on
+two real robots. Two scope limits stay attached to that claim and do not
+disappear with the milestone — see known gaps: the cross-check starts at
+`KinematicChain`, not at the file, and the RPY convention rests on a belief
+shared by both implementations rather than on an external source.
 
-The upside: the foundation is solid. 161 tests, every architectural decision
+The upside: the foundation is solid. 221 tests, every architectural decision
 written down and reviewed, and a long list of traps caught *before* they reached
 the code — expression-domain loss from `x * 0 → 0`, trig-folding noise, a
 `make_shared` symbol clash under `-static-libstdc++`, `std::hypot` losing
@@ -48,7 +52,9 @@ URDF
   → JointTransformBuilder    ✅ implemented + tested
   → ForwardKinematicsBuilder ✅ implemented + tested
   → Symbolic FK              ✅ reachable end to end, structure verified only
-  → ExpressionEvaluator      🟡 nothing yet — blocks numeric validation — next
+  → ExpressionEvaluator      ✅ implemented + tested
+  → numeric FK validation    ✅ cross-checked against a quaternion reference
+  → IkEquationBuilder        ✅ implemented + tested — Phase 1 complete
   → ConstraintBuilder        ⬜ analysed only, no proposal yet
   → EquationSimplifier       ⬜ nothing
   → EquationSolver           ⬜ nothing (the hard one)
@@ -217,6 +223,126 @@ broken last row.
 
 **Tests:** 12.
 
+### `ExpressionEvaluator` — expression DAG → double
+
+```
+Expression + symbol values  →  std::expected<double, EvaluationError>
+```
+
+**A session, not a free function.** One instance holds one substitution of
+`q1..qn`; all sixteen FK cells are evaluated with the same instance so they
+share the cache. Binding the values to the object's lifetime makes reusing a
+cache filled for *different* values impossible rather than merely discouraged.
+Copying is deleted — a session is not a value.
+
+**Memoization is mandatory, keyed by node identity.** The cache key is
+`Expression`, not `const ExpressionNode*`: `evaluate` takes a reference that may
+bind to a temporary, and a raw pointer key would leave a dangling address that
+the allocator can hand to the next node — the cache would then answer for the
+wrong node, silently. Hash and equality still use identity (`&node()`,
+`sameNode`), never `structurallyEqual`, so lookups stay O(1) and separately
+built but structurally identical trees stay separate entries.
+
+Verified on real FK trees, not just unit examples:
+
+| Robot | unique nodes | `cacheMisses` | `cacheHits` | total lookups |
+|---|---:|---:|---:|---:|
+| `kr640.urdf` | 281 | **281** | 251 | 532 |
+| `kr4_r600.urdf` | 516 | **516** | 396 | 912 |
+
+`cacheMisses` equals the unique-node count exactly for both. 532 lookups against
+the 21 882 visits a non-memoized walk performs — a 41× reduction, and 168× for
+`kr4_r600`.
+
+**Four error codes**, all via `std::expected`: `MissingSymbol` (never defaults
+to zero — a silent zero would produce a plausible-looking but wrong pose),
+`NonFiniteSymbolValue`, `DivisionByZero` (exact `== 0.0`, no tolerance, which
+catches `-0.0` for free), `NonFiniteResult`. Bindings are validated **on read**,
+so an unused `NaN` binding is not an error.
+
+**No short-circuiting on values.** Both operands of every binary node are
+evaluated; a zero factor does not skip the other side. That is what makes
+`(1/q) * 0` report `DivisionByZero` at `q = 0` instead of quietly yielding 0 —
+the end-to-end payoff of the symbolic layer's refusal to fold `x * 0 → 0`.
+Tested from both sides, since `SymbolicMatrix::multiply` really does place
+`Constant(0)` on the left inside FK cells. Evaluation does stop at the first
+error, and operands are visited left to right, so the reported error is
+deterministic.
+
+**Tests:** 26.
+
+### Numeric FK validation — the symbolic matrix checked against another one
+
+The payoff of everything above. A quaternion-based forward kinematics lives in
+`tests/support/NumericForwardKinematics.{hpp,cpp}` — **test scaffolding, not
+part of `kinemaforge_ik`**: its only value is being a second implementation,
+and that value would evaporate the moment anything in the product called it.
+
+Independence is by representation. Rotations are carried as quaternions and
+composed by quaternion multiplication; vectors are rotated by
+`v + 2w(u×v) + 2u×(u×v)` **without ever forming a matrix**. Production builds
+Rodrigues matrices and multiplies 3×3 blocks. A 3×3 matrix appears in the
+reference exactly once, when the result is handed to a test.
+
+The configuration is shared as a **positional** `JointConfiguration`; the
+reference consumes it by joint order, the symbolic side by
+`joint.variable->name`. Two different routes from one number to one joint — so
+a duplicated variable name is caught rather than agreed upon. (`emplace` does
+not overwrite on a duplicate, so that case throws explicitly.)
+
+Coverage: `q = 0`, six single-joint poses, a mixed pose and a near-limit pose,
+for both robots — **18 matrix comparisons, 288 cells**. Plus synthetic cases
+for branches no real robot reaches: an arbitrary Rodrigues axis, a **negative**
+principal axis, and a prismatic joint with a rotated origin.
+
+Measured worst-case error against a `1e-12` absolute + relative tolerance:
+
+| | rotation | translation |
+|---|---:|---:|
+| KR4 (worst: mixed) | **5.55e-16** | 2.22e-16 |
+| KR640 (worst: mixed) | 2.22e-16 | 2.22e-16 |
+| hand-computed oracles | 6.12e-17 | 9.80e-17 |
+
+Roughly **three orders of magnitude of headroom**. A real geometric error would
+show up at `1e-3` or larger, so the bound is conservative without being blind.
+
+**Tests:** 17.
+
+### `IkEquationBuilder` — the public entry point
+
+Wraps the whole pipeline; everything underneath stays private. No new
+mathematics — it packages what the components already do.
+
+State is held in `std::optional`, which is what makes the four stages
+distinguishable. Plain members would not: a default-constructed
+`SymbolicTransform` is a matrix of **zeros**, not even the identity, so
+returning one after a failed sequence would be a silent, geometrically
+meaningless answer rather than an obvious absence.
+
+Each successful step invalidates what it obsoletes — a new robot clears the
+chain and the transform, a new chain clears the transform. A chain names links
+of one specific robot; a transform carries symbols of one specific chain.
+
+**Failure leaves the object untouched.** Results are built into locals and
+committed only once they exist; clearing first would leave a failed call worse
+off than no call at all. Pinned by comparing pointer identity across a failed
+operation, which also proves that failures do not invalidate pointers handed
+out earlier.
+
+Errors are unified into `std::expected` with four codes. The loader throws, so
+the facade catches **exactly `std::runtime_error`** — catching `std::exception`
+would swallow `std::bad_alloc` and report it as a URDF problem. The chain
+builder's typed `KinematicChainError` is preserved rather than flattened into
+a string; `chainError` holds a value if and only if the code is
+`ChainBuildFailed`.
+
+Accessors return `const T*`, `nullptr` until the step has run. `std::expected`
+would carry no information here: absence has exactly one cause. Returned
+pointers are non-owning and invalidated by the next successful state change —
+stated in the class comment, because it is a real hazard.
+
+**Tests:** 17.
+
 ### Supporting layers
 
 - `mt::kinematics` (`robot_model`, `robot_model_loader`) — implemented.
@@ -225,29 +351,6 @@ broken last row.
 - Model structs — complete aggregates, no behaviour.
 
 ## Not done
-
-### What Phase 1 still needs
-
-Three things, not one. Symbolic FK exists, but the phase is not finished by the
-facade alone:
-
-1. **`ExpressionEvaluator`** — substituting `q` and evaluating the tree. Nothing
-   in the project can do this, so the FK equation's *values* have never been
-   checked (see known gaps).
-2. **End-to-end numeric validation of FK for KR4 and KR640** — the payoff of
-   the evaluator, and the first real proof that the RPY convention, the axis
-   handling and the `p_a + R_a·p_b` composition are jointly correct.
-3. **`IkEquationBuilder`** — the facade below.
-
-### `IkEquationBuilder` (facade) — constructor only
-
-`loadRobotModel()`, `selectChain()`, `buildForwardKinematics()`,
-`kinematicChain()` and `forwardKinematics()` are declared and **undefined**. It
-links because `main.cpp` only default-constructs the object.
-
-An open design question sits here: `UrdfModelLoader::load` throws while
-`KinematicChainBuilder::build` returns `std::expected`, so the facade will have
-to reconcile the two styles.
 
 ### Later stages (not started, by design)
 
@@ -260,10 +363,14 @@ to reconcile the two styles.
 | Gap | Where | Notes |
 |---|---|---|
 | `continuous` joints unsupported | `robot_model_loader.cpp` | `mt::kinematics::JointType` has no `continuous` value, so `type="continuous"` rejects the whole file. `KinematicChainBuilder` and `JointTransformBuilder` both handle `JointType::Continuous` already — that code is covered only by hand-built joints and is unreachable end to end. Fixing it also touches limit semantics (URDF requires no `lower`/`upper` for continuous), so it needs its own proposal. Pinned by `ReportsContinuousAsUnsupportedUntilImplemented`. |
-| No `ExpressionEvaluator` | — | **The single largest gap.** Blocks the strongest possible tests: substituting `q` and comparing against a numeric matrix. The whole FK equation is therefore verified for *structure only* — symbol presence, joint order, canonical last row. A consistent sign error in the RPY convention or in `p_a + R_a·p_b` would pass every test in the repo today. Both of `JointTransformBuilder`'s fast paths — axis-aligned vs. general Rodrigues, and skipping an identity `R_origin` — are equivalences that **cannot be tested** without it: `structurallyEqual` must return false, since the trees differ by design. Today they rest on argument alone. **When it is written it must memoize on node identity**: a composed FK transform measures 281 unique nodes but 21 882 counted with multiplicity for `kr640`, and 516 vs 153 703 for `kr4_r600` — a non-memoizing recursive walk pays three orders of magnitude. Depth stays at 22–24, so recursion itself is safe. The same applies to any future printer, simplifier or code generator. |
+| Validation starts at `KinematicChain`, not at the URDF file | numeric FK validation | The quaternion reference reads the **same** `KinematicChain` the symbolic side does. If `UrdfModelLoader` mis-parses an axis or `KinematicChainBuilder` gets the joint order wrong, both sides see the identical mistake and agree. So the cross-check covers the symbolic pipeline **from `KinematicChain` upward** — `JointTransformBuilder`, `multiplyTransforms`, `ForwardKinematicsBuilder`, `ExpressionEvaluator` — and says nothing about URDF parsing. Parsing has its own 56 tests, but they are structural, not end-to-end against a known pose. |
+| RPY convention rests on a shared belief, not an external source | numeric FK validation | Quaternions protect against an *implementation* slip — a wrong sign, a swapped axis component — because the same formula written two ways does not break identically. They do **not** protect against a shared misreading of the URDF spec: the reference was written from the same understanding of `rpy` as production, so a convention error would be confirmed by both. The two hand-computed KR640 oracles guard the zero pose and one quarter turn, but for non-trivial `rpy` angles nothing external has been consulted. Closing this properly means comparing against KDL / `tf2` / Pinocchio, or against published KR4 poses. Deliberately deferred — it would add a dependency to the test project. |
+| Evaluator cache grows monotonically | `ExpressionEvaluator` | Successfully evaluated nodes stay cached — and alive, since the key is `Expression` — until the evaluator is destroyed. There is no `clearCache()`. Correct for the intended use (one substitution, one related DAG: 281–516 nodes), wrong if someone treats one instance as a long-lived global interpreter. Stated in the class comment. |
+| Recursion depth scaling unmeasured | `ExpressionEvaluator`, and any recursive walk | Measured FK depth is 22 (`kr640`) and 24 (`kr4_r600`) for 7-joint chains — safe for recursion by a wide margin. How depth grows with chain length was **never measured**. Before allowing very long chains, or after a simplifier starts deepening trees, measure it before assuming recursion still fits. |
 | Trig folding leaves numeric noise | symbolic layer | `sin(π) = 1.22e-16`, `cos(π/2) = 6.12e-17`. For `kr4_r600.urdf` this blocks even `x + 0 → x`, since those cells hold near-zero rather than zero. Whether to canonicalize is deliberately deferred — a tolerance would become part of the symbolic semantics. |
 | `A · I ≠ A` for symbolic matrices | symbolic layer | Direct consequence of dropping `x * 0 → 0`. Recovering `A` needs a simplifier that tracks domains. `multiplyTransforms` restores the identity **for whole blocks only** — inside a genuine rotation product, per-cell terms like `cos(q)·0` still survive. |
 | Factory ownership is value-semantic | both builders | `JointTransformBuilder` and `ForwardKinematicsBuilder` each take `ExpressionFactory` **by value**, so passing the same object to both still produces two copies. Harmless today — the class has no members — but if `ExpressionFactory` ever gains state (a hash-consing cache, a node counter, tolerance configuration), passing one object will **not** share it. Sharing would require redesigning ownership: a shared state object, a reference, or a `shared_ptr`. Do not assume the current constructors already enable it. |
+| `UrdfLoadFailed` carries only a string | `IkEquationBuilder`, `UrdfModelLoader` | The facade preserves the chain builder's typed `KinematicChainError`, but has nothing equivalent for the loader: `UrdfModelLoader` consumes its structured `LoadError`/`LoadErrorCode` internally, assembles a message and throws `std::runtime_error`. No typed code survives to be preserved, so the asymmetry in `IkEquationBuilderError` is a consequence, not an oversight. Fixing it means giving `UrdfModelLoader` a typed error type — its own change. Same root cause as the row below. |
 | Diagnostics discarded on success | `UrdfModelLoader.cpp` | `load_urdf` returns a `DiagnosticBag` with info/warning entries; the facade drops it. On failure the bag cannot be returned at all, since `std::expected` carries only the error. |
 | `Kinematics.h` / `example_forward` | `src/` | Placeholder from the initial scaffold, unrelated to the real pipeline. Only kept alive by one test. |
 
@@ -297,17 +404,33 @@ lives inside the `.md`, not on disk, until it is approved.
 | `proposal-joint-transform-builder-implementation.md` | Joint transform code | implemented |
 | `proposal-forward-kinematics-builder-architecture.md` | FK composition design | approved (v2) |
 | `proposal-forward-kinematics-builder-implementation.md` | FK composition code | implemented |
+| `proposal-expression-evaluator-architecture.md` | Numeric evaluation design | approved (v2) |
+| `proposal-expression-evaluator-implementation.md` | Numeric evaluation code | implemented |
+| `proposal-numeric-fk-validation-architecture.md` | Independent FK cross-check design | approved (v2) |
+| `proposal-numeric-fk-validation-implementation.md` | Quaternion reference + 17 tests | implemented |
+| `proposal-ik-equation-builder-architecture.md` | Facade state, error model, accessors | approved |
+| `proposal-ik-equation-builder-implementation.md` | Facade code + 17 tests | implemented |
 | `analysis-ik-pipeline-constraint-builder.md` | Where task-space constraints belong | open |
 
 ## Next step
 
-`ExpressionEvaluator`, **with memoization on node identity mandatory** (the
-numbers are in known gaps). It is chosen on test value rather than pipeline
-order: it is what turns "these two trees denote the same rotation" from an
-argument into an assertion — for the axis-aligned fast path, for the identity
-shortcuts, and above all for the FK equation as a whole.
+Phase 1 is closed. The project can now say, and defend: *KinemaForge derives a
+symbolic forward-kinematics equation from a URDF through one public API, and
+its values have been cross-checked against an independent quaternion
+implementation* — with the two scope limits in known gaps attached.
 
-Immediately after it: end-to-end numeric validation of FK for KR4 and KR640
-against known poses. Only then does Phase 1's central claim — "this repo derives
-a *correct* symbolic forward-kinematics equation from a URDF" — stop resting on
-argument. The facade comes after that.
+**Phase 2 begins with `ConstraintBuilder`:** a target pose plus the symbolic FK
+matrix, turned into a system of IK equations. There is an architecture analysis
+(`proposal/analysis-ik-pipeline-constraint-builder.md`) but no proposal yet.
+
+Worth stating plainly before starting: everything built so far was *mechanical
+translation with a known correct answer* — parse, walk, compose, evaluate. What
+follows is not. `EquationSolver` has no single algorithm; it is case analysis,
+and for some robots a closed-form solution does not exist at all. Measured by
+effort rather than component count, Phase 1 is closer to a quarter of the whole
+than to half.
+
+`EquationSimplifier` is the other underestimated piece: dropping `x * 0 → 0`
+means it has to **track domains** to remove those terms correctly, and the
+`1e-16` trig-folding noise forces a tolerance decision that becomes part of the
+symbolic semantics.

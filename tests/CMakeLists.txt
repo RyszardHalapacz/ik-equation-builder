@@ -10,6 +10,7 @@ FetchContent_MakeAvailable(googletest)
 
 add_executable(kinemaforge_tests
     test_kinematics.cpp
+    test_ik_equation_builder.cpp
     test_urdf_model_loader.cpp
     test_kinematic_chain_builder.cpp
     test_joint_transform_builder.cpp

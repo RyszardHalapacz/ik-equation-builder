@@ -34,14 +34,30 @@ Everything under the facade is a private implementation detail. From the outside
 
 ```cpp
 IkEquationBuilder builder;
-builder.loadRobotModel("kr640.urdf");
-builder.selectChain("base_link", "tool0");
-builder.buildForwardKinematics();
 
-const auto& fk = builder.forwardKinematics(); // a symbolic 4x4 transform
+if (const auto result = builder.loadRobotModel("kr640.urdf"); !result)
+{
+    std::cerr << result.error().message << '\n';
+    return;
+}
+
+if (const auto result = builder.selectChain("base_link", "tool0"); !result)
+{
+    // ChainBuildFailed also carries result.error().chainError
+    std::cerr << result.error().message << '\n';
+    return;
+}
+
+if (const auto result = builder.buildForwardKinematics(); !result)
+{
+    std::cerr << result.error().message << '\n';
+    return;
+}
+
+const SymbolicTransform* fk = builder.forwardKinematics(); // a symbolic 4x4 transform
 ```
 
-No caching, no hidden state carried between robots — point it at a URDF, ask for the chain you care about, and it derives the formula fresh, every time.
+State is explicit and cascading: loading a robot clears the chain and the transform, selecting a chain clears the transform. Nothing stale survives. Point it at a URDF, ask for the chain you care about, and it derives the formula fresh, every time.
 
 ### Core Components
 
