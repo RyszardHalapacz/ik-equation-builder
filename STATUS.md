@@ -1,8 +1,8 @@
 # Project Status
 
-**Last updated:** 2026-08-01
+**Last updated:** 2026-08-03
 **Branch:** `main`
-**Build:** clean · **Tests:** 117/117 passing
+**Build:** clean · **Tests:** 161/161 passing
 
 A snapshot of what actually exists in this repo today, and what is still
 declaration-only. The pipeline this project is working toward is described in
@@ -14,21 +14,27 @@ Two numbers, because they differ a lot depending on where the finish line is:
 
 | Scope | Progress |
 |---|---|
-| **Phase 1** — URDF → symbolic forward kinematics | **~50%** |
-| **Full vision** — including IK solver and code generation | **~30%** by component count |
+| **Phase 1** — URDF → symbolic forward kinematics | **~85%** |
+| **Full vision** — including IK solver and code generation | **~40%** by component count |
 
 The second number is misleading and worth stating plainly: **what is done is the
 easy part.** Parsing XML, walking a tree and building an expression engine are
 solved, well-understood problems. What remains includes symbolically solving IK
 equations — research-grade work, plausibly larger on its own than everything
 built so far. Measured by effort rather than component count, the honest figure
-is closer to **15–20%**.
+is closer to **25%**.
 
-The upside: the foundation is solid. 117 tests, every architectural decision
+Phase 1 is at ~85% rather than done: the symbolic FK equation now falls out of a
+URDF end to end, but **nothing yet checks that it is numerically right** (see
+`ExpressionEvaluator` under known gaps), and the facade is still undefined.
+
+The upside: the foundation is solid. 161 tests, every architectural decision
 written down and reviewed, and a long list of traps caught *before* they reached
 the code — expression-domain loss from `x * 0 → 0`, trig-folding noise, a
 `make_shared` symbol clash under `-static-libstdc++`, `std::hypot` losing
-subnormal axes, and a parser that silently rewrote malformed vectors.
+subnormal axes, a parser that silently rewrote malformed vectors,
+`I · R_motion` quietly producing `cos(q) + 0 · sin(q)`, and a full 4×4 product
+turning the homogeneous last row into 31 738 nodes.
 
 ## Pipeline progress
 
@@ -39,9 +45,10 @@ URDF
   → KinematicChainBuilder    ✅ implemented + tested
   → KinematicChain           ✅ complete
   → Symbolic layer           ✅ implemented + tested
-  → JointTransformBuilder    🟡 architecture approved, unblocked, not written
-  → ForwardKinematicsBuilder ⬜ header only
-  → Symbolic FK              ⬜ not reachable yet
+  → JointTransformBuilder    ✅ implemented + tested
+  → ForwardKinematicsBuilder ✅ implemented + tested
+  → Symbolic FK              ✅ reachable end to end, structure verified only
+  → ExpressionEvaluator      🟡 nothing yet — blocks numeric validation — next
   → ConstraintBuilder        ⬜ analysed only, no proposal yet
   → EquationSimplifier       ⬜ nothing
   → EquationSolver           ⬜ nothing (the hard one)
@@ -108,6 +115,108 @@ future simplifier can remove those terms correctly rather than blindly.
 
 **Tests:** 43.
 
+### `JointTransformBuilder` — one joint → one symbolic transform
+
+`T_parent_child(q) = T_origin · T_motion(q)`, with `T_origin = Translation ·
+R_rpy` and `R_rpy = Rz(yaw) · Ry(pitch) · Rx(roll)` — URDF's fixed-axis
+convention. Handles `Fixed`, `Revolute`, `Continuous` and `Prismatic`;
+`Continuous` is geometrically identical to `Revolute`, since the difference is a
+limit and limits are not this component's concern.
+
+The public surface is one constructor and one method. Everything else lives in
+an anonymous namespace in the `.cpp`.
+
+Preconditions are **asserted, not re-validated** — the loader already guarantees
+finite origins and a normalized axis, and `NDEBUG` is not defined in the default
+build, so the assertions are live:
+
+- a fixed joint has no variable; an actuated one has exactly one
+- an actuated joint's axis is unit length
+- the symbol name comes from `joint.variable->name`, never invented here
+
+Four construction decisions, each of which exists because the symbolic layer
+deliberately has no `x * 0 → 0` rule:
+
+- **Signed principal axes take a fast path** to a canonical `Rx`/`Ry`/`Rz`
+  (33 → 7 nodes). The sign is folded into the sine — `R(-a, q) = R(a, -q)` and
+  cos is even — so no cell carries `Negate(Negate(Sin))`. The match is an exact
+  comparison against `±1.0`: a slightly tilted axis is a different axis.
+- **An identity `R_origin` skips the product entirely.** `I · R_motion` would
+  otherwise yield `Add(Cos(q), Multiply(Constant(0), Sin(q)))` instead of
+  `Cos(q)` — and all 7 joints of `kr640.urdf` have `rpy="0 0 0"`. The same
+  shortcut covers `I · vector` for prismatic joints.
+- **Blocks are assembled, never multiplied as full 4×4.** Starting from
+  `identity()` keeps the last row exactly `[0 0 0 1]`; a 4×4 product would turn
+  it into `0*R00 + 0*R10 + 0*R20` — zero mathematically, but no longer a
+  `Constant(0)` that `isZero()` recognises.
+- **A zero axis component builds no multiplication** for prismatic
+  displacement. This is the one place applying the rejected annihilator
+  locally, and it is sound for a reason the general rule lacks: the other
+  operand is a bare joint variable, total on the reals.
+
+Both fast paths are choices of *construction* based on constants known while
+building — not symbolic rewrites. Both branches denote the same function.
+
+**Tests:** 22.
+
+### `multiplyTransforms` — homogeneous composition in the symbolic layer
+
+Lives in `SymbolicTransform.hpp/.cpp`, not in the FK builder: it is an operation
+on canonical homogeneous transforms, and the constraint builder and solver will
+need it too.
+
+```
+R = R_lhs · R_rhs          p = p_lhs + R_lhs · p_rhs          last row assembled
+```
+
+**Precondition, asserted not validated:** both operands have an exactly
+canonical last row (`hasCanonicalHomogeneousLastRow`). The contract is closed
+under composition — every producer in the project guarantees it, including this
+function, so its result is again a valid input.
+
+Multiplying two full 4×4 matrices instead would destroy that. Measured on
+`kr640.urdf`: cell `(3,0)` becomes an `Add` tree of **31 738 nodes** that is
+zero mathematically but no longer a `Constant(0)`, and `(3,3)` the same for the
+constant 1.
+
+**Five explicit fast paths, reproducing six algebraic identities** —
+`I·T = T`, `T·I = T`, `I·R = R`, `R·I = R`, `R·0 = 0`, `I·p = p`. These are not
+tuned to the robots in `data/urdf`; they restore identities the symbolic layer
+loses for want of `x · 0 → 0`. Without them, `T · I` differs from `T` in 8 of 16
+cells and an identity right rotation corrupts 6 of the 9 rotation cells. There
+is deliberately **no** fast path for a zero `p_lhs`: the factory already folds
+`0 + x → x` as well as `x + 0 → x`.
+
+**Tests:** 10, in `test_symbolic_transform.cpp` — the algebra is tested directly,
+not only through the builder.
+
+### `ForwardKinematicsBuilder` — chain → one symbolic transform
+
+Left fold from the identity, accumulator on the left:
+
+```
+T_base_tool(q) = T_1(q1) · T_2(q2) · ... · T_n(qn)
+```
+
+The empty chain (`baseLink == toolLink`, which the chain builder reports as
+success) yields the identity — the empty product — with no special case. A
+single-joint chain returns `JointTransformBuilder`'s output **structurally
+unchanged**, which is what pins the identity-accumulator fast path.
+
+No error model: no `KinematicChain` can make this computation fail.
+
+Measured tree size, verified against the shipped code rather than a prototype:
+
+| Robot | nodes (with multiplicity) | unique (DAG) | depth |
+|---|---:|---:|---:|
+| `kr640.urdf` | 21 882 | 281 | 22 |
+| `kr4_r600.urdf` | 153 703 | 516 | 24 |
+
+A naive 4×4 accumulation gives 466 848 nodes for `kr640` — **21×** more, with a
+broken last row.
+
+**Tests:** 12.
+
 ### Supporting layers
 
 - `mt::kinematics` (`robot_model`, `robot_model_loader`) — implemented.
@@ -117,27 +226,18 @@ future simplifier can remove those terms correctly rather than blindly.
 
 ## Not done
 
-### `JointTransformBuilder` — designed, unblocked, not written
+### What Phase 1 still needs
 
-Architecture approved (`proposal/proposal-joint-transform-builder-architecture.md`).
-The loader work that blocked it is now merged, so the canonical-geometry
-invariant its assertions rely on actually holds. Settled decisions:
+Three things, not one. Symbolic FK exists, but the phase is not finished by the
+facade alone:
 
-- `T_parent_child(q) = T_origin · T_motion(q)`, with `T_origin =
-  Translation · RotationRPY`
-- `R_rpy = Rz(yaw) · Ry(pitch) · Rx(roll)` — URDF fixed-axis convention
-- Rodrigues for arbitrary axes, with a fast path for `±X`, `±Y`, `±Z`
-  (measured: 33 → 7 nodes, and the general formula leaves cells that are
-  mathematically zero but not `Constant(0)`)
-- Blocks are composed directly rather than multiplying 4×4 matrices — a full
-  4×4 product destroys the canonical form of the homogeneous last row
-
-Next step: an implementation proposal with full code.
-
-### `ForwardKinematicsBuilder` — declaration only
-
-`build(const KinematicChain&, const JointTransformBuilder&) -> SymbolicTransform`
-is declared; there is no `.cpp`.
+1. **`ExpressionEvaluator`** — substituting `q` and evaluating the tree. Nothing
+   in the project can do this, so the FK equation's *values* have never been
+   checked (see known gaps).
+2. **End-to-end numeric validation of FK for KR4 and KR640** — the payoff of
+   the evaluator, and the first real proof that the RPY convention, the axis
+   handling and the `p_a + R_a·p_b` composition are jointly correct.
+3. **`IkEquationBuilder`** — the facade below.
 
 ### `IkEquationBuilder` (facade) — constructor only
 
@@ -159,10 +259,11 @@ to reconcile the two styles.
 
 | Gap | Where | Notes |
 |---|---|---|
-| `continuous` joints unsupported | `robot_model_loader.cpp` | `mt::kinematics::JointType` has no `continuous` value, so `type="continuous"` rejects the whole file. `KinematicChainBuilder` and the `JointTransformBuilder` design already handle `JointType::Continuous`, making it currently unreachable. Fixing it also touches limit semantics (URDF requires no `lower`/`upper` for continuous), so it needs its own proposal. Pinned by `ReportsContinuousAsUnsupportedUntilImplemented`. |
-| No `ExpressionEvaluator` | — | Blocks the strongest possible tests: substituting `q` and comparing against a numeric matrix. In particular, the equivalence of `JointTransformBuilder`'s axis-aligned fast path with the general Rodrigues formula **cannot be tested** without it — `structurallyEqual` must return false, since the trees differ by design. |
+| `continuous` joints unsupported | `robot_model_loader.cpp` | `mt::kinematics::JointType` has no `continuous` value, so `type="continuous"` rejects the whole file. `KinematicChainBuilder` and `JointTransformBuilder` both handle `JointType::Continuous` already — that code is covered only by hand-built joints and is unreachable end to end. Fixing it also touches limit semantics (URDF requires no `lower`/`upper` for continuous), so it needs its own proposal. Pinned by `ReportsContinuousAsUnsupportedUntilImplemented`. |
+| No `ExpressionEvaluator` | — | **The single largest gap.** Blocks the strongest possible tests: substituting `q` and comparing against a numeric matrix. The whole FK equation is therefore verified for *structure only* — symbol presence, joint order, canonical last row. A consistent sign error in the RPY convention or in `p_a + R_a·p_b` would pass every test in the repo today. Both of `JointTransformBuilder`'s fast paths — axis-aligned vs. general Rodrigues, and skipping an identity `R_origin` — are equivalences that **cannot be tested** without it: `structurallyEqual` must return false, since the trees differ by design. Today they rest on argument alone. **When it is written it must memoize on node identity**: a composed FK transform measures 281 unique nodes but 21 882 counted with multiplicity for `kr640`, and 516 vs 153 703 for `kr4_r600` — a non-memoizing recursive walk pays three orders of magnitude. Depth stays at 22–24, so recursion itself is safe. The same applies to any future printer, simplifier or code generator. |
 | Trig folding leaves numeric noise | symbolic layer | `sin(π) = 1.22e-16`, `cos(π/2) = 6.12e-17`. For `kr4_r600.urdf` this blocks even `x + 0 → x`, since those cells hold near-zero rather than zero. Whether to canonicalize is deliberately deferred — a tolerance would become part of the symbolic semantics. |
-| `A · I ≠ A` for symbolic matrices | symbolic layer | Direct consequence of dropping `x * 0 → 0`. Recovering `A` needs a simplifier that tracks domains. |
+| `A · I ≠ A` for symbolic matrices | symbolic layer | Direct consequence of dropping `x * 0 → 0`. Recovering `A` needs a simplifier that tracks domains. `multiplyTransforms` restores the identity **for whole blocks only** — inside a genuine rotation product, per-cell terms like `cos(q)·0` still survive. |
+| Factory ownership is value-semantic | both builders | `JointTransformBuilder` and `ForwardKinematicsBuilder` each take `ExpressionFactory` **by value**, so passing the same object to both still produces two copies. Harmless today — the class has no members — but if `ExpressionFactory` ever gains state (a hash-consing cache, a node counter, tolerance configuration), passing one object will **not** share it. Sharing would require redesigning ownership: a shared state object, a reference, or a `shared_ptr`. Do not assume the current constructors already enable it. |
 | Diagnostics discarded on success | `UrdfModelLoader.cpp` | `load_urdf` returns a `DiagnosticBag` with info/warning entries; the facade drops it. On failure the bag cannot be returned at all, since `std::expected` carries only the error. |
 | `Kinematics.h` / `example_forward` | `src/` | Placeholder from the initial scaffold, unrelated to the real pipeline. Only kept alive by one test. |
 
@@ -192,12 +293,21 @@ lives inside the `.md`, not on disk, until it is approved.
 | `proposal-symbolic-layer-implementation.md` | Symbolic layer code | implemented |
 | `proposal-urdf-geometry-validation-architecture.md` | Loader validation design | approved |
 | `proposal-urdf-geometry-validation-implementation.md` | Loader validation code | implemented |
-| `proposal-joint-transform-builder-architecture.md` | Joint transform design | **approved, awaiting implementation proposal** |
+| `proposal-joint-transform-builder-architecture.md` | Joint transform design | approved |
+| `proposal-joint-transform-builder-implementation.md` | Joint transform code | implemented |
+| `proposal-forward-kinematics-builder-architecture.md` | FK composition design | approved (v2) |
+| `proposal-forward-kinematics-builder-implementation.md` | FK composition code | implemented |
 | `analysis-ik-pipeline-constraint-builder.md` | Where task-space constraints belong | open |
 
 ## Next step
 
-An implementation proposal for `JointTransformBuilder`. Together with
-`ForwardKinematicsBuilder` it takes Phase 1 from ~50% to roughly 85% — at which
-point the project can derive a symbolic forward-kinematics equation from a URDF
-end to end, which is the milestone the whole design has been aiming at.
+`ExpressionEvaluator`, **with memoization on node identity mandatory** (the
+numbers are in known gaps). It is chosen on test value rather than pipeline
+order: it is what turns "these two trees denote the same rotation" from an
+argument into an assertion — for the axis-aligned fast path, for the identity
+shortcuts, and above all for the FK equation as a whole.
+
+Immediately after it: end-to-end numeric validation of FK for KR4 and KR640
+against known poses. Only then does Phase 1's central claim — "this repo derives
+a *correct* symbolic forward-kinematics equation from a URDF" — stop resting on
+argument. The facade comes after that.
