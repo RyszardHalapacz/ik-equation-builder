@@ -45,6 +45,8 @@ SymbolicVector3 translationBlock(const SymbolicTransform& transform)
     return translation;
 }
 
+} // namespace
+
 // Starting from identity leaves the homogeneous last row correct by
 // construction; nothing writes to row 3.
 SymbolicTransform assembleTransform(const SymbolicRotation& rotation,
@@ -59,8 +61,6 @@ SymbolicTransform assembleTransform(const SymbolicRotation& rotation,
     }
     return transform;
 }
-
-} // namespace
 
 bool hasCanonicalHomogeneousLastRow(const SymbolicTransform& transform) noexcept
 {

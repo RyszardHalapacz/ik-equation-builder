@@ -1,8 +1,8 @@
 # Project Status
 
-**Last updated:** 2026-08-03
+**Last updated:** 2026-08-04
 **Branch:** `main`
-**Build:** clean · **Tests:** 221/221 passing
+**Build:** clean · **Tests:** 273/273 passing
 
 A snapshot of what actually exists in this repo today, and what is still
 declaration-only. The pipeline this project is working toward is described in
@@ -32,7 +32,7 @@ disappear with the milestone — see known gaps: the cross-check starts at
 `KinematicChain`, not at the file, and the RPY convention rests on a belief
 shared by both implementations rather than on an external source.
 
-The upside: the foundation is solid. 221 tests, every architectural decision
+The upside: the foundation is solid. 273 tests, every architectural decision
 written down and reviewed, and a long list of traps caught *before* they reached
 the code — expression-domain loss from `x * 0 → 0`, trig-folding noise, a
 `make_shared` symbol clash under `-static-libstdc++`, `std::hypot` losing
@@ -55,7 +55,10 @@ URDF
   → ExpressionEvaluator      ✅ implemented + tested
   → numeric FK validation    ✅ cross-checked against a quaternion reference
   → IkEquationBuilder        ✅ implemented + tested — Phase 1 complete
-  → ConstraintBuilder        ⬜ analysed only, no proposal yet
+  ── Phase 2 ──────────────────────────────────────────────
+  → TCP transform            ✅ implemented + tested (F2.1/F2.2)
+  → IK equation model        ✅ implemented + tested (F2.3)
+  → ConstraintBuilder        ⬜ analysed only, no proposal yet — next (F2.4)
   → EquationSimplifier       ⬜ nothing
   → EquationSolver           ⬜ nothing (the hard one)
   → IkPatternDetector        ⬜ nothing
@@ -343,6 +346,147 @@ stated in the class comment, because it is a real hazard.
 
 **Tests:** 17.
 
+### Constant TCP transform — first piece of Phase 2
+
+```
+T_base_tcp(q) = T_base_chain_tip(q) · T_chain_tip_tcp
+```
+
+`FixedRigidTransform{translation, rpy}` is a **general** constant frame offset,
+not a TCP-specific type — the mathematics has nothing to do with tools, and the
+workpiece frames Phase 2 will need are the same shape. Its contract is
+`T_parent_child`, metres and radians, `Rz·Ry·Rx`; for a TCP, `parent` is the tip
+of the currently selected chain, so **`tool0` is never hard-coded**.
+
+Translation + RPY rather than a quaternion for one reason: **RPY is total.**
+Any six finite numbers describe a valid rigid transform, so validation is
+`isfinite` six times with no threshold. A quaternion would need a unit-norm
+check with a tolerance, and a tolerance becomes part of the semantics.
+
+**Composition reuses `multiplyTransforms`** — no new mathematics. An identity
+TCP therefore costs **exactly zero nodes**, because that function already
+returns `lhs` unchanged for an identity right operand; the test asserts
+`sameNode` on all sixteen cells, not `structurallyEqual`, since a tree rebuilt
+in the same shape would satisfy the weaker one.
+
+**State is a graph, not a chain:**
+
+```
+        KinematicChain
+         /          \
+ForwardKinematics   TCP
+         \          /
+     TcpForwardKinematics
+```
+
+The TCP is a *sibling* of the transform, so it may be set before or after
+`buildForwardKinematics`, and rebuilding the transform keeps it. Changing the
+chain clears it — the same three numbers would name a different physical point
+once the tip changes, and a plausible wrong answer is worse than a loud
+absence.
+
+Errors extend the facade's existing enum: `ForwardKinematicsNotBuilt`,
+`TcpNotSet`, `InvalidTcpTransform`. Missing prerequisites are reported in
+dependency order — chain, then transform, then TCP — so the caller is told the
+next step to take rather than the last one.
+
+Verified against the quaternion reference across **the same nine configurations
+as Phase 1**, both robots — 18 matrix comparisons. Worst error **7.49e-16**
+rotation, **2.22e-16** translation, against a `1e-12` bound; Phase 1's worst was
+`5.55e-16`, so the extra composition costs a few ULP.
+
+**Tests:** 21.
+
+### IK equation model — what an equation and a target *are*
+
+Types only: no builder, no solver, no algebra. Written before
+`ConstraintBuilder` so that model is settled once, rather than invented
+implicitly one caller at a time.
+
+`Equation` stores **`lhs` and `rhs` exactly as given** and never forms
+`lhs - rhs` implicitly. Subtracting would destroy which side came from the
+robot and which from the task, and that boundary cannot be recovered without
+algebraic decomposition — which this project does not have. Normalisation is
+the future simplifier's job.
+
+`EquationSource` is a `variant<PositionEquationSource,
+OrientationEquationSource>`, not a `{kind, optional<cell>}` struct: a position
+equation has no way to name a rotation cell, and a cell cannot exist without a
+kind that gives it meaning. Every consumer dispatches through an **explicit
+overload set** — `kindOf`, the content check, the target dispatcher — so a
+third alternative stops the build instead of being silently classified. A
+`holds_alternative` test would have called it `Orientation`, which is exactly
+the failure a variant exists to prevent.
+
+`OrientationEquationSource` is closed with a private constructor and a
+`create(row, column) -> optional`: both indices must be in `0..2`, and public
+fields plus a factory would leave `OrientationEquationSource{7, 9}` legal,
+making the factory a suggestion rather than a gate.
+
+`IkEquationSystem` is closed too, and `create` enforces **nine invariants** in
+a fixed order, so each code has a deterministic meaning when several are broken
+at once:
+
+```
+NoEquations · NoUnknowns · EmptyUnknownName · DuplicateUnknownName
+DuplicateUnknownIndex · UnorderedUnknowns · TaskEquationMismatch
+DuplicateEquationSource · UnorderedEquations
+```
+
+Two of those orderings are forced rather than arbitrary. `DuplicateUnknownIndex`
+comes before `UnorderedUnknowns` because two equal indices already break a
+strictly increasing sequence — the reverse order would report a duplicate as
+bad ordering: true, but useless. `DuplicateEquationSource` comes before
+`UnorderedEquations` for the same reason, and because two equations addressing
+one matrix cell are either redundant or contradictory.
+
+The system **carries its own unknowns**. Recovering them from the equation
+trees is not an option: there is no public symbol collector, DAG traversal order
+is not joint order, sorting by name gives `q1, q10, q2`, and a symbolic target
+parameter would be indistinguishable from a joint variable.
+
+**`enum class` is not a set-of-values type.** `static_cast<IkTaskKind>(99)`
+yields a valid object with no enumerator behind it, so the exhaustive `switch`
+(which `-Wswitch` uses to catch *new* enumerators at compile time) is paired
+with an explicit run-time rejection for *forged* ones. `CartesianComponent`
+gets the same treatment through `componentIndex`, because
+`present[static_cast<std::size_t>(component)]` would otherwise write out of
+bounds. The two protections cover different things and neither replaces the
+other.
+
+`IkTarget = variant<PositionTarget, PoseTarget>`, again closed — a struct of
+optionals would admit a target that constrains nothing. `PoseTarget` means
+`T_base_target`; the direction is part of the contract.
+
+**Validation rejects, never repairs.** Re-orthonormalising an input rotation
+would change the target the caller asked for and hide their mistake. Checked in
+an observable order: finite → orthogonality → determinant.
+
+`kOrientationTolerance = 1e-8`, and it is deliberately **not** the `1e-12` used
+for FK comparisons: that bound measures error accumulated inside our own
+computation, this one accepts data that arrived from elsewhere. Measured on
+500 000 random rotations rounded to nine decimals:
+
+| | worst deviation | headroom at `1e-8` |
+|---|---:|---:|
+| `max abs(RᵀR − I)` | 1.68e-9 | 5.95× |
+| `max abs(det − 1)` | 1.85e-9 | 5.40× |
+
+An independent run during review reached `1.94e-9` for the determinant, so the
+margin is at least 5× either way. Data that has passed through `float` deviates
+by ~1e-6 and is rejected on purpose.
+
+The third error code is `InvalidOrientationDeterminant`, **not**
+`ImproperRotation`: the "therefore a reflection" reading holds only for exactly
+orthogonal matrices. `diag(1+4e-9, 1+4e-9, 1+4e-9)` deviates from orthogonality
+by 8e-9 (accepted) and from unit determinant by 1.2e-8 (rejected) with a
+*positive* determinant, and is no reflection at all. Its message is formatted
+with `max_digits10` — `std::to_string` would print `1.000000` for the very
+value that caused the rejection.
+
+**Tests:** 31 (15 model, 16 validation), including forged enumerators for both
+enums and threshold cases at `0.9×` and `1.1×` the tolerance.
+
 ### Supporting layers
 
 - `mt::kinematics` (`robot_model`, `robot_model_loader`) — implemented.
@@ -365,6 +509,9 @@ stated in the class comment, because it is a real hazard.
 | `continuous` joints unsupported | `robot_model_loader.cpp` | `mt::kinematics::JointType` has no `continuous` value, so `type="continuous"` rejects the whole file. `KinematicChainBuilder` and `JointTransformBuilder` both handle `JointType::Continuous` already — that code is covered only by hand-built joints and is unreachable end to end. Fixing it also touches limit semantics (URDF requires no `lower`/`upper` for continuous), so it needs its own proposal. Pinned by `ReportsContinuousAsUnsupportedUntilImplemented`. |
 | Validation starts at `KinematicChain`, not at the URDF file | numeric FK validation | The quaternion reference reads the **same** `KinematicChain` the symbolic side does. If `UrdfModelLoader` mis-parses an axis or `KinematicChainBuilder` gets the joint order wrong, both sides see the identical mistake and agree. So the cross-check covers the symbolic pipeline **from `KinematicChain` upward** — `JointTransformBuilder`, `multiplyTransforms`, `ForwardKinematicsBuilder`, `ExpressionEvaluator` — and says nothing about URDF parsing. Parsing has its own 56 tests, but they are structural, not end-to-end against a known pose. |
 | RPY convention rests on a shared belief, not an external source | numeric FK validation | Quaternions protect against an *implementation* slip — a wrong sign, a swapped axis component — because the same formula written two ways does not break identically. They do **not** protect against a shared misreading of the URDF spec: the reference was written from the same understanding of `rpy` as production, so a convention error would be confirmed by both. The two hand-computed KR640 oracles guard the zero pose and one quarter turn, but for non-trivial `rpy` angles nothing external has been consulted. Closing this properly means comparing against KDL / `tf2` / Pinocchio, or against published KR4 poses. Deliberately deferred — it would add a dependency to the test project. |
+| `FixedRigidTransform` direction is unenforced | `model/FixedRigidTransform.hpp` | The type means `T_parent_child`, but nothing stops a caller from filling it with `T_child_parent` and no compiler will notice — the fields are six anonymous doubles either way. The contract lives in a comment; `AppliesTcpTranslationInToolFrame` is what would actually catch a reversal. A distinct type per direction would enforce it, at the cost of a conversion layer nobody needs yet. |
+| A target does not know its frame | `model/IkTarget.hpp` | `PositionTarget` and `PoseTarget` are expressed "in the base frame of whatever transform the constraint builder is given", and nothing in the type says whether that transform ends at the TCP or at the chain tip. Pairing a TCP target with `forwardKinematics()` instead of `tcpForwardKinematics()` compiles, runs, and yields a system that is wrong by exactly the tool offset. The model deliberately does not know the frame — it has no access to the chain — so this cannot be closed here; a frame-tagged transform type would close it, at the cost of a conversion layer nobody needs yet. Same class of gap as the `FixedRigidTransform` direction row above. |
+| Orientation data that passed through `float` is rejected | `model/TargetValidation.cpp` | `kOrientationTolerance = 1e-8` accepts `double` and text of reasonable precision, and nothing else. A rotation matrix that has been through `float` at any point deviates by ~1e-6 and fails `NonOrthogonalOrientation`. That is a decision, not an oversight: a threshold loose enough to admit `float` would also admit a genuinely non-orthogonal target and make the equation system quietly unsatisfiable. The right fix is an explicit `orthonormalize` on the caller's side — which this project does not provide, so a caller with `float` data currently has to write it. |
 | Evaluator cache grows monotonically | `ExpressionEvaluator` | Successfully evaluated nodes stay cached — and alive, since the key is `Expression` — until the evaluator is destroyed. There is no `clearCache()`. Correct for the intended use (one substitution, one related DAG: 281–516 nodes), wrong if someone treats one instance as a long-lived global interpreter. Stated in the class comment. |
 | Recursion depth scaling unmeasured | `ExpressionEvaluator`, and any recursive walk | Measured FK depth is 22 (`kr640`) and 24 (`kr4_r600`) for 7-joint chains — safe for recursion by a wide margin. How depth grows with chain length was **never measured**. Before allowing very long chains, or after a simplifier starts deepening trees, measure it before assuming recursion still fits. |
 | Trig folding leaves numeric noise | symbolic layer | `sin(π) = 1.22e-16`, `cos(π/2) = 6.12e-17`. For `kr4_r600.urdf` this blocks even `x + 0 → x`, since those cells hold near-zero rather than zero. Whether to canonicalize is deliberately deferred — a tolerance would become part of the symbolic semantics. |
@@ -410,18 +557,25 @@ lives inside the `.md`, not on disk, until it is approved.
 | `proposal-numeric-fk-validation-implementation.md` | Quaternion reference + 17 tests | implemented |
 | `proposal-ik-equation-builder-architecture.md` | Facade state, error model, accessors | approved |
 | `proposal-ik-equation-builder-implementation.md` | Facade code + 17 tests | implemented |
+| `proposal-tcp-transform-architecture.md` | Constant tip→TCP transform design | approved (v3) |
+| `proposal-tcp-transform-implementation.md` | TCP code + 21 tests | implemented |
+| `proposal-ik-equation-model-architecture.md` | Equation, target and system types | approved (v3) |
+| `proposal-ik-equation-model-implementation.md` | Model code + 31 tests | implemented |
 | `analysis-ik-pipeline-constraint-builder.md` | Where task-space constraints belong | open |
 
 ## Next step
 
-Phase 1 is closed. The project can now say, and defend: *KinemaForge derives a
-symbolic forward-kinematics equation from a URDF through one public API, and
-its values have been cross-checked against an independent quaternion
-implementation* — with the two scope limits in known gaps attached.
+Phase 1 is closed and Phase 2 is under way: the constant TCP transform (F2.1 and
+F2.2) is implemented and numerically validated, and F2.3 — the domain model of
+equations and targets — is now implemented. `Equation` is `lhs = rhs` stored as
+given, the right-hand side is an `Expression`, a target rotation is a plain
+row-major 3×3 of doubles, and validation rejects rather than repairs.
 
-**Phase 2 begins with `ConstraintBuilder`:** a target pose plus the symbolic FK
-matrix, turned into a system of IK equations. There is an architecture analysis
-(`proposal/analysis-ik-pipeline-constraint-builder.md`) but no proposal yet.
+**Next is F2.4 — `ConstraintBuilder` for `PositionOnly`**: the translation
+column of `T_base_tcp` against a `PositionTarget`, three equations, assembled
+into an `IkEquationSystem`. That is the first point at which the project
+*formulates* IK rather than describing geometry. The model it emits into now
+exists, so the builder has a contract to satisfy instead of one to invent.
 
 Worth stating plainly before starting: everything built so far was *mechanical
 translation with a known correct answer* — parse, walk, compose, evaluate. What

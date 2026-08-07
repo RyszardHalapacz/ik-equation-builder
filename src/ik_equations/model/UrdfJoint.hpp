@@ -1,5 +1,7 @@
 #pragma once
 
+#include "ik_equations/model/Vector3.hpp"
+
 #include <string>
 
 namespace kinemaforge::ik {
@@ -10,13 +12,6 @@ enum class JointType
     Revolute,
     Continuous,
     Prismatic
-};
-
-struct Vector3
-{
-    double x{};
-    double y{};
-    double z{};
 };
 
 struct JointOrigin

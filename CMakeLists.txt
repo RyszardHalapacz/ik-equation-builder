@@ -34,6 +34,10 @@ add_library(kinemaforge_ik STATIC
     src/ik_equations/builders/KinematicChainBuilder.cpp
     src/ik_equations/builders/JointTransformBuilder.cpp
     src/ik_equations/builders/ForwardKinematicsBuilder.cpp
+    src/ik_equations/builders/RigidTransformConstruction.cpp
+    src/ik_equations/builders/detail/PrincipalRotation.cpp
+    src/ik_equations/model/IkEquationSystem.cpp
+    src/ik_equations/model/TargetValidation.cpp
     src/ik_equations/symbolic/Expression.cpp
     src/ik_equations/symbolic/ExpressionFactory.cpp
     src/ik_equations/symbolic/ExpressionEvaluator.cpp

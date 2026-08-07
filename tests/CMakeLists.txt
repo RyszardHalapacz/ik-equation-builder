@@ -16,12 +16,16 @@ add_executable(kinemaforge_tests
     test_joint_transform_builder.cpp
     test_forward_kinematics_builder.cpp
     test_numeric_fk_validation.cpp
+    test_tcp_transform.cpp
+    test_ik_equation_model.cpp
+    test_target_validation.cpp
     test_symbolic_expression.cpp
     test_expression_factory.cpp
     test_expression_evaluator.cpp
     test_symbolic_matrix.cpp
     test_symbolic_transform.cpp
     support/NumericForwardKinematics.cpp
+    support/TransformComparison.cpp
 )
 target_link_libraries(kinemaforge_tests PRIVATE kinemaforge_ik GTest::gtest_main)
 target_include_directories(kinemaforge_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

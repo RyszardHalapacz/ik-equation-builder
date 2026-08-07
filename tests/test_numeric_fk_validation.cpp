@@ -6,13 +6,11 @@
 #include "ik_equations/builders/KinematicChainBuilder.hpp"
 #include "ik_equations/symbolic/ExpressionEvaluator.hpp"
 #include "support/NumericForwardKinematics.hpp"
+#include "support/TransformComparison.hpp"
 
-#include <algorithm>
-#include <array>
 #include <cmath>
 #include <cstddef>
 #include <filesystem>
-#include <iostream>
 #include <numbers>
 #include <optional>
 #include <stdexcept>
@@ -26,119 +24,21 @@ namespace support = kinemaforge::testsupport;
 
 using support::JointConfiguration;
 using support::Matrix3;
+using support::Matrix4;
 using support::Quaternion;
 using support::RigidTransform;
+using support::evaluateSymbolic;
+using support::expectMatrixMatches;
+using support::nearLimitConfiguration;
+using support::toMatrix4;
 
 namespace {
 
 constexpr double kPi = std::numbers::pi;
 
-// Candidate tolerance, approved as a candidate only. The implementation report
-// must state the measured worst-case error; exceeding this bound is a finding
-// for review, NOT a licence to raise the number.
-constexpr double kAbsoluteTolerance = 1e-12;
-constexpr double kRelativeTolerance = 1e-12;
-
-using Matrix4 = std::array<std::array<double, 4>, 4>;
-
 std::filesystem::path urdfPath(const char* fileName)
 {
     return std::filesystem::path(KINEMAFORGE_URDF_DATA_DIR) / fileName;
-}
-
-bool withinTolerance(double actual, double expected)
-{
-    return std::abs(actual - expected)
-           <= kAbsoluteTolerance + kRelativeTolerance * std::abs(expected);
-}
-
-Matrix4 toMatrix4(const RigidTransform& transform)
-{
-    const Matrix3 rotation = support::toRotationMatrix(transform.rotation);
-
-    Matrix4 result{};
-    for (std::size_t row = 0; row < 3; ++row)
-        for (std::size_t column = 0; column < 3; ++column)
-            result[row][column] = rotation[row][column];
-
-    result[0][3] = transform.translation.x;
-    result[1][3] = transform.translation.y;
-    result[2][3] = transform.translation.z;
-    result[3][3] = 1.0;
-    return result;
-}
-
-// R_error = R_expected^T * R_actual ; angle = acos((trace - 1) / 2).
-//
-// Diagnostic only -- the pass/fail condition stays per-cell. This answers the
-// question a single cell difference cannot: is the discrepancy a real
-// orientation error, or noise in one entry?
-double orientationAngleError(const Matrix4& actual, const Matrix4& expected)
-{
-    // trace(R_expected^T * R_actual) = sum_i sum_k R_expected(k,i) * R_actual(k,i)
-    double trace = 0.0;
-    for (std::size_t i = 0; i < 3; ++i)
-        for (std::size_t k = 0; k < 3; ++k)
-            trace += expected[k][i] * actual[k][i];
-
-    // clamp: with errors near 1e-16 the argument can leave [-1, 1].
-    return std::acos(std::clamp(0.5 * (trace - 1.0), -1.0, 1.0));
-}
-
-// One evaluator for all sixteen cells -- that is the whole reason
-// ExpressionEvaluator is a session. A per-cell evaluator would drop the cache
-// between roots.
-std::optional<Matrix4> evaluateSymbolic(const ik::SymbolicTransform& fk,
-                                        const ik::SymbolValues& values)
-{
-    ik::ExpressionEvaluator evaluator{values};
-
-    Matrix4 numeric{};
-    for (std::size_t row = 0; row < 4; ++row)
-        for (std::size_t column = 0; column < 4; ++column)
-        {
-            const auto value = evaluator.evaluate(fk(row, column));
-            if (!value)
-            {
-                ADD_FAILURE() << "evaluation failed at cell (" << row << ", " << column
-                              << "), code " << static_cast<int>(value.error().code)
-                              << " symbol '" << value.error().symbolName << "'";
-                return std::nullopt;
-            }
-            numeric[row][column] = *value;
-        }
-    return numeric;
-}
-
-void expectMatrixMatches(const Matrix4& actual, const Matrix4& expected,
-                         std::string_view label)
-{
-    double maxRotationError = 0.0;
-    double maxTranslationError = 0.0;
-
-    for (std::size_t row = 0; row < 4; ++row)
-        for (std::size_t column = 0; column < 4; ++column)
-        {
-            SCOPED_TRACE(testing::Message()
-                         << label << " cell (" << row << ", " << column << ")");
-
-            const double error = std::abs(actual[row][column] - expected[row][column]);
-            if (row < 3 && column < 3)
-                maxRotationError = std::max(maxRotationError, error);
-            else if (row < 3)
-                maxTranslationError = std::max(maxTranslationError, error);
-
-            EXPECT_TRUE(withinTolerance(actual[row][column], expected[row][column]))
-                << "actual=" << actual[row][column]
-                << " expected=" << expected[row][column]
-                << " error=" << error;
-        }
-
-    // Printed unconditionally: the implementation report quotes these.
-    std::cout << "[ MEASURE  ] " << label
-              << "  rotation=" << maxRotationError
-              << "  translation=" << maxTranslationError
-              << "  angle=" << orientationAngleError(actual, expected) << "\n";
 }
 
 struct LoadedRobot
@@ -173,26 +73,6 @@ std::size_t actuatedJointCount(const ik::KinematicChain& chain)
     for (const auto& joint : chain.joints)
         if (joint.variable) ++count;
     return count;
-}
-
-// Alternating lower + 5% of span, upper - 5% of span. Derived from the loaded
-// model rather than hard-coded, so it stays correct if the URDF changes.
-// Deliberately not the exact limits: this validates FK, not boundary handling.
-JointConfiguration nearLimitConfiguration(const ik::KinematicChain& chain)
-{
-    JointConfiguration configuration;
-    bool useLower = true;
-
-    for (const auto& joint : chain.joints)
-    {
-        if (!joint.variable) continue;
-
-        const double span = joint.limits.upper - joint.limits.lower;
-        configuration.push_back(useLower ? joint.limits.lower + 0.05 * span
-                                         : joint.limits.upper - 0.05 * span);
-        useLower = !useLower;
-    }
-    return configuration;
 }
 
 void expectConfigurationMatchesReference(const LoadedRobot& robot,

@@ -65,6 +65,7 @@ State is explicit and cascading: loading a robot clears the chain and the transf
 - **`KinematicChainBuilder`** — takes that raw description plus a `baseLink`/`toolLink` pair and produces an ordered chain of joints, with actuated joints assigned symbolic variables (`q1`, `q2`, ...).
 - **`JointTransformBuilder`** — converts a single joint into its symbolic 4×4 transform (translation, fixed rotation from the URDF origin, and — for actuated joints — a rotation parameterized by that joint's own symbolic variable).
 - **`ForwardKinematicsBuilder`** — multiplies the whole chain of transforms together into one final symbolic transform: the forward kinematics equation.
+- **`FixedRigidTransform` + `setTcp`** — an optional constant offset from the end of the selected chain to the real tool centre point, composed as `T_base_tcp(q) = T_base_chain_tip(q) · T_chain_tip_tcp`. Given as translation plus fixed-axis RPY, in metres and radians, and always measured from whichever link you chose as the chain tip — no link name is hard-coded.
 - **The symbolic model** (`Expression`, `SymbolicMatrix`) — a small expression-tree engine (constants, symbols, `+ - * /`, `sin`/`cos`) strong enough to represent everything the builders above produce, and future-proof enough for the next stage of the project.
 
 ### Where this is headed

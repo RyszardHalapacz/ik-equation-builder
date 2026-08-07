@@ -1,5 +1,6 @@
 #pragma once
 
+#include "ik_equations/model/FixedRigidTransform.hpp"
 #include "ik_equations/model/KinematicChain.hpp"
 #include "ik_equations/symbolic/ExpressionEvaluator.hpp"
 
@@ -74,5 +75,22 @@ RigidTransform numericForwardKinematics(const ik::KinematicChain& chain,
 // keeps the positional and the by-name mapping from drifting apart.
 ik::SymbolValues makeSymbolValues(const ik::KinematicChain& chain,
                                   const JointConfiguration& configuration);
+
+// Forward kinematics to the TCP, composed the same way the symbolic side does
+// it but in a different representation:
+//
+//     T_base_tcp = T_base_tip * T_tip_tcp
+//
+// compose() implements p = p_a + rotate(q_a, p_b), which is exactly the
+// tool-frame semantics -- so this validates the composition order
+// independently, with quaternions instead of matrices.
+RigidTransform numericTcpForwardKinematics(const ik::KinematicChain& chain,
+                                           const JointConfiguration& configuration,
+                                           const ik::FixedRigidTransform& tcp);
+
+// Alternating lower + 5% of span, upper - 5% of span, derived from the loaded
+// model rather than hard-coded. Deliberately not the exact limits: this
+// validates kinematics, not boundary handling.
+JointConfiguration nearLimitConfiguration(const ik::KinematicChain& chain);
 
 } // namespace kinemaforge::testsupport

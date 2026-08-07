@@ -4,6 +4,7 @@
 #include "ik_equations/builders/ForwardKinematicsBuilder.hpp"
 #include "ik_equations/builders/JointTransformBuilder.hpp"
 #include "ik_equations/builders/KinematicChainBuilder.hpp"
+#include "ik_equations/model/FixedRigidTransform.hpp"
 #include "ik_equations/model/KinematicChain.hpp"
 #include "ik_equations/model/KinematicChainError.hpp"
 #include "ik_equations/model/RobotDescription.hpp"
@@ -21,7 +22,10 @@ enum class IkEquationBuilderErrorCode
     RobotModelNotLoaded,
     KinematicChainNotSelected,
     UrdfLoadFailed,
-    ChainBuildFailed
+    ChainBuildFailed,
+    ForwardKinematicsNotBuilt,
+    TcpNotSet,
+    InvalidTcpTransform
 };
 
 // Errors returned by IkEquationBuilder satisfy this invariant: chainError has
@@ -45,15 +49,24 @@ struct IkEquationBuilderError
 // The public entry point of this module: URDF file -> symbolic forward
 // kinematics, with everything underneath kept private.
 //
-// State machine, with each successful step invalidating what it obsoletes:
+// State is a dependency graph, not a linear chain:
 //
-//     loadRobotModel         -> new model, clears chain and transform
-//     selectChain            -> new chain, clears transform
-//     buildForwardKinematics -> new transform
+//              RobotDescription
+//                     |
+//               KinematicChain
+//                /          \
+//     ForwardKinematics    TCP configuration
+//                \          /
+//              TcpForwardKinematics
 //
-// A KinematicChain names links of one specific robot and a transform carries
-// symbols of one specific chain, so anything surviving a change upstream would
-// be an answer to a question no longer being asked.
+// A successful step sets its node and clears that node's descendants. The TCP
+// is a sibling of the transform, not a descendant, so it may be set before or
+// after buildForwardKinematics -- and rebuilding the transform keeps it.
+//
+// A KinematicChain names links of one specific robot, a transform carries
+// symbols of one specific chain, and a TCP offset is measured from one
+// specific chain tip -- so anything surviving a change upstream would be an
+// answer to a question no longer being asked.
 //
 // Failure leaves the object untouched: results are built into locals and only
 // committed once they exist. That promise covers domain errors -- a bad path,
@@ -74,14 +87,50 @@ public:
     [[nodiscard]] std::expected<void, IkEquationBuilderError>
     buildForwardKinematics();
 
-    // Returns nullptr until the corresponding step has succeeded.
+    // A TCP offset is defined relative to the tip of the currently selected
+    // chain, so a chain must be selected first. That is the only prerequisite:
+    // it may be called before or after buildForwardKinematics, because the TCP
+    // does not depend on the transform.
+    [[nodiscard]] std::expected<void, IkEquationBuilderError>
+    setTcp(const FixedRigidTransform& tcp);
+
+    // Idempotent, and valid in any state: before a chain is selected, with no
+    // TCP set, and repeatedly. Afterwards tcp() and tcpForwardKinematics() are
+    // both null.
+    void clearTcp() noexcept;
+
+    // T_base_tcp = T_base_chain_tip * T_chain_tip_tcp.
     //
-    // Returned pointers are non-owning and may be invalidated by any
-    // successful state-changing operation on this object, as well as by its
-    // destruction. Do not hold one across a call to loadRobotModel,
-    // selectChain or buildForwardKinematics.
+    // Reports the FIRST missing prerequisite -- chain, then transform, then
+    // TCP -- so the caller is told the step to take next rather than the last
+    // one in the sequence.
+    [[nodiscard]] std::expected<void, IkEquationBuilderError>
+    buildTcpForwardKinematics();
+
+    // Accessors return nullptr until the corresponding step has succeeded.
+    //
+    // A pointer obtained earlier must not be treated as access to the previous
+    // result after an operation that changes its node. This is a semantic
+    // contract, not an address one: assigning into an already engaged
+    // std::optional constructs in place, so the address can survive while the
+    // value behind it becomes a different result. That is worse than a
+    // dangling pointer, because nothing crashes -- the caller simply reads the
+    // new value believing it holds the old one.
+    //
+    //     kinematicChain()       stale after loadRobotModel, selectChain
+    //     forwardKinematics()    ... plus buildForwardKinematics
+    //     tcp()                  after loadRobotModel, selectChain, setTcp,
+    //                            clearTcp
+    //     tcpForwardKinematics() after any of the six operations
+    //
+    // The converse is a promise, and it is tested: setTcp does NOT affect
+    // forwardKinematics(), and buildForwardKinematics does NOT affect tcp().
+    //
+    // All pointers are non-owning and die with the facade.
     [[nodiscard]] const KinematicChain* kinematicChain() const noexcept;
     [[nodiscard]] const SymbolicTransform* forwardKinematics() const noexcept;
+    [[nodiscard]] const FixedRigidTransform* tcp() const noexcept;
+    [[nodiscard]] const SymbolicTransform* tcpForwardKinematics() const noexcept;
 
 private:
     UrdfModelLoader urdfLoader_;
@@ -92,6 +141,8 @@ private:
     std::optional<RobotDescription> robotDescription_;
     std::optional<KinematicChain> kinematicChain_;
     std::optional<SymbolicTransform> forwardKinematics_;
+    std::optional<FixedRigidTransform> tcp_;
+    std::optional<SymbolicTransform> tcpForwardKinematics_;
 };
 
 } // namespace kinemaforge::ik

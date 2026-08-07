@@ -177,4 +177,30 @@ ik::SymbolValues makeSymbolValues(const ik::KinematicChain& chain,
     return values;
 }
 
+RigidTransform numericTcpForwardKinematics(const ik::KinematicChain& chain,
+                                           const JointConfiguration& configuration,
+                                           const ik::FixedRigidTransform& tcp)
+{
+    return compose(numericForwardKinematics(chain, configuration),
+                   RigidTransform{fromRollPitchYaw(tcp.rpy),
+                                  toVector3d(tcp.translation)});
+}
+
+JointConfiguration nearLimitConfiguration(const ik::KinematicChain& chain)
+{
+    JointConfiguration configuration;
+    bool useLower = true;
+
+    for (const auto& joint : chain.joints)
+    {
+        if (!joint.variable) continue;
+
+        const double span = joint.limits.upper - joint.limits.lower;
+        configuration.push_back(useLower ? joint.limits.lower + 0.05 * span
+                                         : joint.limits.upper - 0.05 * span);
+        useLower = !useLower;
+    }
+    return configuration;
+}
+
 } // namespace kinemaforge::testsupport
