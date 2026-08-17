@@ -9,15 +9,40 @@ namespace kinemaforge::ik {
 
 namespace {
 
+// Two protections, covering different things:
+//
+//   * no `default` -- adding an enumerator to mt::kinematics::JointType makes
+//     -Wswitch fire, which -Werror turns into a build failure in CI. This is
+//     what must stop `continuous` from silently mapping to Fixed once the
+//     lower layer learns about it. Previously this function ended in
+//     `return JointType::Fixed;`, which made exactly that regression silent.
+//   * the throw -- a value forged with static_cast has no enumerator to be
+//     caught at compile time. std::logic_error, not a LoadErrorCode: the lower
+//     layer's parse_joint_type already rejected every string it does not know,
+//     so a value arriving here is a defect in this repository, not in the
+//     user's file. logic_error does NOT derive from std::runtime_error, which
+//     is exactly what IkEquationBuilder catches, so it propagates to the caller
+//     instead of being reported as a URDF problem.
+//
+// Neither protection replaces the other. Same shape as componentIndex() in
+// IkEquationSystem.cpp, which rejects rather than throws because there the
+// caller has a std::expected to carry the error.
+//
+// The throw is unreachable through any public path: load() is the only caller,
+// and parse_joint_type admits exactly three strings. It is defence in depth
+// against a future path that skips that validation.
 JointType mapJointType(mt::kinematics::JointType type)
 {
     switch (type)
     {
     case mt::kinematics::JointType::revolute:  return JointType::Revolute;
     case mt::kinematics::JointType::prismatic: return JointType::Prismatic;
-    case mt::kinematics::JointType::fixed:      return JointType::Fixed;
+    case mt::kinematics::JointType::fixed:     return JointType::Fixed;
     }
-    return JointType::Fixed;
+
+    throw std::logic_error(
+        "UrdfModelLoader: unmapped mt::kinematics::JointType value " +
+        std::to_string(static_cast<int>(type)));
 }
 
 Vector3 mapVector3(mt::kinematics::Vec3 const& v)

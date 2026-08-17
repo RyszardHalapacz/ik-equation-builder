@@ -19,7 +19,10 @@ namespace {
 // regression upstream, not to police the last bits.
 constexpr double kUnitAxisTolerance = 1e-9;
 
-bool isUnitLength(const Vector3& axis) noexcept
+// [[maybe_unused]]: used only inside assert(), so it disappears under NDEBUG.
+// See the note on isActuated below -- the attribute silences the warning, it
+// does not restore the check.
+[[maybe_unused]] bool isUnitLength(const Vector3& axis) noexcept
 {
     return std::abs(std::hypot(axis.x, axis.y, axis.z) - 1.0) <= kUnitAxisTolerance;
 }
@@ -183,7 +186,16 @@ SymbolicVector3 rotateVector(const SymbolicRotation& rotation,
     return multiply(rotation, vector, factory);
 }
 
-bool isActuated(JointType type) noexcept
+// [[maybe_unused]] for the same reason as isUnitLength: this helper exists only
+// to be called from an assert().
+//
+// Worth stating plainly, because the attribute makes the build quiet and could
+// be mistaken for a fix: both preconditions of this component are enforced by
+// assert() alone, and a build with NDEBUG defined -- which the Release
+// configuration does -- therefore enforces NEITHER. The "asserted, not
+// re-validated" contract in the class comment holds only for builds where
+// asserts are live.
+[[maybe_unused]] bool isActuated(JointType type) noexcept
 {
     switch (type)
     {

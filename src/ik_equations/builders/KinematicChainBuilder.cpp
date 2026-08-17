@@ -56,7 +56,8 @@ PathSearchResult findPath(
 
     std::unordered_set<std::string_view> visited{baseLink};
     std::vector<Frame> stack;
-    stack.push_back(Frame{baseLink});
+    // Root frame: no children visited yet, and no incoming joint.
+    stack.push_back(Frame{baseLink, 0, std::nullopt});
 
     while (!stack.empty())
     {

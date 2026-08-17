@@ -14,6 +14,64 @@ if (MINGW)
     add_link_options(-static-libgcc -static-libstdc++ -static)
 endif()
 
+# --- Warning policy -----------------------------------------------------
+#
+# Carried by an INTERFACE target rather than add_compile_options, so it reaches
+# exactly the targets that opt in. Directory-scoped options would also land on
+# FetchContent dependencies -- googletest is made available inside
+# tests/CMakeLists.txt, which add_subdirectory(tests) pulls into this
+# directory's option scope. Their warnings are not ours to fix, and a target
+# whitelist makes that a property of the design rather than of line order.
+#
+# -Werror is opt-in through KINEMAFORGE_WERROR, which CI sets. Unconditionally
+# would tie the ability to build this project to the compiler version installed
+# on a developer machine: a newer GCC adding one new warning would stop all work
+# until someone cleans up. In CI that tradeoff is correct, locally it is not.
+option(KINEMAFORGE_WERROR "Treat compiler warnings as errors (used by CI)" OFF)
+
+add_library(kinemaforge_warnings INTERFACE)
+
+if (MSVC)
+    # /w14062 is REQUIRED, not decoration. C4062 ("enumerator not handled in
+    # switch, and there is no default label") is a level-4 warning that
+    # Microsoft ships OFF BY DEFAULT, so /W4 alone does not enable it -- and
+    # C4062 is precisely the diagnostic the switch-based protections in this
+    # codebase rely on. Without it an MSVC build would silently accept a new
+    # enumerator with no case, which is the exact regression those protections
+    # exist to prevent. /w1<nnnn> promotes the warning to level 1 so it is
+    # reported at any /W level.
+    #
+    # C4061 is the same diagnostic for a switch that DOES have a default and
+    # still misses enumerators, also off by default. This codebase's house
+    # style is "no default", so C4061 fires only where that style is already
+    # broken -- which makes it worth having.
+    #
+    # NOTE: this branch is unverified. The project builds with MinGW g++; no
+    # MSVC toolchain was available when it was written.
+    target_compile_options(kinemaforge_warnings INTERFACE
+        /W4
+        /w14062
+        /w14061
+    )
+    if (KINEMAFORGE_WERROR)
+        target_compile_options(kinemaforge_warnings INTERFACE /WX)
+    endif()
+else()
+    # -Wswitch is listed explicitly even though -Wall already implies it. This
+    # particular diagnostic is part of an architectural contract stated in
+    # source comments (IkEquationSystem.cpp, UrdfModelLoader.cpp), so it is
+    # named here rather than left to arrive as a side effect of a bundle whose
+    # contents are a compiler-version detail.
+    target_compile_options(kinemaforge_warnings INTERFACE
+        -Wall
+        -Wextra
+        -Wswitch
+    )
+    if (KINEMAFORGE_WERROR)
+        target_compile_options(kinemaforge_warnings INTERFACE -Werror)
+    endif()
+endif()
+
 include(FetchContent)
 
 # --- pugixml (URDF parsing) ---
@@ -45,9 +103,12 @@ add_library(kinemaforge_ik STATIC
 )
 target_include_directories(kinemaforge_ik PUBLIC src)
 target_link_libraries(kinemaforge_ik PUBLIC pugixml::pugixml)
+# PRIVATE: our warning policy is not part of this library's contract. A consumer
+# such as MotionBridge brings its own.
+target_link_libraries(kinemaforge_ik PRIVATE kinemaforge_warnings)
 
 add_executable(${PROJECT_NAME} src/main.cpp)
-target_link_libraries(${PROJECT_NAME} PRIVATE kinemaforge_ik)
+target_link_libraries(${PROJECT_NAME} PRIVATE kinemaforge_ik kinemaforge_warnings)
 
 enable_testing()
 add_subdirectory(tests)

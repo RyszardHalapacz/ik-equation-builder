@@ -27,7 +27,8 @@ add_executable(kinemaforge_tests
     support/NumericForwardKinematics.cpp
     support/TransformComparison.cpp
 )
-target_link_libraries(kinemaforge_tests PRIVATE kinemaforge_ik GTest::gtest_main)
+target_link_libraries(kinemaforge_tests PRIVATE
+    kinemaforge_ik GTest::gtest_main kinemaforge_warnings)
 target_include_directories(kinemaforge_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_definitions(kinemaforge_tests PRIVATE
     KINEMAFORGE_URDF_DATA_DIR="${CMAKE_SOURCE_DIR}/data/urdf"

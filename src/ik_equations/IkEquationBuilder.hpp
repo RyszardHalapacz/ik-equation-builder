@@ -54,9 +54,12 @@ struct IkEquationBuilderError
 //              RobotDescription
 //                     |
 //               KinematicChain
-//                /          \
-//     ForwardKinematics    TCP configuration
-//                \          /
+//                 +---+---+
+//                 |       |
+//     ForwardKinematics   TCP configuration
+//                 |       |
+//                 +---+---+
+//                     |
 //              TcpForwardKinematics
 //
 // A successful step sets its node and clears that node's descendants. The TCP

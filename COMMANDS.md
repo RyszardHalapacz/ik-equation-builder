@@ -20,6 +20,30 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
+## Verifying the warning policy (`-Werror`)
+
+`-Wall -Wextra -Wswitch` are always on for KinemaForge targets; `-Werror` is
+opt-in via `KINEMAFORGE_WERROR`, which CI sets. Verify it in a **separate build
+directory** — reconfiguring `build/` would cache `KINEMAFORGE_WERROR=ON` and turn
+every later local build into a `-Werror` build:
+
+```powershell
+cmake -B build-werror -G Ninja -DKINEMAFORGE_WERROR=ON `
+      -DCMAKE_CXX_COMPILER="C:/Program Files/JetBrains/CLion 2026.1/bin/mingw/bin/g++.exe" `
+      -DCMAKE_MAKE_PROGRAM="C:/PROGRA~1/JETBRA~1/CLION2~1.1/bin/ninja/win/x64/ninja.exe"
+cmake --build build-werror
+ctest --test-dir build-werror --output-on-failure
+```
+
+The two compiler/generator paths are required because **`ninja` is not on PATH**
+— it ships with CLion, and the existing `build/` only works because its cache
+already holds the path. Without them CMake fails with
+`CMAKE_CXX_COMPILER not set, after EnableLanguage`.
+
+Note the two configurations differ in more than warnings: `build/` is
+`Release` (`-DNDEBUG`, assertions compiled out), `build-werror/` has an empty
+build type (assertions live).
+
 ## PowerShell shortcuts (profile)
 
 The following functions are defined in `$PROFILE` (edit: `notepad $PROFILE`, reload: `. $PROFILE`):

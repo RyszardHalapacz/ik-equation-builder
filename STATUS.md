@@ -1,8 +1,18 @@
 # Project Status
 
-**Last updated:** 2026-08-04
+**Last updated:** 2026-08-17
 **Branch:** `main`
 **Build:** clean · **Tests:** 273/273 passing
+
+> **Open code review (2026-08-17).** A full review found 10 issues, all
+> reproduced experimentally; two are HIGH and both sit in the legacy
+> `mt::kinematics` loader. Remediation is stage **F2.3.R**, split across five
+> proposals kept in their own folder:
+> [`proposal/F2.3.R-review-remediation/`](proposal/F2.3.R-review-remediation/README.md)
+> (context and evidence in
+> [the roadmap](proposal/KinemaForge_Phase2_Phase3_Roadmap.md)). It **blocks
+> F2.4**. Nothing in F2.1–F2.3 is being reverted — the review raised no issue
+> against FK, the symbolic layer, the TCP transform or the equation model.
 
 A snapshot of what actually exists in this repo today, and what is still
 declaration-only. The pipeline this project is working toward is described in
@@ -58,7 +68,14 @@ URDF
   ── Phase 2 ──────────────────────────────────────────────
   → TCP transform            ✅ implemented + tested (F2.1/F2.2)
   → IK equation model        ✅ implemented + tested (F2.3)
-  → ConstraintBuilder        ⬜ analysed only, no proposal yet — next (F2.4)
+  ── F2.3.R review remediation — CURRENT, blocks F2.4 ─────
+  → warning policy           ⬜ R1 — next proposal to write
+  → loader topology          ⬜ R2 — HIGH: two confirmed bugs
+  → strict <limit> parsing   ⬜ R3
+  → legacy model boundary    ⬜ R4 — confirmed UB via public API
+  → factory finite invariant ⬜ R5 — may run in parallel
+  ── back to the original plan ────────────────────────────
+  → ConstraintBuilder        ⬜ analysed only, no proposal yet (F2.4)
   → EquationSimplifier       ⬜ nothing
   → EquationSolver           ⬜ nothing (the hard one)
   → IkPatternDetector        ⬜ nothing
@@ -136,12 +153,28 @@ The public surface is one constructor and one method. Everything else lives in
 an anonymous namespace in the `.cpp`.
 
 Preconditions are **asserted, not re-validated** — the loader already guarantees
-finite origins and a normalized axis, and `NDEBUG` is not defined in the default
-build, so the assertions are live:
+finite origins and a normalized axis:
 
 - a fixed joint has no variable; an actuated one has exactly one
 - an actuated joint's axis is unit length
 - the symbol name comes from `joint.variable->name`, never invented here
+
+> **Correction (2026-08-17, found while implementing R1).** An earlier version of
+> this section claimed `NDEBUG` is not defined in the default build, "so the
+> assertions are live". **That was false for the build directory this project
+> actually uses:** `build/CMakeCache.txt` carries
+> `CMAKE_BUILD_TYPE:STRING=Release`, and `CMAKE_CXX_FLAGS_RELEASE` is
+> `-O3 -DNDEBUG`. Both preconditions above are therefore enforced in **neither**
+> the local `build/` nor the 273 tests run from it. The freshly created
+> `build-werror/` has an empty build type, so asserts are live there — the two
+> configurations disagree.
+>
+> This was surfaced by `-Wunused-function` firing on the two assert-only helpers
+> the moment R1 turned warnings on. Whether the default configuration should stay
+> Release, given that the architecture leans on assertions for its precondition
+> contract, is an open decision — it is not R1's to make and it overlaps with
+> R5 (`ExpressionFactory` can produce `ConstantNode{inf}` only when the `assert`
+> in `constant()` is compiled out, which under Release it is).
 
 Four construction decisions, each of which exists because the symbolic layer
 deliberately has no `x * 0 → 0` rule:
@@ -571,11 +604,23 @@ equations and targets — is now implemented. `Equation` is `lhs = rhs` stored a
 given, the right-hand side is an `Expression`, a target rotation is a plain
 row-major 3×3 of doubles, and validation rejects rather than repairs.
 
-**Next is F2.4 — `ConstraintBuilder` for `PositionOnly`**: the translation
-column of `T_base_tcp` against a `PositionTarget`, three equations, assembled
-into an `IkEquationSystem`. That is the first point at which the project
-*formulates* IK rather than describing geometry. The model it emits into now
-exists, so the builder has a contract to satisfy instead of one to invent.
+**Next is F2.3.R — remediation after the 2026-08-17 code review**, not F2.4.
+Five proposals in `proposal/F2.3.R-review-remediation/`, starting with
+`proposal-warning-policy.md` (R1). The two HIGH
+findings both sit in `trace_chain()` in the legacy loader: it assumes URDF
+describes a linear chain when URDF describes a tree, so the same KR4 loads or
+fails depending on the order of two `<joint>` elements, and a cyclic URDF hangs
+the process instead of being rejected. Full evidence and the proposal split are
+in the roadmap under F2.3.R.
+
+**F2.4 — `ConstraintBuilder` for `PositionOnly`** follows the F2.3.R gate: the
+translation column of `T_base_tcp` against a `PositionTarget`, three equations,
+assembled into an `IkEquationSystem`. That is the first point at which the
+project *formulates* IK rather than describing geometry. The model it emits into
+now exists, so the builder has a contract to satisfy instead of one to invent —
+plus one added contractual duty from the review: it must be the sole producer of
+`IkEquationSystem` and guarantee that every symbol its equations use is a
+declared unknown, because `create()` cannot check that yet.
 
 Worth stating plainly before starting: everything built so far was *mechanical
 translation with a known correct answer* — parse, walk, compose, evaluate. What
