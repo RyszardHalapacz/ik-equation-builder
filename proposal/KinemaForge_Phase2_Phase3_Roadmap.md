@@ -1,8 +1,28 @@
 # KinemaForge / IkEquationBuilder — roadmapa Fazy 2 i Fazy 3
 
-**Data:** 2026-08-03  
+**Data:** 2026-08-03 · **ostatnia aktualizacja:** 2026-08-17  
 **Zakres:** rozwój po zakończeniu Fazy 1 (`URDF → zweryfikowane symboliczne FK`)  
 **Założenie wejściowe:** `IkEquationBuilder` jest zaimplementowany, pełny clean build przechodzi, a Faza 1 jest oznaczona jako zakończona.
+
+---
+
+## ▶ Gdzie jesteśmy teraz
+
+```text
+F2.1  transformacja TCP — architektura          ✅ zaimplementowane
+F2.2  transformacja TCP — implementacja         ✅ zaimplementowane
+F2.3  model równań i targetów                   ✅ zaimplementowane
+F2.3.R  remediacja po review kodu               ◀ TUTAJ JESTEŚMY
+F2.4  ConstraintBuilder: PositionOnly           ⬜ zablokowane przez F2.3.R
+F2.5  ConstraintBuilder: FullPose               ⬜
+F2.6  constrainty kierunkowe                    ⬜
+F2.7  integracja z fasadą + milestone           ⬜
+```
+
+Etap `F2.3.R` **nie był planowany** w pierwotnej roadmapie — powstał w reakcji
+na pełne review kodu z 2026-08-17, które wykazało dwa błędy o wysokiej wadze w
+warstwie loadera. Numeracja `F2.3.R` jest celowa: nie przenumerowuje F2.4–F2.7,
+do których odwołuje się już `STATUS.md`.
 
 ---
 
@@ -234,6 +254,251 @@ Do rozstrzygnięcia:
 proposal-ik-equation-model-architecture.md
 proposal-ik-equation-model-implementation.md
 ```
+
+---
+
+## F2.3.R — remediacja po review kodu  ◀ etap bieżący
+
+### Skąd się wziął ten etap
+
+Pełne review kodu (2026-08-17) zgłosiło 10 uwag. **Wszystkie 10 zostało
+odtworzone eksperymentalnie** przed przyjęciem — nie na podstawie samej lektury
+kodu. Review nie zgłosiło żadnej uwagi do FK, warstwy symbolicznej, TCP ani
+modelu równań; wszystkie znaleziska o wysokiej wadze siedzą w starej warstwie
+`mt::kinematics`, czyli w kodzie sprzed właściwego pipeline'u.
+
+Kluczowe: **nic z F2.1–F2.3 nie jest cofane ani przepisywane.** Nowy kod okazał
+się mocniejszy od starego loadera i to stary loader jest przedmiotem tego etapu.
+
+### Dowody — co dokładnie odtworzono
+
+```text
+ten sam KR4, dwa uporządkowania XML:
+    kr4_r600.urdf                 → accepted, chain = 6 actuated joints
+    kr4_r600.urdf (2 jointy swap) → REJECTED, incomplete_kinematic_chain
+
+URDF z cyklem root→A→B→A:
+    load_urdf(...)                → nie kończy się w 8 s (exit 124)
+
+URDF rozspójniony (dwa korzenie):
+    2 jointy w pliku              → ACCEPTED, chain = 1 joint
+                                    (drugie poddrzewo znika po cichu,
+                                     wybór korzenia zależy od kolejności
+                                     iteracji unordered_map)
+
+<limit velocity="1" effort="1"/> bez lower/upper:
+    accepted, limits = [0, 0]     → joint aktuowany zamrożony po cichu
+<limit lower="banana" .../>       → accepted
+<limit velocity="nan" .../>       → accepted
+
+within_limits({NaN})              → true
+build(robot{links={"base"}}, "base", "ghost") → ACCEPTED
+
+Release (-DNDEBUG), 1e308 * 1e308:
+    isConstant = true, constantValue = inf   → inwariant DAG złamany
+
+g++ -Wall -Wextra -Werror na rdzeniu:
+    dokładnie 2 błędy, nic więcej
+```
+
+### Podział na proposale
+
+Grupowanie po warstwie, nie po kolejności uwag w review — jeden proposal dotyka
+jednej warstwy.
+
+Wszystkie dokumenty tego etapu żyją w **osobnym podfolderze**, bo nie są
+kolejnym krokiem funkcjonalnym roadmapy, a naprawą znalezisk — i mają dać się
+czytać jako jedna paczka:
+
+```text
+proposal/F2.3.R-review-remediation/
+```
+
+Indeks etapu:
+[`F2.3.R-review-remediation/README.md`](F2.3.R-review-remediation/README.md).
+
+| # | Proposal (w `F2.3.R-review-remediation/`) | Uwagi z review | Waga |
+|---|---|---|---|
+| R1 | `proposal-warning-policy.md` | 8, 9 | MEDIUM (proces) |
+| R2 | `proposal-loader-topology-architecture.md` + `-implementation.md` | 1, 2, 3 + znalezisko dodatkowe | **HIGH** |
+| R3 | `proposal-loader-limits-strict-parsing-architecture.md` + `-implementation.md` | 4 | MEDIUM/HIGH |
+| R4 | `proposal-legacy-robot-model-boundary-architecture.md` + `-implementation.md` | 5, 6 | MEDIUM |
+| R5 | `proposal-expression-factory-finite-invariant-architecture.md` + `-implementation.md` | 7 | MEDIUM |
+
+Uwaga 10 nie dostaje własnego proposala — wchodzi jako warunek kontraktowy do
+F2.4 (szczegóły niżej).
+
+`R1` jest jednym dokumentem, nie parą — precedens: `proposal-loader-test-coverage.md`.
+Pozostałe idą parami architektura + implementacja, zgodnie z resztą repo.
+
+### Kolejność i uzasadnienie
+
+```text
+R1 → R2 → R3 → R4 → R5 → F2.4
+              (R5 może iść równolegle — nie dotyka loadera)
+```
+
+**R1 jest pierwsze, nie ostatnie**, i to jedyne odstępstwo od kolejności
+proponowanej w review. Powód: R1 to dwie jednoliniowe poprawki plus flagi w
+CMake, a jednocześnie jest to *mechanizm ochronny* dla wszystkich kolejnych
+zmian. Zrobione na końcu oznaczałoby, że R2–R5 pisze się bez tej ochrony —
+a R1 zawiera dokładnie tę ochronę, która wyłapuje regresję z uwagi 9.
+
+### R1 — polityka ostrzeżeń
+
+Zakres:
+
+- `-Wall -Wextra` dla całego projektu, `-Werror` **tylko w CI** (nie w buildzie
+  lokalnym — nowa wersja kompilatora nie powinna blokować pracy);
+- naprawa dwóch istniejących naruszeń: `IkEquationBuilder.hpp:57` (diagram ASCII
+  kończący linię `\`) i `KinematicChainBuilder.cpp:59` (`Frame{baseLink}`);
+- utwardzenie `mapJointType` w `UrdfModelLoader.cpp:12` — samo usunięcie
+  `return JointType::Fixed` nie wystarczy, bo funkcja „spadnie z końca" przy
+  wartości podrobionej. Wzorem ma być rozwiązanie już zastosowane dla
+  `IkTaskKind`: wyczerpujący `switch` **plus** jawne odrzucenie wartości spoza
+  enumeratorów. Dwa różne zagrożenia, żadne nie zastępuje drugiego.
+
+Gate:
+
+```text
+-Wall -Wextra -Werror przechodzi na całym rdzeniu
+dodanie enumeratora do mt::kinematics::JointType wywala build
+```
+
+### R2 — topologia loadera (najważniejsze)
+
+Uwagi 1, 2, 3 to trzy objawy jednej przyczyny: `trace_chain()` udaje, że URDF
+opisuje łańcuch liniowy, podczas gdy URDF opisuje drzewo.
+
+Do rozstrzygnięcia w proposalu architektonicznym:
+
+- czy `trace_chain()` **usunąć w całości** (rekomendacja review i moja) — jego
+  wynik `RobotModel::chain()` nie jest używany nigdzie w `src/`, a właściwy
+  wybór ścieżki robi już `KinematicChainBuilder`, który rozumie branching;
+- co wchodzi w miejsce: **walidacja drzewa**, nie wybór arbitralnej ścieżki —
+  każdy `joint.parent`/`joint.child` musi istnieć w `<link>`, żaden link nie może
+  być dzieckiem dwóch jointów, cykl musi być odrzucony, a korzeń musi być
+  **jednoznaczny** (dziś rozspójniony URDF przechodzi i po cichu gubi poddrzewo,
+  a wybór korzenia zależy od kolejności iteracji `unordered_map` — czyli nawet
+  nie od kolejności XML);
+- konsekwencja dla `KinematicChainBuilder`: po tej gwarancji unia
+  `knownLinks` z jointów (linie 119–129) ma **zniknąć**, nie zostać. Dziś ta unia
+  powoduje, że `BaseLinkNotFound`/`ToolLinkNotFound` nie mogą zadziałać dla
+  linku wspomnianego w jakimkolwiek joincie — kody błędów są słabsze, niż wyglądają;
+- nowe kody błędów i ich kolejność sprawdzania (repo ma już ustalony wzorzec
+  determinizmu z `IkEquationSystem::create`);
+- czy `RobotModel::chain()` / `set_chain()` znikają razem z tym (styk z R4).
+
+Testy minimalne:
+
+```text
+AcceptsBranchingTree
+RejectsUndeclaredParentLink
+RejectsUndeclaredChildLink
+RejectsLinkClaimedByTwoJoints
+RejectsCyclicTopology
+RejectsDisconnectedForest
+LoadsIdenticallyRegardlessOfJointOrderInXml
+BuildsKr4RegardlessOfJointOrder
+```
+
+Ostatnie dwa są istotą tego etapu: **wynik loadera nie może zależeć od kolejności
+elementów w XML.**
+
+### R3 — ścisłe parsowanie `<limit>`
+
+Uwaga 4. `<limit>` ma być walidowany tak samo rygorystycznie jak `xyz`/`rpy`,
+które mają własny parser oparty na `std::from_chars`. Dziś jest na
+`as_double()`, co daje `0.0` dla brakującego **i** dla niepoprawnego atrybutu.
+
+Do rozstrzygnięcia:
+
+- czy brak `lower`/`upper` to błąd, czy udokumentowany default — dziś cicho daje
+  `[0, 0]`, czyli **zamraża joint aktuowany**, co jest gorsze niż odrzucenie;
+- czy `velocity`/`effort` są wymagane (URDF mówi, że tak, dla revolute/prismatic);
+- czy `velocity`/`effort` muszą być nieujemne, nie tylko skończone;
+- co z `JointLimits::hasPositionLimits`, które istnieje w modelu domenowym, ale
+  nie jest dziś przez loader ustawiane — to jest już przygotowane pole pod
+  `continuous`.
+
+Testy minimalne:
+
+```text
+RejectsMissingLowerLimit          RejectsMalformedLowerLimit
+RejectsMissingUpperLimit          RejectsMalformedUpperLimit
+RejectsMissingVelocity            RejectsNonFiniteVelocity
+RejectsMissingEffort              RejectsNonFiniteEffort
+RejectsNegativeVelocity           AcceptsZeroWidthLimitRange
+```
+
+### R4 — granica starej warstwy `mt::kinematics`
+
+Uwagi 5 i 6.
+
+- `within_limits` zwraca `true` dla `NaN`, bo obie relacje porównania są wtedy
+  fałszywe. Poprawka jednoliniowa (`!isfinite(v) → false`).
+- `set_chain()` jest publiczne, a `joints_[chain_[k]]` nieindeksowane —
+  sanitizer łapie heap-buffer-overflow. **To realne UB, nie teoretyczne.**
+
+Decyzja do podjęcia: bounds check czy zwężenie API. Skłaniam się do zwężenia
+(zgodnie z review), bo `chain()` jest w `src/` nieużywane, a cała ta warstwa jest
+legacy — dodawanie do niej zabezpieczeń utrwala API, które prawdopodobnie ma
+zniknąć. Proposal ma rozstrzygnąć, czy `set_chain`/`chain`/`within_limits`
+zostają, czy padają razem z `trace_chain()` z R2.
+
+### R5 — inwariant skończoności w `ExpressionFactory`
+
+Uwaga 7. `ExpressionFactory` obiecuje, że stałe są skończone (`assert` w
+`constant()`), ale constant folding może samo wyprodukować `inf` z dwóch
+legalnych operandów. W Release `assert` znika i `ConstantNode{inf}` powstaje.
+
+Rekomendowany kierunek (z review, i zgadzam się): fold tylko wtedy, gdy wynik
+jest skończony; w przeciwnym razie zbuduj normalny węzeł operacji i pozwól
+`ExpressionEvaluator` zwrócić `NonFiniteResult` — czyli wykorzystaj istniejący
+model błędów, zamiast dodawać nowy.
+
+**Zakres szerszy niż w review:** dotyczy `add`, `subtract`, `multiply` **i**
+`divide`, nie tylko `multiply`. `divide` ma już `assert(!isZero(rhs))`, ale
+`1e308 / 1e-308` też daje `inf`. Poprawka musi być jednolita dla wszystkich
+czterech, inaczej inwariant zostaje połowiczny.
+
+Testy minimalne:
+
+```text
+DoesNotFoldOverflowingProduct     DoesNotFoldOverflowingSum
+DoesNotFoldOverflowingDifference  DoesNotFoldOverflowingQuotient
+OverflowingFoldEvaluatesToNonFiniteResult
+AllConstantLeavesRemainFinite
+```
+
+### Uwaga 10 — poza tym etapem
+
+`IkEquationSystem::create` przyjmuje system, którego równania zależą od symbolu
+niebędącego na liście `unknowns` (sprawdzone: `unknowns = {q1}`, równanie na
+`q999` → accepted). Zgadzam się z oceną review, że **nie jest to błąd F2.3** —
+proposal F2.3 świadomie nie deklarował tego inwariantu, a jego sprawdzenie
+wymaga kolektora symboli, którego nie ma.
+
+Nie zakładam więc dla tego proposala. Zamiast tego wchodzi jako **warunek
+kontraktowy do F2.4**: `ConstraintBuilder` musi być jedynym producentem
+`IkEquationSystem` i sam gwarantować spójność zbioru symboli. Pełna walidacja
+wróci, gdy powstanie kolektor symboli — najpóźniej przed F3.
+
+### Definition of Done etapu F2.3.R
+
+```text
+wynik loadera nie zależy od kolejności XML
+URDF z cyklem jest odrzucany, nie zawiesza procesu
+URDF rozspójniony jest odrzucany, nie gubi po cichu poddrzewa
+odwołanie do niezadeklarowanego <link> jest odrzucane w loaderze
+<limit> walidowany tak samo ściśle jak xyz/rpy
+ExpressionFactory nie potrafi wyprodukować nieskończonej stałej
+brak UB w mt::kinematics osiągalnego z publicznego API
+-Wall -Wextra -Werror przechodzi
+pełny zestaw testów przechodzi
+```
+
+Dopiero po tym gate'cie wchodzi F2.4.
 
 ---
 
@@ -801,13 +1066,38 @@ v1.0-analytic-ik
 ## Faza 2
 
 ```text
-proposal-tcp-transform-architecture.md
-proposal-tcp-transform-implementation.md
-implementation + tests
+proposal-tcp-transform-architecture.md              ✅ zaimplementowane
+proposal-tcp-transform-implementation.md            ✅ zaimplementowane
 
-proposal-ik-equation-model-architecture.md
-proposal-ik-equation-model-implementation.md
-implementation + tests
+proposal-ik-equation-model-architecture.md          ✅ zaimplementowane
+proposal-ik-equation-model-implementation.md        ✅ zaimplementowane
+
+--- F2.3.R: remediacja po review kodu (etap bieżący) ---
+--- wszystko w F2.3.R-review-remediation/            ---
+
+F2.3.R-review-remediation/
+    README.md                                       ✅ indeks etapu
+
+    proposal-warning-policy.md                      ◀ R1, następny do napisania
+    implementation + tests
+
+    proposal-loader-topology-architecture.md        ◀ R2
+    proposal-loader-topology-implementation.md
+    implementation + tests
+
+    proposal-loader-limits-strict-parsing-architecture.md      ◀ R3
+    proposal-loader-limits-strict-parsing-implementation.md
+    implementation + tests
+
+    proposal-legacy-robot-model-boundary-architecture.md       ◀ R4
+    proposal-legacy-robot-model-boundary-implementation.md
+    implementation + tests
+
+    proposal-expression-factory-finite-invariant-architecture.md    ◀ R5
+    proposal-expression-factory-finite-invariant-implementation.md
+    implementation + tests
+
+--- powrót do planu pierwotnego, znów w proposal/ ---
 
 proposal-constraint-builder-position-architecture.md
 proposal-constraint-builder-position-implementation.md
@@ -858,7 +1148,8 @@ F3.10 singularności
 ```text
 Faza 2:
     2 główne komponenty
-    7 etapów realizacyjnych
+    7 etapów realizacyjnych planowanych
+  + 1 etap remediacyjny (F2.3.R, 5 proposali) dodany po review 2026-08-17
 
 Faza 3:
     4 główne komponenty
@@ -871,12 +1162,22 @@ Nie oznacza to, że Faza 3 jest tylko dwa razy większa. Etapy solvera są badaw
 
 # 6. Najbliższy krok
 
-Po domknięciu fasady Fazy 1:
+**Stan na 2026-08-17.** F2.1–F2.3 są zaimplementowane. Etapem bieżącym jest
+`F2.3.R` — remediacja po review kodu — i pierwszym dokumentem do napisania jest:
 
 ```text
-proposal-tcp-transform-architecture.md
+proposal/F2.3.R-review-remediation/proposal-warning-policy.md          (R1)
 ```
 
-Pierwszy etap Fazy 2 ma odpowiedzieć wyłącznie na pytanie:
+R1 ma odpowiedzieć wyłącznie na pytanie:
 
-> Jak reprezentujemy, walidujemy, składamy i unieważniamy stałą transformację `tool0 → TCP`, nie wprowadzając jeszcze targetów ani równań IK?
+> Jakie ostrzeżenia włączamy, gdzie `-Werror` obowiązuje, i jak sprawić, żeby
+> ochrona, na którą kod już się w komentarzach powołuje (`-Wswitch` łapiący nowy
+> enumerator), rzeczywiście istniała — nie ruszając przy tym logiki?
+
+Dwa naruszenia, które trzeba przy tym naprawić, są znane i jednoliniowe:
+`IkEquationBuilder.hpp:57` oraz `KinematicChainBuilder.cpp:59`.
+
+Po R1 idzie R2 (topologia loadera) jako znalezisko o najwyższej wadze. F2.4
+`ConstraintBuilder` jest **zablokowane** do zamknięcia gate'u F2.3.R — z jednym
+wyjątkiem: R5 nie dotyka loadera i może iść równolegle.
