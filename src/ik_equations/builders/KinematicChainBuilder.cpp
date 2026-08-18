@@ -117,17 +117,21 @@ std::expected<KinematicChain, KinematicChainError> KinematicChainBuilder::build(
     const std::string& baseLink,
     const std::string& toolLink) const
 {
-    // robot_model_loader.cpp doesn't cross-check <link> declarations against
-    // joint parent/child references, so RobotDescription.links alone isn't
-    // a reliable "does this link exist" source — union with joint references.
-    std::unordered_set<std::string> knownLinks;
+    // Declared links are the only source of "does this link exist".
+    //
+    // This used to be a union of robot.links with every joint parent/child
+    // reference, because the loader did not cross-check the two. That workaround
+    // made BaseLinkNotFound and ToolLinkNotFound unable to fire for any name
+    // mentioned in any joint: a typo in <parent link="bas"/> silently created a
+    // usable frame `bas`. load_urdf now guarantees that joint references resolve
+    // to declared links, so the union is not only unnecessary but harmful.
+    //
+    // That guarantee belongs to the loader, not to the type: RobotDescription is
+    // a plain aggregate and a hand-built one promises nothing, exactly as with
+    // its geometry.
+    std::unordered_set<std::string_view> knownLinks;
     for (auto const& link : robot.links)
         knownLinks.insert(link.name);
-    for (auto const& joint : robot.joints)
-    {
-        knownLinks.insert(joint.parentLink);
-        knownLinks.insert(joint.childLink);
-    }
 
     if (!knownLinks.contains(baseLink))
         return std::unexpected(KinematicChainError::BaseLinkNotFound);

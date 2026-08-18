@@ -43,29 +43,41 @@ struct Link {
     std::string name;
 };
 
+// Storage model used by the URDF loader.
+//
+// When produced by load_urdf(), links and joints correspond to the validated
+// URDF declarations and preserve file order. The type itself guarantees neither:
+// set_name(), add_link() and add_joint() are public, so a caller can build one
+// by hand. Validation is the loader's contract, not this aggregate's.
+//
+// This type deliberately does NOT hold a kinematic chain. It used to: chain_
+// carried the indices of one traced linear path, filled by trace_chain() in the
+// loader. That was removed because URDF describes a tree, so selecting one path
+// needs a base and a tool link, which only a caller knows -- see
+// KinematicChainBuilder, which makes that choice and understands branching.
+//
+// within_limits() went with it. It checked a joint configuration against the
+// chain, so with no chain it had nothing to check against; it also had no caller
+// anywhere in this repository. A limits check belongs where joint order is
+// meaningful -- the ik layer, against KinematicChain -- and whoever writes it
+// must reject NaN explicitly: `v < lower || v > upper` is false for NaN, which
+// is how the removed version accepted it.
 class RobotModel {
 public:
     [[nodiscard]] std::string_view name() const noexcept;
 
-    [[nodiscard]] std::span<Link const>        links()  const noexcept;
-    [[nodiscard]] std::span<Joint const>       joints() const noexcept;
-    [[nodiscard]] std::span<std::size_t const> chain()  const noexcept;
+    [[nodiscard]] std::span<Link const>  links()  const noexcept;
+    [[nodiscard]] std::span<Joint const> joints() const noexcept;
 
-    // True jeśli każdy joint_values[i] mieści się w limits actuated joint chain()[i].
-    // Rozmiar joint_values musi być równy chain().size(); inaczej false.
-    [[nodiscard]] bool within_limits(std::span<double const> joint_values) const noexcept;
-
-    // Builder API — używany przez loader.
+    // Builder API — used by the loader.
     void set_name(std::string n);
     void add_link(Link l);
     void add_joint(Joint j);
-    void set_chain(std::vector<std::size_t> indices);
 
 private:
-    std::string              name_;
-    std::vector<Link>        links_;
-    std::vector<Joint>       joints_;
-    std::vector<std::size_t> chain_;  // indeksy w joints_, tylko actuated
+    std::string        name_;
+    std::vector<Link>  links_;
+    std::vector<Joint> joints_;
 };
 
 }  // namespace mt::kinematics

@@ -1,4 +1,4 @@
-# Proposal: topologia loadera — architektura (R2)
+# Proposal: topologia loadera — architektura (R2, v3 — APPROVED)
 
 ## Prompt
 
@@ -13,6 +13,41 @@
 > walidować drzewo, a nie wybierać arbitralny linear chain.
 
 Etap `F2.3.R`, dokument **R2**. Najwyższa waga w całym etapie.
+
+## Historia wersji
+
+**v1 → v2** po review (verdykt: *approve with changes*). Przyjęte wszystkie
+siedem wymaganych poprawek:
+
+| # | Poprawka z review | Gdzie |
+|---|---|---|
+| 1 | brakował inwariant unikalności i niepustości nazw `<link>` | 4, T0a/T0b |
+| 2 | przypadek 0 jointów był rozstrzygnięty **źle** i przeczył T5 | 4.2 |
+| 3 | `roots == 0` to **pewny cykl**, nie rozspójnienie | 5.1, 6 |
+| 4 | algorytm T4 nie zgadzał się z obiecywaną diagnostyką `rawValue` | 5.3, 6.2 |
+| 5 | „cztery pozycje" — jest ich **sześć** | 5.1 |
+| 6 | R2 samo zmienia obserwowalne zachowanie `RobotModel` → zależność merge R2↔R4 | 7 |
+| 7 | arbitralny limit `L + J + 1` do usunięcia | 6.3 |
+
+Plus dwie korekty redakcyjne z review: precyzyjne sformułowanie o zasięgu zmiany
+`LoadErrorCode` (8.1) i przeformułowany gate niezależności od kolejności XML (9.2).
+
+**v2 → v3: APPROVED.** Dwa kontrakty implementacyjne dopisane na wniosek review,
+bez zmian w architekturze i bez nowych kodów błędów:
+
+| # | Zapis | Gdzie |
+|---|---|---|
+| 8 | raportowanego diagnostycznie linku nie wolno wybierać przez iterację po kontenerze haszującym | **5.4** (nowa sekcja) |
+| 9 | kolejność `T0→…→T5` jest kontraktem w obrębie walidacji topologii, nie globalnym priorytetem błędów loadera | 5.2 |
+
+Punkt 8 jest antyregresyjny: bez niego nowa walidacja odtworzyłaby w ścieżce
+komunikatów dokładnie tę zależność od kolejności hashowania, którą R2 usuwa z
+`trace_chain`. Punkt 9 wynika ze zweryfikowanej kolejności etapów w `load_urdf`.
+
+**Status: zatwierdzone. Następny dokument — `proposal-loader-topology-implementation.md`.**
+
+Zamknięte decyzją review: ostrzeżenie „< 6 DOF" **usuwamy i nie odtwarzamy**;
+pełna ścieżka cyklu **nie jest potrzebna**.
 
 ## Status weryfikacji
 
@@ -35,14 +70,27 @@ Wszystkie objawy odtworzone na `main` (`9d2ceb2`) uruchomieniem, nie z lektury.
                                         drugie poddrzewo znika bez śladu
 ```
 
+**Zweryfikowane w v2:** oba fixture'y spełniają proponowane niezmienniki, więc
+nowa walidacja nie odrzuci własnych danych projektu:
+
+```text
+kr4_r600.urdf   10 <link>, 10 unikalnych, 0 pustych nazw, wszystkie
+                odwołania parent/child mają deklarację
+kr640.urdf       8 <link>,  8 unikalnych, 0 pustych nazw, jak wyżej
+```
+
+W v1 było to otwartym ryzykiem („do sprawdzenia przed implementacją"). Jest
+sprawdzone i zamknięte.
+
 ## 1. Cel i zakres
 
 **W zakresie:** ustalenie, co loader ma gwarantować o topologii, i usunięcie
 `trace_chain()` jako mechanizmu wyboru ścieżki.
 
-**Poza zakresem:** `<limit>` (R3), granica `RobotModel`/`within_limits` (R4),
-`continuous` jako funkcjonalność, jakakolwiek zmiana w `KinematicChainBuilder`
-poza usunięciem unii `knownLinks`.
+**Poza zakresem:** `<limit>` (R3), projekt `RobotModel`/`within_limits` (R4),
+`continuous` jako funkcjonalność, unikalność `joint.name` (nie jest konieczna do
+poprawności grafu `parent→child` — świadomie odłożona), jakakolwiek zmiana w
+`KinematicChainBuilder` poza usunięciem unii `knownLinks`.
 
 ## 2. Stan obecny — zweryfikowany w plikach
 
@@ -79,17 +127,17 @@ kończy się na `base`, `chain` jest pusta i loader zwraca
 `incomplete_kinematic_chain`.
 
 **(b) Brak `visited` → pętla nieskończona.** Pętla `while (parent_to_idx.contains(current))`
-nie ma ani zbioru odwiedzonych, ani limitu kroków. Dla cyklu `root→A, A→B, B→A`
-korzeń zostaje znaleziony poprawnie (`root` nie jest niczyim dzieckiem), a potem
-pętla krąży `A→B→A→B…` w nieskończoność, dopisując indeksy do `chain` — czyli
-jest to zawieszenie **z nieograniczonym wzrostem pamięci**.
+nie ma zbioru odwiedzonych. Dla cyklu `root→A, A→B, B→A` korzeń zostaje
+znaleziony poprawnie, a potem pętla krąży `A→B→A→B…` w nieskończoność, dopisując
+indeksy do `chain` — czyli jest to zawieszenie **z nieograniczonym wzrostem
+pamięci**.
 
-Sytuacja jest szczególnie niefortunna, bo `KinematicChainBuilder` **ma** wykrywanie
-cyklu (`PathSearchResult::CycleDetected`, `KinematicChainBuilder.cpp:79–80`) —
-tylko nigdy się do niego nie dochodzi, bo loader wiesza się wcześniej.
+`KinematicChainBuilder` **ma** wykrywanie cyklu (`PathSearchResult::CycleDetected`,
+`KinematicChainBuilder.cpp:79–80`) — tylko nigdy się do niego nie dochodzi, bo
+loader wiesza się wcześniej.
 
-**(c) Wybór korzenia zależy od kolejności iteracji hash mapy** — to znalezisko
-dodatkowe, nie z review, i objawowo najgroźniejsze:
+**(c) Wybór korzenia zależy od kolejności iteracji hash mapy** — znalezisko
+dodatkowe, objawowo najgroźniejsze:
 
 ```cpp
 for (auto const& [parent, _] : parent_to_idx) {
@@ -98,27 +146,18 @@ for (auto const& [parent, _] : parent_to_idx) {
 ```
 
 Przy dwóch rozłącznych poddrzewach oba korzenie spełniają warunek, a `break`
-bierze pierwszy **w kolejności iteracji `unordered_map`** — czyli nie w
-kolejności XML, tylko w kolejności zależnej od implementacji biblioteki
-standardowej. Test: plik z dwoma jointami w dwóch poddrzewach przechodzi jako
-poprawny i zwraca `chain` o długości 1.
+bierze pierwszy **w kolejności iteracji `unordered_map`** — nie w kolejności XML,
+tylko w kolejności zależnej od implementacji biblioteki standardowej.
 
-Różnica wagi wobec (a): (a) daje **fałszywe odrzucenie** poprawnego robota — głośne
-i łatwe do zauważenia. (c) daje **cichą złą odpowiedź** — model przechodzi
-walidację, a połowa robota po prostu nie istnieje.
+Różnica wagi wobec (a): (a) daje **fałszywe odrzucenie** poprawnego robota —
+głośne i łatwe do zauważenia. (c) daje **cichą złą odpowiedź** — model przechodzi
+walidację, a połowa robota nie istnieje.
 
 ### 2.2 Wynik `trace_chain()` nie jest nigdzie używany
 
-Sprawdzone: `RobotModel::chain()` nie ma w `src/` żadnego konsumenta poza
-`within_limits()` w tym samym pliku. `UrdfModelLoader::load` przepisuje
-`links()` i `joints()` do `RobotDescription` i **`chain()` ignoruje** —
-`UrdfModelLoader.cpp:93–97`.
-
-Właściwy wybór ścieżki robi `KinematicChainBuilder`, który rozumie branching:
-
-```cpp
-std::unordered_map<std::string_view, std::vector<std::size_t>> childrenOf;
-```
+`RobotModel::chain()` nie ma w `src/` konsumenta poza `within_limits()` w tym
+samym pliku. `UrdfModelLoader::load` przepisuje `links()` i `joints()` do
+`RobotDescription` i **`chain()` ignoruje** (`UrdfModelLoader.cpp:93–97`).
 
 Czyli mamy dwie warstwy wyboru ścieżki: jedną wadliwą i nieużywaną, drugą
 poprawną i używaną. Wadliwa może odrzucić model, z którym poprawna poradziłaby
@@ -127,36 +166,40 @@ sobie bez problemu.
 ### 2.3 Brak walidacji istnienia linków
 
 Loader czyta `<link>` do `links_` i osobno `<parent link=...>`/`<child link=...>`
-do jointów, **nie sprawdzając, czy odwołanie do linku ma pokrycie w deklaracji**.
-Wynikowy `RobotDescription` może więc zawierać joint wskazujący na link, którego
-w URDF nie ma.
+do jointów, **nie sprawdzając, czy odwołanie ma pokrycie w deklaracji**.
 
-`KinematicChainBuilder` to obchodzi, robiąc unię (`KinematicChainBuilder.cpp:119–129`):
+`KinematicChainBuilder` to obchodzi unią (`KinematicChainBuilder.cpp:119–129`).
+Konsekwencja, której komentarz nie odnotowuje: **`BaseLinkNotFound` i
+`ToolLinkNotFound` nie mogą zadziałać dla żadnej nazwy wspomnianej w jakimkolwiek
+joincie.** Literówka w `<parent link="bas"/>` tworzy legalny frame `bas`.
+
+### 2.4 Brak walidacji samych deklaracji `<link>` — dodane w v2
 
 ```cpp
-// robot_model_loader.cpp doesn't cross-check <link> declarations against
-// joint parent/child references, so RobotDescription.links alone isn't
-// a reliable "does this link exist" source — union with joint references.
+for (auto node : robot.children("link"))
+    out.model.add_link(Link{.name = node.attribute("name").as_string()});
 ```
 
-Motywacja jest zrozumiała, ale skutek — niebezpieczny. Konsekwencja, której
-komentarz nie odnotowuje: **`BaseLinkNotFound` i `ToolLinkNotFound` nie mogą
-zadziałać dla żadnej nazwy wspomnianej w jakimkolwiek joincie.** Literówka w
-`<parent link="bas"/>` tworzy legalny frame `bas`, względem którego można
-zbudować transformację. Kody błędów są słabsze, niż wyglądają.
+Ani niepustość, ani unikalność. Dla:
+
+```xml
+<link name="A"/>
+<link name="A"/>
+```
+
+powstają **dwa** elementy `links_`, ale każdy zbiór nazw zapadnie je w jeden.
+To nie jest kosmetyczna walidacja URDF-a: **`link.name` jest w tym kodzie
+tożsamością węzła grafu.** Bez unikalnej tożsamości wszystkie dalsze niezmienniki
+pracują na niejednoznacznym modelu, więc twierdzenie „graf został zwalidowany"
+byłoby puste.
 
 ## 3. Decyzja podstawowa: `trace_chain()` znika
-
-Trzy warianty:
 
 | Wariant | Ocena |
 |---|---|
 | **A.** Naprawić `trace_chain()`: `vector` dzieci, `visited`, wybór gałęzi | Odrzucony. Powstałby drugi, konkurencyjny mechanizm wyboru ścieżki obok `KinematicChainBuilder` — z pytaniem „którą gałąź wybrać", na które loader **nie ma prawa odpowiadać**, bo nie zna `baseLink`/`toolLink`. |
-| **B.** Usunąć `trace_chain()`, w jego miejsce walidacja drzewa | **Wybrany.** Loader odpowiada za „czy ten plik opisuje poprawne drzewo", `KinematicChainBuilder` za „którą ścieżkę w tym drzewie chcę". |
-| **C.** Usunąć `trace_chain()` bez zamiennika | Odrzucony. Cykl i rozspójnienie przeszłyby do `RobotDescription`; `KinematicChainBuilder` wykryje cykl na *swojej ścieżce*, ale nie odrzuci pliku z cyklem w gałęzi bocznej. |
-
-Wariant B jest tym, co rekomenduje review, i zgadzam się bez zastrzeżeń.
-Podział odpowiedzialności:
+| **B.** Usunąć `trace_chain()`, w jego miejsce walidacja drzewa | **Wybrany.** |
+| **C.** Usunąć bez zamiennika | Odrzucony. Cykl i rozspójnienie przeszłyby do `RobotDescription`; `KinematicChainBuilder` wykryje cykl na *swojej ścieżce*, ale nie odrzuci pliku z cyklem w gałęzi bocznej. |
 
 ```text
 UrdfModelLoader / load_urdf
@@ -167,146 +210,305 @@ KinematicChainBuilder
     wybór konkretnej ścieżki base → tool w tym drzewie
 ```
 
-## 4. Co znaczy „poprawne drzewo" — pięć niezmienników
-
-Loader ma gwarantować wszystkie pięć. Kolejność sprawdzania jest częścią
-kontraktu (patrz 5.2).
+## 4. Co znaczy „poprawne drzewo" — siedem niezmienników
 
 | # | Niezmiennik | Dziś |
 |---|---|---|
-| T1 | każdy `joint.parent_link` istnieje w `<link>` | **nie sprawdzane** |
-| T2 | każdy `joint.child_link` istnieje w `<link>` | **nie sprawdzane** |
-| T3 | żaden link nie jest dzieckiem dwóch jointów | nie sprawdzane w loaderze; `KinematicChainBuilder` ma `InvalidRobotDescription`, ale tylko dla ścieżki, którą idzie |
+| **T0a** | każdy `<link>` ma niepustą nazwę | **nie sprawdzane** (dodane w v2) |
+| **T0b** | nazwy `<link>` są unikalne | **nie sprawdzane** (dodane w v2) |
+| T1 | każdy `joint.parent_link` istnieje w `<link>` | nie sprawdzane |
+| T2 | każdy `joint.child_link` istnieje w `<link>` | nie sprawdzane |
+| T3 | żaden link nie jest dzieckiem dwóch jointów | nie w loaderze; `KinematicChainBuilder` ma `InvalidRobotDescription`, ale tylko dla swojej ścieżki |
 | T4 | graf nie zawiera cyklu | **wiesza proces** |
 | T5 | dokładnie jeden korzeń — graf jest spójny | **przechodzi i gubi poddrzewo** |
 
-Uwagi do poszczególnych:
+**T0 poprzedza wszystko** i to jest wymuszone, nie stylistyczne: T0b ustala
+tożsamość węzłów. Bez niej zbiór wierzchołków grafu nie jest dobrze określony,
+a T1–T5 orzekają o obiekcie, którego nie ma.
 
 **T3 jest tym, co czyni graf drzewem.** W drzewie każdy węzeł ma co najwyżej
-jednego rodzica. Bez T3 „drzewo" jest w istocie DAG-iem i pojęcie
-`T_parent_child` traci jednoznaczność.
+jednego rodzica. Bez T3 „drzewo" jest DAG-iem i `T_parent_child` traci
+jednoznaczność.
 
-**T4 wynika częściowo z T3 + T5, ale nie w całości.** Przy T3 i jednym korzeniu
-cykl musiałby być rozłączny z korzeniem — a to wyłapuje T5. Mimo to T4 zostaje
-jako **jawne sprawdzenie**, nie jako wniosek: zależność jest subtelna, a koszt
-jednego przejścia po grafie jest pomijalny. Wnioskowanie „to już wynika z
-tamtego" jest dokładnie tym rodzajem rozumowania, po którym zostaje luka.
+### 4.1 Unikalność `joint.name` — świadomie poza zakresem
 
-**T5 wymaga rozstrzygnięcia dla przypadku zerowego.** URDF z zerem jointów ma
-zero korzeni. Czy to błąd?
+Nie jest konieczna do poprawności grafu `parent→child`: tożsamością węzła jest
+nazwa linku, nie jointu. Dwa jointy o tej samej nazwie i różnych końcach dają
+poprawne drzewo. Zostawione poza R2 zgodnie z review; wróci, jeśli okaże się
+potrzebne przy diagnostyce.
 
-> **Do rozstrzygnięcia w review.** Rekomendacja: **nie** jest błędem na poziomie
-> loadera, jeśli plik ma co najmniej jeden `<link>`. Powód: `KinematicChain`
-> dopuszcza `baseLink == toolLink` z pustym łańcuchem jako sukces, więc pojęcie
-> „robot bez jointów" jest już w projekcie legalne. Plik z zerem linków **i**
-> zerem jointów to natomiast `parse_failure` — nie ma czego opisywać.
+### 4.2 Przypadek zerowy — v1 rozstrzygało to **źle**
 
-### 4.1 Czego loader dalej **nie** gwarantuje
+> v1 rekomendowało: „URDF z zerem jointów nie jest błędem, jeśli ma co najmniej
+> jeden `<link>`". Review słusznie wykazało, że to **przeczy T5**: dwa linki i
+> zero jointów to dwa izolowane węzły, czyli las, nie jedno spójne drzewo.
 
-Świadomie:
+Semantyka przyjęta w v2:
+
+```text
+0 links, 0 joints    → parse_failure          (nie ma czego opisywać)
+1 link,  0 joints     → SUCCESS                (legalne drzewo jednoelementowe)
+>1 link, 0 joints     → disconnected_topology  (izolowane węzły)
+```
+
+Jest to w pełni zgodne z tym, co projekt już dopuszcza: `baseLink == toolLink`
+zwraca pusty `KinematicChain` jako sukces. Do obsłużenia pustego łańcucha **nie
+trzeba** akceptować wielu rozłącznych linków.
+
+### 4.3 Czego loader dalej **nie** gwarantuje
 
 - że istnieje ścieżka między dowolnymi dwoma linkami — to pytanie
   `KinematicChainBuilder`, zależne od argumentów;
 - że robot ma ≥ 6 stopni swobody. Dzisiejsze ostrzeżenie „`chain has N actuated
   joints (expected >=6)`" (`robot_model_loader.cpp:146–151`) **znika razem z
-  `trace_chain()`** i nie wraca. Powód: liczba stopni swobody na *ścieżce* jest
-  własnością wybranej ścieżki, nie pliku. Robot 3-osiowy nie jest błędnym URDF-em,
-  a ostrzeżenie liczone z arbitralnie wybranej gałęzi jest bezwartościowe.
-
-> **Do rozstrzygnięcia w review:** czy ostrzeżenie o `< 6` DOF ma się odrodzić w
-> `KinematicChainBuilder`, gdzie miałoby sens (tam ścieżka jest znana). Skłaniam
-> się do **nie** — `KinematicChainBuilder` nie ma dziś `DiagnosticBag`, a
-> dokładanie mu go dla jednego ostrzeżenia jest nieproporcjonalne. Do decyzji.
+  `trace_chain()` i nie wraca — ani tutaj, ani w `KinematicChainBuilder`.**
+  Rozstrzygnięte przez review: 3R może być całkowicie poprawnym mechanizmem, a
+  prawo powiedzieć „za mało osi" ma dopiero komponent wymagający konkretnej
+  rodziny solvera — przez `UnsupportedKinematicStructure`, w Fazie 3.
 
 ## 5. Model błędów
 
-### 5.1 Nowe kody
+### 5.1 Sześć nowych kodów, nie cztery
 
-`LoadErrorCode` dostaje cztery pozycje:
+> v1 mówiło „cztery pozycje" i wymieniało pięć. Po dodaniu T0 jest ich sześć.
 
 ```text
+invalid_link_declaration   T0a + T0b   (pusta lub zduplikowana nazwa <link>)
 undeclared_parent_link     T1
 undeclared_child_link      T2
 duplicate_child_link       T3
 cyclic_topology            T4
-disconnected_topology      T5  (obejmuje też „brak korzenia")
+disconnected_topology      T5
 ```
+
+`invalid_link_declaration` jest jednym kodem dla obu naruszeń T0, bo oba znaczą
+to samo dla wołającego: deklaracja linków nie definiuje poprawnego zbioru węzłów.
+Rozróżnienie niesie `attribute`/`rawValue`.
 
 `incomplete_kinematic_chain` **zostaje usunięty** — był kodem wyjścia
-`trace_chain()` i po jego usunięciu nie ma producenta. To zmiana obserwowalna:
-istniejący test go sprawdza (do przejrzenia w proposalu implementacyjnym).
+`trace_chain()` i po jego usunięciu nie ma producenta.
 
-Każdy nowy kod potrzebuje wpisu w `describeCode` w `UrdfModelLoader.cpp:48`.
-Po R1 brak wpisu wywali build (`-Wswitch`), co jest dokładnie tym, po co R1 jest
-pierwsze.
+Każdy kod potrzebuje wpisu w `describeCode` (`UrdfModelLoader.cpp:48`). Po R1
+brak wpisu wywali build (`-Werror=switch`) — potwierdzone mutation checkiem przy
+implementacji R1.
 
-### 5.2 Kolejność sprawdzania jest deterministyczna
+### 5.2 Kolejność sprawdzania jest deterministyczna — w obrębie walidacji topologii
 
-Repo ma na to precedens: `IkEquationSystem::create` wymusza dziewięć
-niezmienników w ustalonej kolejności, żeby każdy kod miał jednoznaczne
-znaczenie, gdy naruszonych jest kilka. To samo tutaj:
+Precedens: `IkEquationSystem::create` wymusza dziewięć niezmienników w ustalonej
+kolejności, żeby każdy kod miał jednoznaczne znaczenie, gdy naruszonych jest kilka.
 
 ```text
-T1/T2 (istnienie linków)  →  T3 (duplikat dziecka)  →  T5 (korzeń)  →  T4 (cykl)
+T0 → T1/T2 → T3 → (liczba korzeni) → (osiągalność)
 ```
 
-Dwie kolejności są **wymuszone, nie arbitralne**:
+> **Zakres kontraktu, doprecyzowany w v3.** Powyższa kolejność jest kontraktem
+> **w obrębie walidacji topologii**, wykonywanej po pomyślnym sparsowaniu
+> elementów potrzebnych do zbudowania modelu. **Nie definiuje globalnego
+> priorytetu** względem błędów składni, geometrii ani limitów.
+>
+> Zweryfikowane w kodzie: `trace_chain` — a więc i jego następca — jest wołane w
+> `load_urdf` na linii 250, **po** całej pętli po `<joint>`, która wychodzi
+> wcześniej na `unsupported_joint_type`, `malformed_vector` (trzy miejsca),
+> `degenerate_axis` i `invalid_limits`. Plik mający jednocześnie `axis="abc"` i
+> odwołanie do niezadeklarowanego linku zgłosi więc `malformed_vector`, nie `T2`.
+>
+> To jest opis stanu faktycznego, nie postulat zmiany — R2 nie przestawia
+> kolejności etapów loadera.
 
-- **T1/T2 przed wszystkim.** Bez nich zbiór węzłów grafu nie jest ustalony, a
-  „cykl" i „spójność" nie mają dobrze określonego znaczenia. Zgłoszenie
-  literówki w nazwie linku jako `disconnected_topology` byłoby prawdą bezużyteczną.
-- **T3 przed T5.** Link z dwoma rodzicami zaburza liczenie korzeni. Odwrotna
-  kolejność raportowałaby jednoznaczny błąd struktury jako problem ze spójnością.
+Kolejności **wymuszone, nie arbitralne**:
 
-T5 przed T4 to wybór, nie konieczność: przy grafie rozspójnionym komunikat o
-braku jednoznacznego korzenia jest bardziej użyteczny niż o cyklu w oderwanej
-gałęzi. Do zaakceptowania lub odwrócenia w review.
+- **T0 przed wszystkim** — ustala tożsamość węzłów (4).
+- **T1/T2 przed T3+** — bez nich zbiór krawędzi wskazuje na węzły, których nie ma;
+  zgłoszenie literówki jako `disconnected_topology` byłoby prawdą bezużyteczną.
+- **T3 przed liczeniem korzeni** — link z dwoma rodzicami zaburza liczenie korzeni.
 
-### 5.3 Kontekst w błędzie
+### 5.3 Kontekst w błędzie — uzgodniony z tym, co algorytm potrafi
 
-`LoadError` ma już `jointName`, `attribute`, `rawValue` (wszystkie ucinane do 256
-znaków). Nowe błędy topologiczne wypełniają:
+> v1 obiecywało dla T4 „nazwę linku, na którym **zamknął się** cykl". Review
+> wykazało, że algorytm tego nie wie — `visited.size() != links.size()` mówi
+> tylko, że dany link jest **nieosiągalny z korzenia**. v2 osłabia kontrakt do
+> tego, co da się dostarczyć.
 
-- T1/T2: `jointName` = joint z odwołaniem, `attribute` = `"parent/link"` lub
-  `"child/link"`, `rawValue` = nieznaleziona nazwa;
-- T3: `jointName` = **drugi** joint roszczący sobie to dziecko, `rawValue` = nazwa
-  linku. Który joint jest „drugi", zależy od kolejności XML — i to jest w
-  porządku, bo dotyczy tylko *komunikatu*, nie tego, czy plik przechodzi.
-- T4: `rawValue` = nazwa linku, na którym zamknął się cykl;
-- T5: `rawValue` = liczba znalezionych korzeni, lub nazwa drugiego korzenia.
+| Kod | `attribute` | `rawValue` |
+|---|---|---|
+| `invalid_link_declaration` | `"link/name"` | nazwa (lub pusto dla T0a) |
+| `undeclared_parent_link` | `"parent/link"` | nieznaleziona nazwa; `jointName` = joint z odwołaniem |
+| `undeclared_child_link` | `"child/link"` | jak wyżej |
+| `duplicate_child_link` | — | nazwa linku; `jointName` = **drugi** joint roszczący sobie to dziecko |
+| `cyclic_topology` | — | **pierwszy link należący do komponentu zawierającego cykl** — nie punkt domknięcia |
+| `disconnected_topology` | — | nazwa drugiego znalezionego korzenia, lub ich liczba |
 
-> **Do rozstrzygnięcia w review:** czy dla T4 warto zwracać całą ścieżkę cyklu.
-> Rekomendacja: nie — `rawValue` jest jednym stringiem uciętym do 256 znaków, a
-> pełna ścieżka wymagałaby nowego pola w `LoadError`. Jedna nazwa wystarcza do
-> zlokalizowania problemu w pliku.
+Który joint jest „drugi" przy `duplicate_child_link`, zależy od kolejności XML —
+i to jest w porządku, bo dotyczy tylko *komunikatu*, nie tego, czy plik przechodzi.
+
+Świadomy wybór: **nie** raportujemy pełnej ścieżki cyklu ani punktu domknięcia.
+Wymagałoby to prawdziwego DFS z kolorowaniem w komponencie nieosiągalnym, a review
+potwierdziło, że jedna nazwa wystarcza — **pod warunkiem, że tekst nie obiecuje
+więcej.** Ta tabela jest tym warunkiem.
+
+### 5.4 Wybór raportowanego linku musi być deterministyczny — dodane w v3
+
+Trzy kody z tabeli wyżej — `invalid_link_declaration`, `cyclic_topology`,
+`disconnected_topology` — raportują **jeden element wybrany ze zbioru** kandydatów
+(drugi korzeń, dowolny link z komponentu cyklicznego). To jest miejsce, w którym
+łatwo wprowadzić z powrotem dokładnie tę wadę, którą R2 usuwa.
+
+**Kontrakt:** kontenery haszujące (`unordered_set`/`unordered_map`) mogą służyć
+wyłącznie do sprawdzania przynależności. **Elementu raportowanego diagnostycznie
+nie wolno wybierać przez iterację po kontenerze haszującym** — wybór następuje
+deterministycznie, przez przejście po `model.links()` w kolejności deklaracji
+w XML i wzięcie pierwszego pasującego:
+
+```cpp
+// dobrze — kolejność XML, ten sam plik zawsze daje ten sam komunikat
+for (auto const& link : links)
+    if (isRoot(link.name)) { /* pierwszy korzeń w kolejności XML */ }
+
+// źle — komunikat zależy od implementacji hashowania
+for (auto const& name : rootSet) { ... }
+```
+
+Uzasadnienie jest wprost antyregresyjne. Dzisiejsza wada (c) z sekcji 2.1 polega
+na tym, że `trace_chain` wybiera korzeń przez `for (auto const& [parent, _] :
+parent_to_idx)` z `break`. Gdyby nowa walidacja wybierała raportowany link tym
+samym sposobem, ten sam plik dawałby różne komunikaty na różnych bibliotekach
+standardowych — i to w kodzie, którego celem jest usunięcie zależności od
+kolejności iteracji.
+
+**Czego ten kontrakt nie obiecuje:** niezależności komunikatu od kolejności XML.
+Po przestawieniu dwóch błędnych linków w pliku diagnostyka może wskazać drugi z
+nich, i to jest akceptowalne — plik jest inny. Wymagamy tylko, żeby **to samo
+wejście zawsze dawało to samo wyjście.**
+
+Zasięg: dotyczy wyłącznie diagnostyki. **To, czy plik przechodzi**, nigdy nie może
+zależeć od kolejności czegokolwiek — to gwarantują T0–T5 i test z 9.2.
 
 ## 6. Algorytm
 
-Po `T1/T2` graf jest dobrze określony. Reszta to jedno przejście:
+> v1 miało tu niespójność, którą review nazwało najważniejszą rzeczą algorytmiczną:
+> deklarowało T4 jako „jawne sprawdzenie", a realizowało je jako **wniosek** z
+> `visited != L`. v2 opisuje to jako wniosek, bo nim jest, i naprawia błędną
+> klasyfikację `roots == 0`.
+
+### 6.1 Tablica decyzyjna
+
+Po T0, T1, T2 i T3 graf jest dobrze określony i każdy węzeł ma **co najwyżej
+jednego rodzica**. Dopiero to czyni poniższe rozumowanie poprawnym.
 
 ```text
-1. zbuduj declaredLinks ze <link>                       O(L)
-2. dla każdego jointu sprawdź parent i child            O(J)     → T1, T2
-3. zbuduj childToParentJoint; kolizja → duplicate       O(J)     → T3
-4. korzenie = linki nie występujące jako child          O(L)
-   dokładnie jeden → ok, zero → cykl/brak, >1 → rozspójnienie   → T5
-5. BFS/DFS z korzenia po childrenOf, licz odwiedzone
-   odwiedzone != L → cykl albo sierota                  O(L+J)   → T4
+J == 0:
+    L == 0        → parse_failure
+    L == 1        → OK
+    L >  1        → disconnected_topology
+
+J > 0:
+    roots == 0    → cyclic_topology          (v1 mówiło disconnected — BŁĄD)
+    roots >  1    → disconnected_topology
+    roots == 1    → traversal(root)
+                      visited == L → OK
+                      visited != L → cyclic_topology
 ```
 
-Dwie decyzje implementacyjne, obie z precedensem w repo:
+### 6.2 Dlaczego wnioskowanie jest poprawne
 
-- **Iteracyjnie, nie rekurencyjnie.** `KinematicChainBuilder` używa jawnego
-  stosu i `STATUS.md` odnotowuje „Recursion depth scaling unmeasured" jako lukę.
-  Nie dokładamy nowej rekurencji po nieufnych danych z pliku.
-- **Limit kroków jako pas bezpieczeństwa.** `visited` wystarcza do poprawności,
-  ale pętla po danych z pliku dostaje dodatkowo twardy limit `L + J + 1` iteracji.
-  Uwaga 2 istnieje właśnie dlatego, że ktoś założył, że pętla się skończy.
+Oba wnioski o cyklu opierają się na T3 (każdy węzeł ma ≤ 1 rodzica) i muszą być
+tak opisane, a nie sprzedawane jako bezpośrednia detekcja:
 
-## 7. Konsekwencja: unia `knownLinks` w `KinematicChainBuilder` **znika**
+**`roots == 0` przy `L > 0` ⇒ cykl jest pewny.** Skończony niepusty graf, w którym
+każdy węzeł ma rodzica, musi zawierać cykl — idąc w górę po rodzicach nie da się
+zatrzymać, a węzłów jest skończenie wiele. Nazwanie tego „rozspójnieniem" było
+błędem klasyfikacji: mamy osobny, dokładniejszy kod.
 
-Po T1/T2 `RobotDescription.links` jest wiarygodnym źródłem „czy ten link
-istnieje", więc `KinematicChainBuilder.cpp:119–129` redukuje się do:
+**`visited != L` przy `roots == 1` ⇒ cykl jest pewny.** Każdy nieodwiedzony
+komponent nie może mieć własnego korzenia, bo korzeni globalnie jest dokładnie
+jeden i leży w komponencie odwiedzonym. Zatem w tym komponencie każdy węzeł ma
+rodzica, więc — jak wyżej — zawiera cykl.
+
+To jest ta sama struktura argumentu, którą v1 stosowało do T4 („wynika częściowo
+z T3 + T5"), tylko doprowadzona do końca i zapisana jako uzasadnienie, a nie jako
+obietnica jawnej detekcji.
+
+### 6.3 Gwarancja zakończenia — bez arbitralnego licznika
+
+> v1 proponowało twardy limit `L + J + 1` iteracji „jako pas bezpieczeństwa".
+> Review to odrzuciło: iteracyjny BFS/DFS z `visited` po skończonych kontenerach
+> **już** ma gwarancję zakończenia, a `L + J + 1` zależy od tego, co nazwiemy
+> „krokiem", więc łatwo wyprodukować fałszywy alarm przy legalnej implementacji.
+> Zgadzam się — to był licznik pozorny.
+
+Zakończenie zapewnia `visited` nad skończonym zbiorem węzłów; każdy węzeł wchodzi
+na stos co najwyżej raz. Jeśli chcemy dodatkowej asercji, wiążemy ją z algorytmem,
+nie z abstrakcyjnym „krokiem":
+
+```text
+processedVertices <= links.size()
+processedEdges    <= joints.size()
+```
+
+Timeout CTest zostaje jako **zewnętrzna** siatka bezpieczeństwa, nie jako element
+poprawności.
+
+Druga decyzja implementacyjna, z precedensem: **iteracyjnie, nie rekurencyjnie.**
+`KinematicChainBuilder` używa jawnego stosu, a `STATUS.md` odnotowuje „Recursion
+depth scaling unmeasured" jako lukę. Nie dokładamy rekurencji po nieufnych danych
+z pliku.
+
+Złożoność: `O(L + J)` czasu i pamięci, jedno przejście na każdy niezmiennik.
+
+## 7. R2 **nie jest** samodzielnym stanem releasowalnym — zależność R2 ↔ R4
+
+> Dodane w v2. v1 zauważało, że `set_chain()` traci producenta, i odsyłało do R4.
+> Review wykazało, że konsekwencja jest większa: to **obserwowalna zmiana
+> zachowania publicznych metod** `mt::kinematics::RobotModel`.
+
+Dziś po `load_urdf("kr640.urdf")` model ma wypełnione `chain_` (6 indeksów).
+Po R2 `chain_` jest **puste dla każdego robota**, bo nikt go już nie ustawia. A:
+
+```cpp
+bool RobotModel::within_limits(std::span<double const> joint_values) const noexcept {
+    if (joint_values.size() != chain_.size()) return false;
+    for (std::size_t k = 0; k < chain_.size(); ++k) { ... }
+    return true;
+}
+```
+
+daje wtedy `within_limits({}) == true` dla dowolnego robota — pusty wektor
+„mieści się w limitach" pustego łańcucha. Funkcja przestaje cokolwiek znaczyć.
+
+Dwa warianty i wybór:
+
+| Wariant | Ocena |
+|---|---|
+| **A.** R2 i R4 są osobnymi proposalami, ale R2 nie jest releasowalne bez R4 | **Wybrany** (rekomendacja review) |
+| **B.** R2 tymczasowo neutralizuje ten kontrakt | Odrzucony — miesza zakresy, a R4 istnieje dokładnie po to |
+
+**Zapis wiążący:** R2 może być zaimplementowane i zrecenzowane osobno, ale
+**nie wolno scalać remediacji do `main` z R2 bez R4.** Jednostka releasowalna:
+
+```text
+R1  →  (R2 + R4)  →  R3  →  R5  →  F2.4
+```
+
+R4 musi wejść w tym samym branchu przed merge. Bez tego zostawiamy w repo API,
+które wygląda na działające i zwraca `true` na wszystko.
+
+## 8. Konsekwencje w innych plikach
+
+### 8.1 Zasięg zmiany `LoadErrorCode` — precyzyjniej niż w v1
+
+> v1 pisało „`LoadErrorCode` nie jest publiczne poza `UrdfModelLoader`". To
+> nieprawda: typ mieszka w `src/kinematics/robot_model_loader.hpp`, a `load_urdf`
+> publicznie zwraca `std::expected<LoadResult, LoadError>`.
+
+Precyzyjnie: zmiana **nie wpływa na publiczną fasadę `IkEquationBuilder`**, która
+konsumuje `LoadError` wewnętrznie i zamienia na komunikat. W warstwie
+`mt::kinematics` jest to **source-level zmiana enuma**, a repo nie ma dziś
+zewnętrznego konsumenta tej warstwy.
+
+### 8.2 Unia `knownLinks` w `KinematicChainBuilder` znika
+
+Po T1/T2 `RobotDescription.links` jest wiarygodnym źródłem „czy ten link istnieje",
+więc `KinematicChainBuilder.cpp:119–129` redukuje się do:
 
 ```cpp
 std::unordered_set<std::string_view> knownLinks;
@@ -314,61 +516,67 @@ for (auto const& link : robot.links)
     knownLinks.insert(link.name);
 ```
 
-To **nie jest kosmetyka** — to przywrócenie znaczenia `BaseLinkNotFound` i
-`ToolLinkNotFound`, które dziś nie mogą zadziałać dla nazwy wspomnianej w
-jakimkolwiek joincie.
+To **nie kosmetyka** — to przywrócenie znaczenia `BaseLinkNotFound` i
+`ToolLinkNotFound`.
 
-Ważne zawężenie zakresu: gwarancja T1/T2 jest własnością **loadera**, nie typu.
-`RobotDescription` to zwykły agregat i ręcznie zbudowany nie gwarantuje niczego —
-tak samo jak dziś z geometrią (`RobotDescription.hpp:16–17`). Testy
-`KinematicChainBuilder` budujące `RobotDescription` z ręki będą więc musiały
-deklarować linki, których dziś nie deklarują. To przewidywalny koszt tej zmiany i
-proposal implementacyjny musi go wycenić w liczbie zmienionych testów.
+Zawężenie: gwarancje T0–T5 są własnością **loadera**, nie typu. `RobotDescription`
+to agregat i ręcznie zbudowany nie gwarantuje niczego — tak samo jak dziś z
+geometrią (`RobotDescription.hpp:16–17`). Testy `KinematicChainBuilder` budujące
+`RobotDescription` z ręki będą musiały deklarować linki, których dziś nie
+deklarują. Proposal implementacyjny wycenia to w liczbie zmienionych testów.
 
-## 8. Plan testów
+## 9. Plan testów
 
-### 8.1 Nowe, topologia loadera (10)
+### 9.1 Topologia loadera (13)
 
 ```text
 AcceptsBranchingTree                     KR4-podobny kształt, dwa rozgałęzienia
+RejectsEmptyLinkName                     T0a
+RejectsDuplicateLinkName                 T0b
 RejectsUndeclaredParentLink              T1
 RejectsUndeclaredChildLink               T2
 RejectsLinkClaimedByTwoJoints            T3
-RejectsCyclicTopology                    T4  — musi ZAKOŃCZYĆ SIĘ
-RejectsDisconnectedForest                T5
-RejectsMultipleRoots                     T5, wariant jawny
-AcceptsRobotWithLinksButNoJoints         przypadek zerowy z 4.
-ReportsUndeclaredLinkWithJointContext    LoadError niesie jointName + rawValue
-DiagnosticOrderIsDeterministic           plik łamiący T1 i T5 → zawsze T1
+RejectsCyclicTopologyWithNoRoot          roots == 0 → cyclic_topology
+RejectsCyclicTopologyUnreachableFromRoot roots == 1, visited != L → cyclic_topology
+RejectsDisconnectedForest                roots > 1
+RejectsMultipleIsolatedLinksWithNoJoints L > 1, J == 0 → disconnected
+AcceptsSingleLinkWithNoJoints            L == 1, J == 0 → OK
+RejectsEmptyRobot                        L == 0, J == 0 → parse_failure
+DiagnosticOrderIsDeterministic           plik łamiący T0 i T5 → zawsze T0
 ```
 
-`RejectsCyclicTopology` ma jedną nietypową wymaganość: **test musi wykrywać
-zawieszenie, nie tylko zły kod błędu.** Dziś ten test by nie „nie przeszedł" —
-on by zawiesił cały `ctest`. Proposal implementacyjny musi rozstrzygnąć, czy
-polegamy na timeoutcie CTest (`set_tests_properties(... TIMEOUT ...)`), czy na
-limicie kroków z 6, który zamienia zawieszenie w normalny błąd. Rekomendacja:
-**oba** — limit kroków jako poprawność, timeout CTest jako siatka
-bezpieczeństwa, gdyby limit kiedyś przestał działać.
+Dwa testy cyklu, nie jeden — to dwie różne gałęzie tablicy z 6.1 i dwa różne
+uzasadnienia z 6.2.
 
-### 8.2 Niezależność od kolejności XML (2) — istota etapu
+**Oba testy cyklu muszą wykrywać zawieszenie, nie tylko zły kod błędu.** Dziś taki
+test nie „nie przechodzi" — zawiesza cały `ctest`. Poprawność zapewnia `visited`
+(6.3); dodatkowo `set_tests_properties(... TIMEOUT ...)` jako siatka zewnętrzna.
+
+### 9.2 Niezależność od kolejności XML (2) — istota etapu
 
 ```text
-LoadsIdenticallyRegardlessOfJointOrderInXml
-BuildsKr4RegardlessOfJointOrder
+LoadsEquivalentModelRegardlessOfJointOrderInXml
+BuildsSameKr4ChainRegardlessOfJointOrder
 ```
 
-Drugi jest testem regresji dokładnie na odtworzony przypadek: `kr4_r600.urdf` z
-zamienionymi `base_link-base` i `joint_1` musi dać **identyczny**
-`RobotDescription** co plik oryginalny (modulo kolejność jointów w wektorze).
+> Gate przeformułowany po review. v1 mówiło „identyczny wynik", co jest nieostre,
+> bo wektor jointów zachowuje kolejność źródła.
 
-> **Do rozstrzygnięcia w review:** jak porównywać „identyczny". Porównanie
-> `RobotDescription` pole po polu wymaga stabilnej kolejności jointów, której po
-> zamianie w XML nie ma. Rekomendacja: porównywać **zbiór** jointów po nazwie, a
-> nie wektor po indeksie — i osobno sprawdzić, że oba pliki dają ten sam
-> `KinematicChain` dla `base_link → tool0`. Drugi warunek jest mocniejszy i
-> bliższy temu, na czym nam zależy.
+Kryterium:
 
-### 8.3 `KinematicChainBuilder` po usunięciu unii (2)
+```text
+RobotDescription topologicznie i geometrycznie RÓWNOWAŻNY
+    linki po nazwach (zbiór)
+    jointy po nazwach i relacji parent→child (zbiór)
+    geometria jointów (origin, axis, limits) porównana po nazwie
++
+IDENTYCZNY wybrany KinematicChain dla base_link → tool0
+```
+
+Drugi warunek jest mocniejszy i bliższy temu, na czym zależy: dwa uporządkowania
+tego samego pliku muszą dać ten sam łańcuch kinematyczny.
+
+### 9.3 `KinematicChainBuilder` po usunięciu unii (2)
 
 ```text
 RejectsBaseLinkNotDeclaredAsLink
@@ -377,68 +585,70 @@ RejectsToolLinkNotDeclaredAsLink
 
 Oba dziś **nie przechodzą** (frame jest akceptowany) — to test na uwagę 3.
 
-### 8.4 Do przejrzenia, nie do dopisania
+### 9.4 Do przejrzenia, nie do dopisania
 
 `incomplete_kinematic_chain` znika, więc każdy istniejący test oczekujący tego
 kodu wymaga decyzji: czy dany plik ma teraz przechodzić, czy padać na innym
 kodzie. Proposal implementacyjny musi wymienić te testy z nazwy — jest to jedyne
 miejsce, gdzie ten etap może cicho zmienić obserwowalne zachowanie.
 
-## 9. Plan zmian w plikach
+## 10. Plan zmian w plikach
 
 ```text
-src/kinematics/robot_model_loader.hpp    LoadErrorCode: +4, -1; kontrakt w komentarzu
+src/kinematics/robot_model.hpp           (bez zmian w R2 — patrz 7, to R4)
+src/kinematics/robot_model_loader.hpp    LoadErrorCode: +6, -1; kontrakt w komentarzu
 src/kinematics/robot_model_loader.cpp    -trace_chain (42 linie), +validate_topology
-src/ik_equations/UrdfModelLoader.cpp     describeCode: +4 wpisy, -1
+src/ik_equations/UrdfModelLoader.cpp     describeCode: +6 wpisów, -1
 src/ik_equations/builders/KinematicChainBuilder.cpp   -unia knownLinks (8 linii)
-tests/test_urdf_model_loader.cpp         +12
+tests/test_urdf_model_loader.cpp         +15
 tests/test_kinematic_chain_builder.cpp   +2, przegląd RobotDescription w istniejących
-data/urdf/                               ewentualne nowe fixture'y
+data/urdf/                               nowe fixture'y dla przypadków negatywnych
 ```
 
-Styk z R4: usunięcie `trace_chain()` czyni `RobotModel::set_chain()` funkcją bez
-producenta, a `chain()` i `within_limits()` — bez sensownej treści. **Ten
-proposal tego nie rozstrzyga**; decyzja należy do R4, żeby nie zapadła dwa razy
-w sprzeczny sposób. R2 zostawia `set_chain()` nietknięte i po prostu przestaje
-je wołać.
-
-## 10. Ryzyka
+## 11. Ryzyka
 
 | Ryzyko | Waga | Reakcja |
 |---|---|---|
-| T1/T2 odrzuci URDF-y, które dziś przechodzą | **realne** | To jest cel, nie skutek uboczny. Ale: oba pliki w `data/urdf` trzeba sprawdzić **przed** implementacją — jeśli któryś ma niezadeklarowany link, zmiana wywali własne fixture'y |
-| Testy `KinematicChainBuilder` z ręcznym `RobotDescription` przestaną przechodzić | średnie | Przewidziane w 7; proposal implementacyjny wycenia liczbę |
-| Usunięcie `incomplete_kinematic_chain` to zmiana API | niskie | `LoadErrorCode` nie jest publiczne poza `UrdfModelLoader`, który konsumuje je wewnętrznie |
-| Nowa walidacja sama ma pętlę po nieufnych danych | **średnie** | `visited` + twardy limit kroków (6); dokładnie ten błąd naprawiamy, więc nie wolno go powtórzyć |
-| Utrata ostrzeżenia „< 6 DOF" | niskie | Świadome (4.1); do potwierdzenia w review |
+| T0–T2 odrzucą URDF-y, które dziś przechodzą | **zamierzone** | To cel. Ryzyko dla **własnych** fixture'ów **zamknięte w v2**: oba pliki sprawdzone, 10/10 i 8/8 unikalnych nazw, zero pustych, wszystkie odwołania z deklaracją |
+| **R2 bez R4 psuje `within_limits`** | **wysokie** | Sekcja 7, wariant A — zakaz merge'a bez R4 |
+| Testy `KinematicChainBuilder` z ręcznym `RobotDescription` przestaną przechodzić | średnie | 8.2; proposal implementacyjny wycenia liczbę |
+| Nowa walidacja sama ma pętlę po nieufnych danych | średnie | `visited` nad skończonym zbiorem (6.3); dokładnie ten błąd naprawiamy, więc nie wolno go powtórzyć |
+| Utrata ostrzeżenia „< 6 DOF" | niskie | Rozstrzygnięte przez review: usunąć i nie odtwarzać (4.3) |
 
-## 11. Do rozstrzygnięcia w review
+## 12. Do rozstrzygnięcia w review (v2)
 
-1. Czy URDF z linkami, ale zerem jointów, przechodzi (4, T5).
-2. Czy ostrzeżenie „< 6 DOF" ma się odrodzić w `KinematicChainBuilder` (4.1).
-3. Kolejność T5 vs T4 (5.2).
-4. Czy T4 raportuje pełną ścieżkę cyklu, czy jedną nazwę (5.3).
-5. Jak porównywać „identyczny wynik" w teście niezależności od kolejności (8.2).
-6. Czy `RejectsCyclicTopology` polega na limicie kroków, timeoutcie CTest, czy
-   obu (8.1).
-7. Czy `parse_joint_type`/`<limit>` zostają nietknięte w tym proposalu — tak,
-   `<limit>` to R3; potwierdzić, że nie ma między nimi kolizji w tych samych
-   liniach.
+Zamknięte w v2: T0 (dodane), przypadek zerowy (poprawiony), `roots == 0` → cykl,
+uzgodnienie algorytmu z `rawValue`, liczba kodów, zależność R2↔R4, limit kroków,
+„< 6 DOF", pełna ścieżka cyklu, sformułowanie o zasięgu `LoadErrorCode`, gate
+niezależności od kolejności XML.
 
-## 12. Rekomendacja końcowa
+Pozostaje otwarte:
 
-Wykonać jako drugi dokument etapu, po R1. Uzasadnienie kolejności: nowa
-walidacja dodaje cztery kody do dwóch `switch`-y i bez `-Wswitch` z R1 pominięty
-`case` przechodzi po cichu — czyli dokładnie ten sam rodzaj błędu, jaki ten
-proposal naprawia.
+1. Czy `invalid_link_declaration` ma być jednym kodem dla T0a i T0b (5.1), czy
+   dwoma. Rekomenduję jeden — dla wołającego znaczą to samo.
+2. Czy `disconnected_topology` przy `L > 1, J == 0` to właściwy kod, czy zasługuje
+   na osobny (np. `no_joints`). Rekomenduję istniejący: przyczyna jest ta sama —
+   graf nie jest jednym spójnym drzewem.
+3. Czy `duplicate_child_link` ma wskazywać pierwszy czy drugi joint (5.3).
+4. Kolejność `T4`/`T5` przestała być pytaniem — tablica z 6.1 rozstrzyga oba
+   przypadki jednoznacznie. Do potwierdzenia, że tak ma zostać.
+
+## 13. Rekomendacja końcowa
+
+Wykonać jako drugi dokument etapu, po R1 (zaimplementowanym). Nowa walidacja
+dodaje sześć kodów do dwóch `switch`-y, a mechanizm z R1 już potwierdzono
+działający — pominięty `case` wywali build.
 
 Gate:
 
 ```text
-ten sam robot w dwóch uporządkowaniach XML → identyczny wynik
-URDF z cyklem → odrzucony, proces się KOŃCZY
-URDF rozspójniony → odrzucony, nic nie ginie po cichu
+ten sam robot w dwóch uporządkowaniach XML → równoważny RobotDescription
+                                             + identyczny KinematicChain
+URDF z cyklem (oba warianty) → cyclic_topology, proces się KOŃCZY
+URDF rozspójniony → disconnected_topology, nic nie ginie po cichu
 odwołanie do niezadeklarowanego <link> → odrzucone w loaderze
+zduplikowana nazwa <link> → odrzucona
 BaseLinkNotFound / ToolLinkNotFound znów mogą zadziałać
 oba pliki w data/urdf ładują się bez zmian w geometrii
+R4 w tym samym branchu przed merge (sekcja 7)
 ```

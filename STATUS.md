@@ -1,8 +1,8 @@
 # Project Status
 
-**Last updated:** 2026-08-17
+**Last updated:** 2026-08-18
 **Branch:** `main`
-**Build:** clean · **Tests:** 273/273 passing
+**Build:** clean · **Tests:** 312/312 passing
 
 > **Open code review (2026-08-17).** A full review found 10 issues, all
 > reproduced experimentally; two are HIGH and both sit in the legacy
@@ -42,7 +42,7 @@ disappear with the milestone — see known gaps: the cross-check starts at
 `KinematicChain`, not at the file, and the RPY convention rests on a belief
 shared by both implementations rather than on an external source.
 
-The upside: the foundation is solid. 273 tests, every architectural decision
+The upside: the foundation is solid. 312 tests, every architectural decision
 written down and reviewed, and a long list of traps caught *before* they reached
 the code — expression-domain loss from `x * 0 → 0`, trig-folding noise, a
 `make_shared` symbol clash under `-static-libstdc++`, `std::hypot` losing
@@ -69,10 +69,10 @@ URDF
   → TCP transform            ✅ implemented + tested (F2.1/F2.2)
   → IK equation model        ✅ implemented + tested (F2.3)
   ── F2.3.R review remediation — CURRENT, blocks F2.4 ─────
-  → warning policy           ⬜ R1 — next proposal to write
-  → loader topology          ⬜ R2 — HIGH: two confirmed bugs
-  → strict <limit> parsing   ⬜ R3
-  → legacy model boundary    ⬜ R4 — confirmed UB via public API
+  → warning policy           ✅ R1 — implemented + verified
+  → loader topology          ✅ R2 — implemented + tested (both HIGH bugs fixed)
+  → strict <limit> parsing   ✅ R3 — implemented + tested
+  → legacy model boundary    ✅ R4 — implemented + verified (unblocks R2)
   → factory finite invariant ⬜ R5 — may run in parallel
   ── back to the original plan ────────────────────────────
   → ConstraintBuilder        ⬜ analysed only, no proposal yet (F2.4)
@@ -539,6 +539,7 @@ enums and threshold cases at `0.9×` and `1.1×` the tolerance.
 
 | Gap | Where | Notes |
 |---|---|---|
+| A limits check must reject `NaN` explicitly | future limits check in the `ik` layer (F3.10 solver) | `mt::kinematics::RobotModel::within_limits()` was **removed** in F2.3.R/R4: once the loader stopped tracing a chain it had nothing to check against, and it had no caller anywhere in the repo. Removing it did **not** fix the bug it carried — `v < lower \|\| v > upper` is **false on both sides for `NaN`**, so it reported `NaN` as within limits. Whoever writes the replacement — in the `ik` layer, against `KinematicChain`, where joint order is meaningful — must reject non-finite values with an explicit `if (!std::isfinite(v)) reject;`. The naive comparison repeats exactly this bug. |
 | `continuous` joints unsupported | `robot_model_loader.cpp` | `mt::kinematics::JointType` has no `continuous` value, so `type="continuous"` rejects the whole file. `KinematicChainBuilder` and `JointTransformBuilder` both handle `JointType::Continuous` already — that code is covered only by hand-built joints and is unreachable end to end. Fixing it also touches limit semantics (URDF requires no `lower`/`upper` for continuous), so it needs its own proposal. Pinned by `ReportsContinuousAsUnsupportedUntilImplemented`. |
 | Validation starts at `KinematicChain`, not at the URDF file | numeric FK validation | The quaternion reference reads the **same** `KinematicChain` the symbolic side does. If `UrdfModelLoader` mis-parses an axis or `KinematicChainBuilder` gets the joint order wrong, both sides see the identical mistake and agree. So the cross-check covers the symbolic pipeline **from `KinematicChain` upward** — `JointTransformBuilder`, `multiplyTransforms`, `ForwardKinematicsBuilder`, `ExpressionEvaluator` — and says nothing about URDF parsing. Parsing has its own 56 tests, but they are structural, not end-to-end against a known pose. |
 | RPY convention rests on a shared belief, not an external source | numeric FK validation | Quaternions protect against an *implementation* slip — a wrong sign, a swapped axis component — because the same formula written two ways does not break identically. They do **not** protect against a shared misreading of the URDF spec: the reference was written from the same understanding of `rpy` as production, so a convention error would be confirmed by both. The two hand-computed KR640 oracles guard the zero pose and one quarter turn, but for non-trivial `rpy` angles nothing external has been consulted. Closing this properly means comparing against KDL / `tf2` / Pinocchio, or against published KR4 poses. Deliberately deferred — it would add a dependency to the test project. |

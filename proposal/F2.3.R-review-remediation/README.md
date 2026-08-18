@@ -25,13 +25,12 @@ ani modelu równań. **Nic z F2.1–F2.3 nie jest cofane ani przepisywane.**
 
 | # | Dokument | Uwagi z review | Waga | Stan |
 |---|---|---|---|---|
-| R1 | `proposal-warning-policy.md` | 8, 9 | MEDIUM (proces) | **v3 — gotowy do implementacji** (v1: approve with changes; v2: approve with one required correction) |
-| R2 | `proposal-loader-topology-architecture.md` | 1, 2, 3 + znalezisko dodatkowe | **HIGH** | v1 — do review |
-| R2 | `proposal-loader-topology-implementation.md` | — | **HIGH** | do napisania (po zatwierdzeniu architektury) |
-| R3 | `proposal-loader-limits-strict-parsing-architecture.md` | 4 | MEDIUM/HIGH | do napisania |
-| R3 | `proposal-loader-limits-strict-parsing-implementation.md` | — | MEDIUM/HIGH | do napisania |
-| R4 | `proposal-legacy-robot-model-boundary-architecture.md` | 5, 6 | MEDIUM | do napisania |
-| R4 | `proposal-legacy-robot-model-boundary-implementation.md` | — | MEDIUM | do napisania |
+| R1 | `proposal-warning-policy.md` | 8, 9 | MEDIUM (proces) | v3 APPROVED — **ZAIMPLEMENTOWANE** |
+| R2 | `proposal-loader-topology-architecture.md` | 1, 2, 3 + znalezisko dodatkowe | **HIGH** | v3 APPROVED — **ZAIMPLEMENTOWANE** |
+| R2 | `proposal-loader-topology-implementation.md` | — | — | **pominięty** — implementacja wykonana wprost z zatwierdzonej architektury, na polecenie |
+| R3 | `proposal-loader-limits-strict-parsing-architecture.md` | 4 | MEDIUM/HIGH | v3 APPROVED — **ZAIMPLEMENTOWANE** |
+| R3 | `proposal-loader-limits-strict-parsing-implementation.md` | — | MEDIUM/HIGH | v3 APPROVED — **ZAIMPLEMENTOWANE** |
+| R4 | `proposal-legacy-robot-model-boundary.md` | 5, 6 | MEDIUM | v2 APPROVED — **ZAIMPLEMENTOWANE** |
 | R5 | `proposal-expression-factory-finite-invariant-architecture.md` | 7 | MEDIUM | do napisania |
 | R5 | `proposal-expression-factory-finite-invariant-implementation.md` | — | MEDIUM | do napisania |
 
@@ -45,9 +44,15 @@ gwarantować spójność zbioru symboli.
 ## Kolejność
 
 ```text
-R1 → R2 → R3 → R4 → R5 → F2.4
-              (R5 może iść równolegle — nie dotyka loadera)
+R1  →  (R2 + R4)  →  R3  →  R5  →  F2.4
+                            (R5 może iść równolegle — nie dotyka loadera)
 ```
+
+**R2 i R4 są jedną jednostką releasowalną**, choć osobnymi proposalami. Ustalone
+w review R2: usunięcie `trace_chain()` sprawia, że `RobotModel::chain_` jest puste
+dla każdego robota, a wtedy `within_limits({})` zwraca `true` dla dowolnego —
+funkcja przestaje cokolwiek znaczyć. **Nie wolno scalać remediacji do `main` z R2
+bez R4.** Szczegóły: `proposal-loader-topology-architecture.md`, sekcja 7.
 
 **R1 jest pierwsze, nie ostatnie**, i to jedyne odstępstwo od kolejności
 proponowanej w review. R1 to dwie jednoliniowe poprawki plus flagi w CMake, a

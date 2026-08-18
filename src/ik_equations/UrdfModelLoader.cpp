@@ -78,10 +78,19 @@ std::string describeCode(mt::kinematics::LoadErrorCode code)
     case Code::file_not_found:             return "URDF file not found";
     case Code::parse_failure:              return "failed to parse URDF XML";
     case Code::unsupported_joint_type:     return "unsupported joint type in URDF";
-    case Code::incomplete_kinematic_chain: return "URDF does not describe a complete kinematic chain";
-    case Code::invalid_limits:             return "invalid or missing joint limits in URDF";
     case Code::malformed_vector:           return "malformed vector attribute";
     case Code::degenerate_axis:            return "actuated joint has a zero-length axis";
+    case Code::missing_limit_element:      return "actuated joint has no <limit> element";
+    case Code::duplicate_limit_element:    return "joint has more than one <limit> element";
+    case Code::missing_limit_attribute:    return "required joint limit attribute is missing";
+    case Code::malformed_limit_value:      return "joint limit value is not a single finite number";
+    case Code::invalid_limit_constraint:   return "joint limits violate a required relation";
+    case Code::invalid_link_declaration:   return "link declaration has an empty or duplicate name";
+    case Code::undeclared_parent_link:     return "joint parent refers to a link that is not declared";
+    case Code::undeclared_child_link:      return "joint child refers to a link that is not declared";
+    case Code::duplicate_child_link:       return "link is the child of more than one joint";
+    case Code::cyclic_topology:            return "URDF topology contains a cycle";
+    case Code::disconnected_topology:      return "URDF does not describe one connected tree";
     }
     return "unknown URDF load error";
 }

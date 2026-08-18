@@ -308,3 +308,51 @@ TEST(KinematicChainBuilderTest, AssignsVariableToContinuousJoint)
     EXPECT_EQ(result->joints[0].variable->name, "q1");
     EXPECT_EQ(result->joints[0].variable->index, 1u);
 }
+
+// ---------------------------------------------------------------------------
+// Declared links are the only source of link existence (stage F2.3.R, R2)
+//
+// build() used to union robot.links with every joint parent/child reference,
+// because the loader did not cross-check the two. That made the two errors below
+// unreachable for any name mentioned in any joint: a link that exists only as a
+// typo inside a <parent> element became a usable frame, and a transform could be
+// built relative to a frame the URDF never declared.
+// ---------------------------------------------------------------------------
+
+TEST(KinematicChainBuilderTest, RejectsBaseLinkNotDeclaredAsLink)
+{
+    RobotDescription robot;
+    robot.links = {UrdfLink{"declared"}};
+
+    UrdfJoint joint;
+    joint.name = "j";
+    joint.parentLink = "phantom";   // referenced, never declared
+    joint.childLink = "declared";
+    joint.type = JointType::Fixed;
+    robot.joints = {joint};
+
+    KinematicChainBuilder builder;
+    const auto result = builder.build(robot, "phantom", "declared");
+
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error(), KinematicChainError::BaseLinkNotFound);
+}
+
+TEST(KinematicChainBuilderTest, RejectsToolLinkNotDeclaredAsLink)
+{
+    RobotDescription robot;
+    robot.links = {UrdfLink{"base"}};
+
+    UrdfJoint joint;
+    joint.name = "j";
+    joint.parentLink = "base";
+    joint.childLink = "phantom";    // referenced, never declared
+    joint.type = JointType::Revolute;
+    robot.joints = {joint};
+
+    KinematicChainBuilder builder;
+    const auto result = builder.build(robot, "base", "phantom");
+
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error(), KinematicChainError::ToolLinkNotFound);
+}

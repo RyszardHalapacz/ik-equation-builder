@@ -334,9 +334,14 @@ Pozostałe idą parami architektura + implementacja, zgodnie z resztą repo.
 ### Kolejność i uzasadnienie
 
 ```text
-R1 → R2 → R3 → R4 → R5 → F2.4
-              (R5 może iść równolegle — nie dotyka loadera)
+R1  →  (R2 + R4)  →  R3  →  R5  →  F2.4
+                            (R5 może iść równolegle — nie dotyka loadera)
 ```
+
+**R2 i R4 są jedną jednostką releasowalną**, choć osobnymi proposalami —
+ustalone w review R2 (v1 → v2). Usunięcie `trace_chain()` sprawia, że
+`RobotModel::chain_` jest puste dla każdego robota, a wtedy `within_limits({})`
+zwraca `true` dla dowolnego. Nie wolno scalać remediacji do `main` z R2 bez R4.
 
 **R1 jest pierwsze, nie ostatnie**, i to jedyne odstępstwo od kolejności
 proponowanej w review. Powód: R1 to dwie jednoliniowe poprawki plus flagi w

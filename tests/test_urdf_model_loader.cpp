@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include "ik_equations/UrdfModelLoader.hpp"
+#include "ik_equations/builders/KinematicChainBuilder.hpp"
 
 #include <filesystem>
 #include <numbers>
@@ -487,10 +488,12 @@ TEST(UrdfModelLoaderTest, IgnoresZeroAxisForFixedJoint)
     // A fixed joint's axis takes no part in the kinematics, so a degenerate
     // value is not an error.
     //
-    // The chain needs an actuated joint as well: trace_chain skips fixed
-    // joints and rejects an empty chain, so a robot made of one fixed joint
-    // would fail with incomplete_kinematic_chain and never reach the axis
-    // check this test is about.
+    // The second joint is now only scenery. It used to be required: trace_chain
+    // skipped fixed joints and rejected an empty chain, so a robot made of one
+    // fixed joint failed with incomplete_kinematic_chain before ever reaching
+    // the axis check this test is about. Since R2 the loader no longer traces a
+    // chain, a single fixed joint is a valid two-node tree, and the extra joint
+    // is kept only to avoid rewriting a test that already passes.
     const std::string urdf =
         R"(<?xml version="1.0"?><robot name="t">)"
         R"(<link name="base"/><link name="middle"/><link name="tool"/>)"
@@ -768,4 +771,539 @@ TEST(UrdfModelLoaderTest, ReportsContinuousAsUnsupportedUntilImplemented)
         + "</joint>";
     expectRejectedWith(urdfWithJoint(joint),
                        mt::kinematics::LoadErrorCode::unsupported_joint_type);
+}
+
+// ---------------------------------------------------------------------------
+// Topology (stage F2.3.R, R2)
+//
+// load_urdf used to trace a single linear chain, which assumed one parent has
+// one child. URDF describes a tree, and both shipped robots branch. These tests
+// pin the replacement: the loader validates the whole tree and selects nothing.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// A branching robot shaped like the real KR4 around base_link: one fixed branch
+// and one actuated branch sharing a parent. `fixedFirst` swaps the declaration
+// order of those two joints and changes nothing else.
+std::string branchingRobot(bool fixedFirst)
+{
+    const std::string fixedJoint =
+        R"(<joint name="side" type="fixed">)"
+        R"(<parent link="base"/><child link="pedestal"/>)"
+        R"(<origin xyz="0 0 0" rpy="0 0 0"/>)"
+        R"(</joint>)";
+    const std::string actuatedJoint =
+        R"(<joint name="j1" type="revolute">)"
+        R"(<parent link="base"/><child link="tool"/>)"
+        R"(<origin xyz="0 0 0.5" rpy="0 0 0"/><axis xyz="0 0 1"/>)"
+        R"(<limit lower="-1" upper="1" effort="1" velocity="1"/>)"
+        R"(</joint>)";
+
+    return std::string{R"(<?xml version="1.0"?><robot name="branch">)"}
+         + R"(<link name="base"/><link name="pedestal"/><link name="tool"/>)"
+         + (fixedFirst ? fixedJoint + actuatedJoint : actuatedJoint + fixedJoint)
+         + "</robot>";
+}
+
+} // namespace
+
+TEST(UrdfModelLoaderTest, AcceptsBranchingTree)
+{
+    // One link parenting two joints is a valid URDF tree, not an error. The
+    // previous implementation silently kept only one of the two branches.
+    const TemporaryUrdf file{branchingRobot(true)};
+    const auto result = mt::kinematics::load_urdf(file.path());
+
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->model.links().size(), 3u);
+    EXPECT_EQ(result->model.joints().size(), 2u);
+}
+
+TEST(UrdfModelLoaderTest, LoadsEquivalentModelRegardlessOfJointOrderInXml)
+{
+    // The bug this whole stage exists for. Reordering two <joint> elements that
+    // share a parent changes no geometry, so it must change no outcome. Before
+    // R2 one order loaded and the other returned incomplete_kinematic_chain.
+    const TemporaryUrdf fixedFirst{branchingRobot(true)};
+    const TemporaryUrdf actuatedFirst{branchingRobot(false)};
+
+    const auto a = mt::kinematics::load_urdf(fixedFirst.path());
+    const auto b = mt::kinematics::load_urdf(actuatedFirst.path());
+
+    ASSERT_TRUE(a.has_value());
+    ASSERT_TRUE(b.has_value());
+
+    // Compared as sets keyed by name: the joint vector legitimately preserves
+    // source order, so comparing index by index would test the wrong thing.
+    const auto right = b->model.joints();
+    ASSERT_EQ(a->model.joints().size(), right.size());
+    for (auto const& left : a->model.joints())
+    {
+        const auto it = std::find_if(right.begin(), right.end(),
+                                     [&](auto const& r) { return r.name == left.name; });
+        ASSERT_NE(it, right.end()) << "joint missing after reorder: " << left.name;
+        EXPECT_EQ(it->parent_link, left.parent_link);
+        EXPECT_EQ(it->child_link, left.child_link);
+        EXPECT_EQ(static_cast<int>(it->type), static_cast<int>(left.type));
+        EXPECT_DOUBLE_EQ(it->origin_xyz.z, left.origin_xyz.z);
+        EXPECT_DOUBLE_EQ(it->axis.z, left.axis.z);
+    }
+}
+
+TEST(UrdfModelLoaderTest, BuildsSameChainRegardlessOfJointOrderInXml)
+{
+    // Stronger than the previous test and closer to what matters: the selected
+    // kinematic chain must be identical, not merely the input equivalent.
+    const kinemaforge::ik::UrdfModelLoader loader;
+    const kinemaforge::ik::KinematicChainBuilder chainBuilder;
+
+    const TemporaryUrdf fixedFirst{branchingRobot(true)};
+    const TemporaryUrdf actuatedFirst{branchingRobot(false)};
+
+    const auto a = chainBuilder.build(loader.load(fixedFirst.path()), "base", "tool");
+    const auto b = chainBuilder.build(loader.load(actuatedFirst.path()), "base", "tool");
+
+    ASSERT_TRUE(a.has_value());
+    ASSERT_TRUE(b.has_value());
+    ASSERT_EQ(a->joints.size(), b->joints.size());
+    for (std::size_t i = 0; i < a->joints.size(); ++i)
+    {
+        EXPECT_EQ(a->joints[i].name, b->joints[i].name);
+        EXPECT_EQ(a->joints[i].variable.has_value(), b->joints[i].variable.has_value());
+    }
+}
+
+TEST(UrdfModelLoaderTest, RejectsEmptyLinkName)
+{
+    // T0a. link.name is node identity here, so an unnamed node is not a node.
+    const std::string urdf =
+        R"(<?xml version="1.0"?><robot name="t">)"
+        R"(<link name=""/><link name="B"/>)"
+        R"(<joint name="j" type="fixed"><parent link=""/><child link="B"/></joint>)"
+        R"(</robot>)";
+    expectRejectedWith(urdf, mt::kinematics::LoadErrorCode::invalid_link_declaration);
+}
+
+TEST(UrdfModelLoaderTest, RejectsDuplicateLinkName)
+{
+    // T0b. Two <link> elements sharing a name collapse into one node in any set
+    // keyed by name, so every later invariant would judge a graph that does not
+    // match the file.
+    const std::string urdf =
+        R"(<?xml version="1.0"?><robot name="t">)"
+        R"(<link name="A"/><link name="A"/>)"
+        R"(</robot>)";
+    expectRejectedWith(urdf, mt::kinematics::LoadErrorCode::invalid_link_declaration);
+}
+
+TEST(UrdfModelLoaderTest, RejectsUndeclaredParentLink)
+{
+    // T1. A typo used to conjure a usable frame out of thin air.
+    const std::string urdf =
+        R"(<?xml version="1.0"?><robot name="t">)"
+        R"(<link name="base"/><link name="tool"/>)"
+        R"(<joint name="j" type="revolute">)"
+        R"(<parent link="bas"/><child link="tool"/>)"
+        R"(<axis xyz="0 0 1"/><limit lower="-1" upper="1" effort="1" velocity="1"/>)"
+        R"(</joint></robot>)";
+    expectRejectedWith(urdf, mt::kinematics::LoadErrorCode::undeclared_parent_link);
+}
+
+TEST(UrdfModelLoaderTest, RejectsUndeclaredChildLink)
+{
+    // T2.
+    const std::string urdf =
+        R"(<?xml version="1.0"?><robot name="t">)"
+        R"(<link name="base"/><link name="tool"/>)"
+        R"(<joint name="j" type="revolute">)"
+        R"(<parent link="base"/><child link="ghost"/>)"
+        R"(<axis xyz="0 0 1"/><limit lower="-1" upper="1" effort="1" velocity="1"/>)"
+        R"(</joint></robot>)";
+    expectRejectedWith(urdf, mt::kinematics::LoadErrorCode::undeclared_child_link);
+}
+
+TEST(UrdfModelLoaderTest, ReportsUndeclaredLinkWithJointContext)
+{
+    // The code alone is not actionable in a file with thirty joints.
+    const std::string urdf =
+        R"(<?xml version="1.0"?><robot name="t">)"
+        R"(<link name="base"/><link name="tool"/>)"
+        R"(<joint name="shoulder" type="revolute">)"
+        R"(<parent link="typo"/><child link="tool"/>)"
+        R"(<axis xyz="0 0 1"/><limit lower="-1" upper="1" effort="1" velocity="1"/>)"
+        R"(</joint></robot>)";
+
+    const TemporaryUrdf file{urdf};
+    const auto result = mt::kinematics::load_urdf(file.path());
+
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error().code, mt::kinematics::LoadErrorCode::undeclared_parent_link);
+    EXPECT_EQ(result.error().jointName, "shoulder");
+    EXPECT_EQ(result.error().attribute, "parent/link");
+    ASSERT_TRUE(result.error().rawValue.has_value());
+    EXPECT_EQ(*result.error().rawValue, "typo");
+}
+
+TEST(UrdfModelLoaderTest, RejectsLinkClaimedByTwoJoints)
+{
+    // T3 -- what makes the graph a tree rather than a DAG. Without it
+    // T_parent_child is not well defined for the twice-claimed link.
+    const std::string urdf =
+        R"(<?xml version="1.0"?><robot name="t">)"
+        R"(<link name="base"/><link name="mid"/><link name="tool"/>)"
+        R"(<joint name="a" type="fixed"><parent link="base"/><child link="tool"/></joint>)"
+        R"(<joint name="b" type="fixed"><parent link="mid"/><child link="tool"/></joint>)"
+        R"(</robot>)";
+    expectRejectedWith(urdf, mt::kinematics::LoadErrorCode::duplicate_child_link);
+}
+
+TEST(UrdfModelLoaderTest, RejectsCyclicTopologyWithNoRoot)
+{
+    // T4, branch roots == 0. Every link has a parent, so walking up parents in a
+    // finite graph cannot terminate: a cycle is certain.
+    //
+    // The point of this test is that load_urdf RETURNS. The previous
+    // implementation looped forever while growing memory, so it would have hung
+    // ctest rather than failed it.
+    const std::string urdf =
+        R"(<?xml version="1.0"?><robot name="ring">)"
+        R"(<link name="A"/><link name="B"/><link name="C"/>)"
+        R"(<joint name="ab" type="fixed"><parent link="A"/><child link="B"/></joint>)"
+        R"(<joint name="bc" type="fixed"><parent link="B"/><child link="C"/></joint>)"
+        R"(<joint name="ca" type="fixed"><parent link="C"/><child link="A"/></joint>)"
+        R"(</robot>)";
+    expectRejectedWith(urdf, mt::kinematics::LoadErrorCode::cyclic_topology);
+}
+
+TEST(UrdfModelLoaderTest, RejectsCyclicTopologyUnreachableFromRoot)
+{
+    // T4, branch roots == 1 but visited < links. The unvisited component cannot
+    // hold a root -- there is exactly one and it was visited -- so every node
+    // there has a parent and, by the same argument, the component has a cycle.
+    const std::string urdf =
+        R"(<?xml version="1.0"?><robot name="rpr">)"
+        R"(<link name="root"/><link name="X"/><link name="A"/><link name="B"/>)"
+        R"(<joint name="rx" type="fixed"><parent link="root"/><child link="X"/></joint>)"
+        R"(<joint name="ab" type="fixed"><parent link="A"/><child link="B"/></joint>)"
+        R"(<joint name="ba" type="fixed"><parent link="B"/><child link="A"/></joint>)"
+        R"(</robot>)";
+    expectRejectedWith(urdf, mt::kinematics::LoadErrorCode::cyclic_topology);
+}
+
+TEST(UrdfModelLoaderTest, RejectsDisconnectedForest)
+{
+    // T5. This used to be accepted, and one whole subtree disappeared without a
+    // diagnostic -- a silent wrong answer rather than a loud failure. Which
+    // subtree survived depended on unordered_map iteration order.
+    const std::string urdf =
+        R"(<?xml version="1.0"?><robot name="forest">)"
+        R"(<link name="rootA"/><link name="a1"/><link name="rootB"/><link name="b1"/>)"
+        R"(<joint name="ja" type="fixed"><parent link="rootA"/><child link="a1"/></joint>)"
+        R"(<joint name="jb" type="fixed"><parent link="rootB"/><child link="b1"/></joint>)"
+        R"(</robot>)";
+    expectRejectedWith(urdf, mt::kinematics::LoadErrorCode::disconnected_topology);
+}
+
+TEST(UrdfModelLoaderTest, AcceptsSingleLinkWithNoJoints)
+{
+    // A one-node tree is legal. It is also what makes baseLink == toolLink ->
+    // empty KinematicChain reachable from an actual file.
+    const TemporaryUrdf file{
+        R"(<?xml version="1.0"?><robot name="o"><link name="only"/></robot>)"};
+    const auto result = mt::kinematics::load_urdf(file.path());
+
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->model.links().size(), 1u);
+    EXPECT_TRUE(result->model.joints().empty());
+}
+
+TEST(UrdfModelLoaderTest, RejectsSeveralIsolatedLinksWithNoJoints)
+{
+    // Two links and no joints are two isolated nodes, which is a forest. An
+    // earlier draft of this stage would have accepted it, contradicting T5.
+    const std::string urdf =
+        R"(<?xml version="1.0"?><robot name="t"><link name="A"/><link name="B"/></robot>)";
+    expectRejectedWith(urdf, mt::kinematics::LoadErrorCode::disconnected_topology);
+}
+
+// ---------------------------------------------------------------------------
+// Joint limits — the KinemaForge strict profile (stage F2.3.R, R3)
+//
+// <limit> used to be read with pugixml's as_double(), which answers 0.0 both to
+// a missing attribute and to lower="banana". A joint with no lower/upper loaded
+// as [0, 0] -- actuated, frozen, and passing the old lower > upper check because
+// 0 > 0 is false. velocity and effort were never checked at all, so "nan" and
+// "inf" reached the domain model.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// A revolute joint whose <limit> is exactly the given XML, so each test varies
+// one thing. urdfWithJoint supplies <link name="base"/> and <link name="tool"/>,
+// which the topology invariants from R2 require.
+std::string jointWithLimit(std::string_view limitXml)
+{
+    return std::string{R"(<joint name="j" type="revolute">)"}
+         + R"(<parent link="base"/><child link="tool"/>)"
+         + R"(<axis xyz="0 0 1"/>)"
+         + std::string{limitXml}
+         + "</joint>";
+}
+
+void expectLimitRejected(std::string_view limitXml, mt::kinematics::LoadErrorCode expected)
+{
+    expectRejectedWith(urdfWithJoint(jointWithLimit(limitXml)), expected);
+}
+
+} // namespace
+
+// --- element cardinality ---------------------------------------------------
+
+TEST(UrdfModelLoaderTest, RejectsMissingLimitElement)
+{
+    const std::string joint =
+        std::string{R"(<joint name="j" type="revolute">)"}
+        + R"(<parent link="base"/><child link="tool"/><axis xyz="0 0 1"/>)"
+        + "</joint>";
+    expectRejectedWith(urdfWithJoint(joint),
+                       mt::kinematics::LoadErrorCode::missing_limit_element);
+}
+
+TEST(UrdfModelLoaderTest, RejectsDuplicateLimitElement)
+{
+    // Two <limit> elements mean two different things. node.child() would take
+    // the first and say nothing, which is the defect class this stage removes.
+    expectLimitRejected(R"(<limit lower="-1" upper="1" velocity="2" effort="10"/>)"
+                        R"(<limit lower="-3" upper="3" velocity="5" effort="50"/>)",
+                        mt::kinematics::LoadErrorCode::duplicate_limit_element);
+}
+
+// --- attribute presence ----------------------------------------------------
+
+TEST(UrdfModelLoaderTest, RejectsMissingLowerLimit)
+{
+    // Regression: this used to load with limits [0, 0] -- an actuated joint
+    // frozen in place and indistinguishable from a modelling mistake.
+    expectLimitRejected(R"(<limit upper="1" velocity="1" effort="1"/>)",
+                        mt::kinematics::LoadErrorCode::missing_limit_attribute);
+}
+
+TEST(UrdfModelLoaderTest, RejectsMissingUpperLimit)
+{
+    expectLimitRejected(R"(<limit lower="-1" velocity="1" effort="1"/>)",
+                        mt::kinematics::LoadErrorCode::missing_limit_attribute);
+}
+
+TEST(UrdfModelLoaderTest, RejectsMissingVelocity)
+{
+    expectLimitRejected(R"(<limit lower="-1" upper="1" effort="1"/>)",
+                        mt::kinematics::LoadErrorCode::missing_limit_attribute);
+}
+
+TEST(UrdfModelLoaderTest, RejectsMissingEffort)
+{
+    expectLimitRejected(R"(<limit lower="-1" upper="1" velocity="1"/>)",
+                        mt::kinematics::LoadErrorCode::missing_limit_attribute);
+}
+
+TEST(UrdfModelLoaderTest, ReportsFirstMissingLimitAttributeInContractOrder)
+{
+    // The four tests above cannot pin the checking order: with one fault per
+    // input, any order produces the same result. Only a colliding input can, and
+    // the order is a contract -- a caller fixing faults one at a time gets a
+    // deterministic sequence rather than one that depends on how the validator
+    // happens to be written today.
+
+    // lower, upper AND velocity missing -> lower wins over both.
+    {
+        const TemporaryUrdf file{urdfWithJoint(jointWithLimit(R"(<limit effort="1"/>)"))};
+        const auto result = mt::kinematics::load_urdf(file.path());
+
+        ASSERT_FALSE(result.has_value());
+        EXPECT_EQ(result.error().code,
+                  mt::kinematics::LoadErrorCode::missing_limit_attribute);
+        EXPECT_EQ(result.error().attribute, "limit/lower");
+    }
+
+    // Second half of the chain: velocity wins over effort.
+    {
+        const TemporaryUrdf file{
+            urdfWithJoint(jointWithLimit(R"(<limit lower="-1" upper="1"/>)"))};
+        const auto result = mt::kinematics::load_urdf(file.path());
+
+        ASSERT_FALSE(result.has_value());
+        EXPECT_EQ(result.error().code,
+                  mt::kinematics::LoadErrorCode::missing_limit_attribute);
+        EXPECT_EQ(result.error().attribute, "limit/velocity");
+    }
+}
+
+// --- value form ------------------------------------------------------------
+
+TEST(UrdfModelLoaderTest, RejectsMalformedLowerLimit)
+{
+    expectLimitRejected(R"(<limit lower="banana" upper="1" velocity="1" effort="1"/>)",
+                        mt::kinematics::LoadErrorCode::malformed_limit_value);
+}
+
+TEST(UrdfModelLoaderTest, RejectsMalformedUpperLimit)
+{
+    // Two numbers where one is required. This is the test that pins the layer
+    // boundary: if the END rule leaked into parse_finite_number, this one alone
+    // would fail while the rest still passed.
+    expectLimitRejected(R"(<limit lower="-1" upper="1 2" velocity="1" effort="1"/>)",
+                        mt::kinematics::LoadErrorCode::malformed_limit_value);
+}
+
+TEST(UrdfModelLoaderTest, RejectsEmptyLimitAttribute)
+{
+    expectLimitRejected(R"(<limit lower="" upper="1" velocity="1" effort="1"/>)",
+                        mt::kinematics::LoadErrorCode::malformed_limit_value);
+}
+
+TEST(UrdfModelLoaderTest, RejectsNonFiniteVelocity)
+{
+    // Regression: strtod parses "nan", and the old isfinite check covered only
+    // lower and upper, so this reached the domain model.
+    expectLimitRejected(R"(<limit lower="-1" upper="1" velocity="nan" effort="1"/>)",
+                        mt::kinematics::LoadErrorCode::malformed_limit_value);
+}
+
+TEST(UrdfModelLoaderTest, RejectsNonFiniteEffort)
+{
+    expectLimitRejected(R"(<limit lower="-1" upper="1" velocity="1" effort="inf"/>)",
+                        mt::kinematics::LoadErrorCode::malformed_limit_value);
+}
+
+TEST(UrdfModelLoaderTest, RejectsOverflowingLimitValue)
+{
+    // Distinct from "not a number": 1e400 is valid syntax that from_chars
+    // rejects with result_out_of_range, a different branch.
+    expectLimitRejected(R"(<limit lower="-1" upper="1e400" velocity="1" effort="1"/>)",
+                        mt::kinematics::LoadErrorCode::malformed_limit_value);
+}
+
+// --- relations -------------------------------------------------------------
+
+TEST(UrdfModelLoaderTest, RejectsInvertedLimitRange)
+{
+    expectLimitRejected(R"(<limit lower="1" upper="-1" velocity="1" effort="1"/>)",
+                        mt::kinematics::LoadErrorCode::invalid_limit_constraint);
+}
+
+TEST(UrdfModelLoaderTest, RejectsNegativeVelocity)
+{
+    expectLimitRejected(R"(<limit lower="-1" upper="1" velocity="-2" effort="1"/>)",
+                        mt::kinematics::LoadErrorCode::invalid_limit_constraint);
+}
+
+TEST(UrdfModelLoaderTest, RejectsNegativeEffort)
+{
+    expectLimitRejected(R"(<limit lower="-1" upper="1" velocity="1" effort="-5"/>)",
+                        mt::kinematics::LoadErrorCode::invalid_limit_constraint);
+}
+
+// --- the edge of strictness: what must still be accepted -------------------
+
+TEST(UrdfModelLoaderTest, AcceptsZeroWidthLimitRange)
+{
+    // Explicit input, written twice by the author -- not a value the parser
+    // invented from silence. That distinction is the whole reason lower and
+    // upper are required.
+    const auto joint = loadSingleJoint(urdfWithJoint(jointWithLimit(
+        R"(<limit lower="1.5" upper="1.5" velocity="1" effort="1"/>)")));
+
+    EXPECT_DOUBLE_EQ(joint.limits.lower, 1.5);
+    EXPECT_DOUBLE_EQ(joint.limits.upper, 1.5);
+}
+
+TEST(UrdfModelLoaderTest, AcceptsZeroVelocityAndEffort)
+{
+    // Zero is finite and non-negative. This validates data; it does not judge
+    // whether a robot with those numbers is useful.
+    const auto joint = loadSingleJoint(urdfWithJoint(jointWithLimit(
+        R"(<limit lower="-1" upper="1" velocity="0" effort="0"/>)")));
+
+    EXPECT_DOUBLE_EQ(joint.limits.velocity, 0.0);
+    EXPECT_DOUBLE_EQ(joint.limits.effort, 0.0);
+}
+
+TEST(UrdfModelLoaderTest, AcceptsLimitValuesInScientificNotation)
+{
+    const auto joint = loadSingleJoint(urdfWithJoint(jointWithLimit(
+        R"(<limit lower="-1.5e-3" upper="2.5e2" velocity="1e1" effort="1e2"/>)")));
+
+    EXPECT_DOUBLE_EQ(joint.limits.lower, -1.5e-3);
+    EXPECT_DOUBLE_EQ(joint.limits.upper, 2.5e2);
+}
+
+TEST(UrdfModelLoaderTest, AcceptsLimitValuesWithSurroundingWhitespace)
+{
+    // Pins the full parse_scalar contract, not just its END rule: leading and
+    // trailing whitespace are allowed around a limit value. The '+' on upper
+    // also exercises the leading-sign branch through the scalar path -- the
+    // existing whitespace and plus-sign tests both go through parse_vector3,
+    // which is a different layer since parse_finite_number was extracted.
+    const auto joint = loadSingleJoint(urdfWithJoint(jointWithLimit(
+        R"(<limit lower="  -1.5  " upper="  +1.5  ")"
+        R"( velocity="  2.0  " effort="  10.0  "/>)")));
+
+    EXPECT_DOUBLE_EQ(joint.limits.lower, -1.5);
+    EXPECT_DOUBLE_EQ(joint.limits.upper, 1.5);
+    EXPECT_DOUBLE_EQ(joint.limits.velocity, 2.0);
+    EXPECT_DOUBLE_EQ(joint.limits.effort, 10.0);
+}
+
+TEST(UrdfModelLoaderTest, IgnoresLimitForFixedJoint)
+{
+    // A limit on a joint that cannot move has no meaning, so its contents are
+    // not even parsed. Without this test the decision lives only in a comment.
+    const std::string urdf =
+        R"(<?xml version="1.0"?><robot name="t">)"
+        R"(<link name="base"/><link name="tool"/>)"
+        R"(<joint name="j" type="fixed">)"
+        R"(<parent link="base"/><child link="tool"/>)"
+        R"(<limit lower="banana" upper="also nonsense"/>)"
+        R"(</joint></robot>)";
+
+    const TemporaryUrdf file{urdf};
+    const auto result = mt::kinematics::load_urdf(file.path());
+
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->model.joints().size(), 1u);
+}
+
+// --- diagnostics -----------------------------------------------------------
+
+TEST(UrdfModelLoaderTest, ReportsMalformedLimitWithAttributeContext)
+{
+    // The code alone is not actionable: it must name the joint and the attribute
+    // and quote back what was actually there.
+    const TemporaryUrdf file{urdfWithJoint(jointWithLimit(
+        R"(<limit lower="banana" upper="1" velocity="1" effort="1"/>)"))};
+    const auto result = mt::kinematics::load_urdf(file.path());
+
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error().code, mt::kinematics::LoadErrorCode::malformed_limit_value);
+    EXPECT_EQ(result.error().jointName, "j");
+    EXPECT_EQ(result.error().attribute, "limit/lower");
+    ASSERT_TRUE(result.error().rawValue.has_value());
+    EXPECT_EQ(*result.error().rawValue, "banana");
+}
+
+TEST(UrdfModelLoaderTest, ReportsGeometryFaultBeforeTopologyFault)
+{
+    // The T0..T5 ordering is a contract WITHIN topology validation. Joint
+    // parsing runs first, so a file broken both ways reports the geometry
+    // fault. Pinned so the header's promise is not read as a global priority
+    // over syntax and geometry errors.
+    const std::string urdf =
+        R"(<?xml version="1.0"?><robot name="t">)"
+        R"(<link name="base"/><link name="tool"/>)"
+        R"(<joint name="j" type="revolute">)"
+        R"(<parent link="undeclared"/><child link="tool"/>)"
+        R"(<axis xyz="abc"/><limit lower="-1" upper="1" effort="1" velocity="1"/>)"
+        R"(</joint></robot>)";
+    expectRejectedWith(urdf, mt::kinematics::LoadErrorCode::malformed_vector);
 }
