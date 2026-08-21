@@ -1,14 +1,16 @@
 # F2.3.R — remediacja po review kodu
 
-**Etap:** F2.3.R (między F2.3 i F2.4) · **status:** bieżący · **utworzono:** 2026-08-17
+**Etap:** F2.3.R (między F2.3 i F2.4) · **status:** ZAMKNIĘTY · **utworzono:** 2026-08-17 · **zamknięty:** 2026-08-18
 
 Ten folder zawiera proposale powstałe w reakcji na pełne review kodu z
-2026-08-17. Trzyma je osobno od `proposal/`, bo nie są kolejnym krokiem
+2026-08-17. Od początku trzymane osobno, bo nie są kolejnym krokiem
 funkcjonalnym roadmapy — są naprawą znalezisk, i warto, żeby dało się je czytać
-jako jedną spójną paczkę.
+jako jedną spójną paczkę. Od 2026-08-21 folder leży w `proposal/done/`, razem z
+pozostałymi zamkniętymi etapami; jego zawartość nie zmieniła się przy
+przenosinach, poprawione zostały wyłącznie ścieżki względne.
 
 Kontekst, dowody i Definition of Done etapu:
-[`../KinemaForge_Phase2_Phase3_Roadmap.md`](../KinemaForge_Phase2_Phase3_Roadmap.md),
+[`../../KinemaForge_Phase2_Phase3_Roadmap.md`](../../KinemaForge_Phase2_Phase3_Roadmap.md),
 sekcja **F2.3.R**.
 
 ## Zakres
@@ -31,10 +33,10 @@ ani modelu równań. **Nic z F2.1–F2.3 nie jest cofane ani przepisywane.**
 | R3 | `proposal-loader-limits-strict-parsing-architecture.md` | 4 | MEDIUM/HIGH | v3 APPROVED — **ZAIMPLEMENTOWANE** |
 | R3 | `proposal-loader-limits-strict-parsing-implementation.md` | — | MEDIUM/HIGH | v3 APPROVED — **ZAIMPLEMENTOWANE** |
 | R4 | `proposal-legacy-robot-model-boundary.md` | 5, 6 | MEDIUM | v2 APPROVED — **ZAIMPLEMENTOWANE** |
-| R5 | `proposal-expression-factory-finite-invariant-architecture.md` | 7 | MEDIUM | do napisania |
-| R5 | `proposal-expression-factory-finite-invariant-implementation.md` | — | MEDIUM | do napisania |
+| R5 | `proposal-expression-factory-finite-invariant-architecture.md` | 7 | MEDIUM | v2 APPROVED — **ZAIMPLEMENTOWANE** |
+| R5 | `proposal-expression-factory-finite-invariant-implementation.md` | — | MEDIUM | v2 APPROVED — **ZAIMPLEMENTOWANE** |
 
-R1 jest jednym dokumentem, nie parą — precedens: `../proposal-loader-test-coverage.md`.
+R1 jest jednym dokumentem, nie parą — precedens: `../phase1-urdf-to-symbolic-fk/proposal-loader-test-coverage.md`.
 
 Uwaga 10 (`IkEquationSystem` przyjmuje równania na symbol spoza `unknowns`) nie
 dostaje własnego proposala. Wchodzi jako warunek kontraktowy do F2.4:
@@ -62,11 +64,12 @@ przy tym dokładnie to zabezpieczenie, które wyłapuje regresję z uwagi 9.
 
 ## Gate
 
-F2.4 (`ConstraintBuilder`) jest **zablokowane** do zamknięcia tego etapu.
-Warunki wyjścia w roadmapie, sekcja „Definition of Done etapu F2.3.R".
+F2.4 (`ConstraintBuilder`) było **zablokowane** do zamknięcia tego etapu.
+Warunki wyjścia w roadmapie, sekcja „Definition of Done etapu F2.3.R" — spełnione
+2026-08-18, gate otwarty, F2.4 i F2.5 są dziś zaimplementowane.
 
 ## Proces
 
 Jak w całym repo: proposal architektoniczny → review → proposal implementacyjny
 → review → implementacja → clean build → pełne testy → aktualizacja
-`../../STATUS.md`. Kod żyje w `.md` do momentu zatwierdzenia.
+`../../../STATUS.md`. Kod żyje w `.md` do momentu zatwierdzenia.

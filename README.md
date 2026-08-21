@@ -43,6 +43,15 @@ This repo is the home of `IkEquationBuilder`: a small, self-contained C++ librar
                                                     ▼
                                           ExpressionEvaluator
                                         (substitute q → numbers)
+
+                                     T_base_tcp(q) + a task target
+                                                    │
+                                                    ▼
+                                            ConstraintBuilder
+                                                    │
+                                                    ▼
+                                            IkEquationSystem
+                                       (3 equations, or 12 for a pose)
 ```
 
 Everything under the facade is a private implementation detail. From the outside, using the whole pipeline looks like this:
@@ -123,7 +132,8 @@ The important consequence is that **the TCP is a sibling of the transform, not a
 - **`FixedRigidTransform` + `setTcp`** — an optional constant offset from the end of the selected chain to the real tool centre point, composed as `T_base_tcp(q) = T_base_chain_tip(q) · T_chain_tip_tcp`. Given as translation plus fixed-axis RPY, in metres and radians, and always measured from whichever link you chose as the chain tip — no link name is hard-coded.
 - **The symbolic model** (`Expression`, `SymbolicMatrix`, `multiplyTransforms`) — a small expression-tree engine (constants, symbols, `+ - * /`, `sin`/`cos`) strong enough to represent everything the builders above produce, and future-proof enough for the next stage of the project.
 - **`ExpressionEvaluator`** — substitutes concrete joint values back into a symbolic tree and returns a `double`. Memoized by node identity, which is not an optimization but a requirement: a composed FK transform for `kr640.urdf` is 281 unique nodes but 21 882 counted with multiplicity. One instance is one substitution, so a cache filled for one configuration can never answer for another.
-- **The equation model** (`Equation`, `IkEquationSystem`, `IkTarget`) — what an IK equation and a task target *are*. Types only: no builder and no solver yet. It exists first on purpose, so the constraint builder has a contract to satisfy instead of one to invent.
+- **The equation model** (`Equation`, `IkEquationSystem`, `IkTarget`) — what an IK equation and a task target *are*. Types only, and deliberately written **before** anything that builds them, so the constraint builder had a contract to satisfy instead of one to invent. An equation is stored as `lhs = rhs`, never normalised to `lhs - rhs = 0`: subtracting would destroy which side came from the robot and which from the task, and that boundary cannot be recovered without algebraic decomposition.
+- **`ConstraintBuilder`** — the first component that *formulates* IK rather than describing geometry. Given the symbolic transform, the chain it came from and a target, it emits an explicit `IkEquationSystem`: three equations for a `PositionTarget`, twelve for a `PoseTarget` (three of position, nine of orientation). Nine matrix cells for three rotational degrees of freedom is on purpose — no fixed subset of three is independent for every rotation, so **the equation count is not the constraint count**, and picking an independent subproblem belongs to the layer that knows the solution structure. It also guarantees that every symbol appearing in the equations is a declared unknown of the chain — checked by walking the equations, not assumed.
 
 ### Is the math right?
 
@@ -140,17 +150,20 @@ IkEquationBuilder
 │
 ├── (done) URDF → chain → symbolic forward kinematics, numerically cross-checked
 ├── (done) constant TCP offset → T_base_tcp(q)
-├── (done) the equation and target model — types only, nothing builds them yet
+├── (done) the equation and target model — what an equation and a target *are*
+├── (done) ConstraintBuilder — FK + a target → an explicit system of IK equations
 │
-└── (next, then future)
-    ├── ConstraintBuilder    — FK + a target → an explicit system of IK equations
+└── (in progress, then future)
+    ├── quaternion targets   — the same constraint, given as a quaternion (in review)
+    ├── directional targets  — tool axis, surface angle, free spin around the nozzle
+    ├── facade integration   — the whole of the above behind IkEquationBuilder
     ├── EquationSimplifier   — collapse the raw symbolic mess into something readable
     ├── EquationSolver       — actually solve the equation for inverse kinematics
     ├── IkPatternDetector    — recognize known structural shortcuts (e.g. spherical wrist)
     └── CodeGenerator        — emit fast, specialized code straight from the derived formula
 ```
 
-`ConstraintBuilder` is the immediate next step, and it is the first point at which the project *formulates* IK rather than describing geometry. Nothing beyond it exists yet, on purpose.
+The project now **states** an IK problem end to end: a URDF and a target pose go in, and a system of twelve symbolic equations in the joint variables comes out. It does not solve them, and nothing beyond that exists yet, on purpose. `ConstraintBuilder` is also not wired into the facade yet — the family of constraints has to be complete first, or the facade API would be designed against a moving target.
 
 One thing worth saying plainly: everything built so far was mechanical translation with a known correct answer — parse, walk, compose, evaluate. What follows is not. `EquationSolver` has no single algorithm; it is case analysis, and for some robots a closed-form solution does not exist at all. Measured by effort rather than by component count, the first phase is closer to a quarter of the whole than to half.
 
@@ -171,10 +184,11 @@ URDF
   → Symbolic transforms (one per joint)
   → Symbolic forward kinematics
   → Symbolic forward kinematics to the TCP
-  → (next) an explicit system of IK equations
+  → An explicit system of IK equations
+  → (next) simplification, then a solution
 ```
 
-Each stage owns exactly one responsibility. The goal is to keep the architecture modular enough that future stages — simplification, inverse kinematics solving, and code generation — can be added without changing the earlier pipeline. So far it has held: the TCP offset and the equation model were both pure additions, with no change to any earlier stage.
+Each stage owns exactly one responsibility. The goal is to keep the architecture modular enough that future stages — simplification, inverse kinematics solving, and code generation — can be added without changing the earlier pipeline. So far it has held: the TCP offset, the equation model and the constraint builder were all pure additions, with no change to any earlier stage.
 
 Two decisions shape the symbolic layer more than any others, and both cost something on purpose:
 
@@ -185,4 +199,4 @@ Two decisions shape the symbolic layer more than any others, and both cost somet
 
 See [`COMMANDS.md`](COMMANDS.md) for the day-to-day cheat sheet (CMake configure/build, running tests, PowerShell shortcuts), and [`STATUS.md`](STATUS.md) for the current component-by-component state.
 
-Non-trivial changes go through a written proposal in [`proposal/`](proposal/) before any code is written: the prompt, the current state, and the full code of the change, reviewed and approved first.
+Non-trivial changes go through a written proposal in [`proposal/`](proposal/) before any code is written: the prompt, the current state, and the full code of the change, reviewed and approved first. Once a stage is implemented and green, its proposals move to [`proposal/done/`](proposal/done/README.md) — so the top of `proposal/` is always what is in flight, and the archive keeps the reasoning behind decisions the code no longer shows, including the variants that were rejected.

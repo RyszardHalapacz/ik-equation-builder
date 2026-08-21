@@ -1,6 +1,6 @@
 # KinemaForge / IkEquationBuilder — roadmapa Fazy 2 i Fazy 3
 
-**Data:** 2026-08-03 · **ostatnia aktualizacja:** 2026-08-17  
+**Data:** 2026-08-03 · **ostatnia aktualizacja:** 2026-08-21  
 **Zakres:** rozwój po zakończeniu Fazy 1 (`URDF → zweryfikowane symboliczne FK`)  
 **Założenie wejściowe:** `IkEquationBuilder` jest zaimplementowany, pełny clean build przechodzi, a Faza 1 jest oznaczona jako zakończona.
 
@@ -12,12 +12,17 @@
 F2.1  transformacja TCP — architektura          ✅ zaimplementowane
 F2.2  transformacja TCP — implementacja         ✅ zaimplementowane
 F2.3  model równań i targetów                   ✅ zaimplementowane
-F2.3.R  remediacja po review kodu               ◀ TUTAJ JESTEŚMY
-F2.4  ConstraintBuilder: PositionOnly           ⬜ zablokowane przez F2.3.R
-F2.5  ConstraintBuilder: FullPose               ⬜
-F2.6  constrainty kierunkowe                    ⬜
-F2.7  integracja z fasadą + milestone           ⬜
+F2.3.R  remediacja po review kodu               ✅ zaimplementowane
+F2.4  ConstraintBuilder: PositionOnly           ✅ zaimplementowane
+F2.5  ConstraintBuilder: FullPose               ✅ zaimplementowane
+F2.5Q target kwaternionowy                      ✅ zaimplementowane
+F2.6  constrainty kierunkowe                    ✅ zaimplementowane (a + b)
+F2.7  integracja z fasadą + milestone           ◀ TUTAJ JESTEŚMY
 ```
+
+Proposale etapów zamkniętych leżą w `proposal/done/<etap>/` — przeniesienie tam
+jest ostatnim krokiem etapu, po clean buildzie, pełnych testach i aktualizacji
+`STATUS.md`. W `proposal/` zostaje wyłącznie to, co jest w toku.
 
 Etap `F2.3.R` **nie był planowany** w pierwotnej roadmapie — powstał w reakcji
 na pełne review kodu z 2026-08-17, które wykazało dwa błędy o wysokiej wadze w
@@ -103,7 +108,10 @@ Faza 2 ma **2 główne komponenty**:
 1. obsługa `tool0 → TCP`,
 2. `ConstraintBuilder`.
 
-Realizacyjnie dzielimy ją na **7 etapów**.
+Realizacyjnie dzielimy ją na **8 etapów** — siedem planowanych pierwotnie plus
+`F2.5Q` (target kwaternionowy), wydzielony z F2.5 w review architektury
+2026-08-20. Osobno, poza tą numeracją, doszedł `F2.3.R` — etap remediacyjny po
+review kodu z 2026-08-17.
 
 ---
 
@@ -257,7 +265,7 @@ proposal-ik-equation-model-implementation.md
 
 ---
 
-## F2.3.R — remediacja po review kodu  ◀ etap bieżący
+## F2.3.R — remediacja po review kodu  ✅ zamknięty 2026-08-18
 
 ### Skąd się wziął ten etap
 
@@ -311,11 +319,11 @@ kolejnym krokiem funkcjonalnym roadmapy, a naprawą znalezisk — i mają dać s
 czytać jako jedna paczka:
 
 ```text
-proposal/F2.3.R-review-remediation/
+proposal/done/F2.3.R-review-remediation/     (od 2026-08-21; wcześniej proposal/F2.3.R-review-remediation/)
 ```
 
 Indeks etapu:
-[`F2.3.R-review-remediation/README.md`](F2.3.R-review-remediation/README.md).
+[`done/F2.3.R-review-remediation/README.md`](done/F2.3.R-review-remediation/README.md).
 
 | # | Proposal (w `F2.3.R-review-remediation/`) | Uwagi z review | Waga |
 |---|---|---|---|
@@ -507,7 +515,12 @@ Dopiero po tym gate'cie wchodzi F2.4.
 
 ---
 
-## F2.4 — `ConstraintBuilder`: `PositionOnly`
+## F2.4 — `ConstraintBuilder`: `PositionOnly`  ✅ zaimplementowane 2026-08-20
+
+> **Zamknięty.** Trzy równania translacji, `IkTaskKind::Position`, plus warunek
+> kontraktowy odziedziczony po review (uwaga 10): każdy symbol w równaniach jest
+> zadeklarowaną niewiadomą — sprawdzane, nie zakładane. Dwanaście testów.
+> Dokumenty: [`done/F2.4-constraint-builder-position/`](done/F2.4-constraint-builder-position/).
 
 ### Cel
 
@@ -545,7 +558,13 @@ Po tym etapie projekt potrafi automatycznie zbudować układ równań pozycyjneg
 
 ---
 
-## F2.5 — `ConstraintBuilder`: `FullPose`
+## F2.5 — `ConstraintBuilder`: `FullPose`  ✅ zaimplementowane 2026-08-20
+
+> **Zamknięty.** Wariant A: dziewięć równań komórkowych rotacji plus trzy
+> pozycji, `IkTaskKind::Pose`, dwanaście równań w kolejności row-major.
+> Dwanaście testów F2.4 przeszło refaktor bez zmiany choćby jednej asercji, co
+> było właściwym sprawdzianem tego refaktoru. Dokumenty:
+> [`done/F2.5-constraint-builder-fullpose/`](done/F2.5-constraint-builder-fullpose/).
 
 ### Cel
 
@@ -572,21 +591,105 @@ BuildsFullPoseEquationSystem
 IncludesPositionAndOrientationConstraints
 RejectsNonOrthogonalTargetRotation
 RejectsReflectionTargetRotation
-AcceptsValidQuaternionTarget
-ProducesEquivalentTargetsForQuaternionAndMatrix
 ```
+
+> **Zmienione 2026-08-20, w review architektury F2.5.** `AcceptsValidQuaternionTarget`
+> i `ProducesEquivalentTargetsForQuaternionAndMatrix` **wypadają z F2.5** i
+> tworzą osobny etap `F2.5Q` niżej. Powód: wejście kwaternionowe to zmiana
+> `PoseTarget`, czyli modelu zatwierdzonego w F2.3, plus druga — produkcyjna —
+> implementacja konwersji, bo kwaterniony w `tests/support` mają celowo pozostać
+> niezależnym oraclem. To jest osobna praca, nie doklejka do etapu o równaniach
+> orientacji. Bez tej zmiany F2.5 zostałby zamknięty mimo niespełnionego
+> własnego DoD.
 
 ### Gate
 
 ```text
 pełna poza → jawny IkEquationSystem
-target rotation jest poprawnym obrotem
+target rotation jest poprawnym obrotem (walidacja macierzy, bez konwersji)
 brak ukrytej konwersji zależnej od MotionBridge
 ```
 
 ---
 
-## F2.6 — constrainty kierunkowe i pozycje wymuszone
+## F2.5Q — target kwaternionowy  ✅ zaimplementowane 2026-08-21
+
+> Wydzielone z F2.5 dnia 2026-08-20, podjęte i zamknięte 2026-08-21.
+> Dokumenty: [`done/F2.5Q-quaternion-target/`](done/F2.5Q-quaternion-target/).
+>
+> **Zamknięty.** Kwaternion wchodzi jedną funkcją wytwórczą na granicy modelu
+> (`makePoseTargetFromQuaternion`), więc `IkTarget`, `IkEquationSystem` i
+> `ConstraintBuilder` nie zmieniły się ani o linijkę. Norma ma własną, zmierzoną
+> tolerancję `1e-8`, a przyjęty kwaternion jest normalizowany przed konwersją —
+> bez tego cel na krawędzi pasma dawałby macierz odchyloną `8e-8`, czyli osiem
+> razy poza próg walidacji modelu. 21 testów, gate 365/365 w obu konfiguracjach.
+>
+> **Jedna obietnica zawężona w review i to jest kontrakt, nie szczegół:** próg
+> normy **nie jest** detektorem tego, czy dane przeszły przez `float` — 41.65%
+> takich kwaternionów przechodzi, a wartości dokładnie reprezentowalne w `float`
+> przechodzą zawsze. Gwarancja brzmi dokładnie: skończony i w promieniu `1e-8` od
+> jedności → przyjęty i znormalizowany; w przeciwnym razie odrzucony.
+
+### Cel
+
+Przyjmować orientację celu również jako kwaternion, bez utraty niezależności
+kontroli numerycznej FK.
+
+### Zakres i warunek konieczny
+
+```text
++ typ kwaternionu w modelu (albo alternatywa w PoseTarget, albo osobne wejście)
++ własna tolerancja normalizacji, niezależna od kOrientationTolerance
++ konwersja kwaternion -> RotationMatrix3 NAPISANA W PRODUKCIE OD ZERA
+```
+
+Ostatni punkt jest warunkiem, nie preferencją: `tests/support/NumericForwardKinematics`
+jest drugą implementacją FK i jego wartość znika, jeśli produkt zacznie wołać
+ten sam kod. Krzyżowa walidacja FK musi dalej porównywać dwie niezależne
+implementacje.
+
+### Minimalne testy
+
+```text
+AcceptsValidQuaternionTarget
+ProducesEquivalentTargetsForQuaternionAndMatrix
+RejectsNonNormalizedQuaternion
+MatchesQuaternionRotationWithoutFormingAMatrix
+AgreesWithRodriguesRotationFormula
+```
+
+> **Zmienione 2026-08-21, w review architektury F2.5Q.** Wpis
+> `QuaternionConversionIsIndependentOfTestOracle` zastąpiony dwoma konkretnymi
+> testami, bo niezależności nie sprawdza się jednym asertem. Rozbicie odpowiada
+> dwóm różnym drogom kontroli: pierwszy test porównuje `R·v` z kanapką
+> kwaternionową oracle'a (która nigdy nie buduje macierzy), drugi — z macierzą ze
+> wzoru Rodriguesa, czyli drogą trygonometryczną, **nieprzechodzącą przez
+> kwaterniony w ogóle**. Dopiero ten drugi wyłapuje pomyloną konwencję `(w,x,y,z)`
+> / `(x,y,z,w)`, która w świecie kwaternionowym jest spójna sama ze sobą.
+> Strukturalna połowa warunku — brak współdzielenia kodu z `tests/support` — nie
+> jest testem, tylko faktem z budowy: to źródło należy do celu `kinemaforge_tests`,
+> nie do `kinemaforge_ik`.
+
+### Gate
+
+```text
+ten sam IkEquationSystem dla kwaternionu i dla równoważnej macierzy
+konwersja produkcyjna nie dzieli kodu z tests/support
+```
+
+---
+
+## F2.6 — constrainty kierunkowe i pozycje wymuszone  ✅ zaimplementowane 2026-08-21
+
+> **Zamknięty, w dwóch połowach.** Pięć nazw z listy niżej okazało się **dwiema
+> rodzinami równań**: równością kierunku osi narzędzia (F2.6a) i kątem do kierunku
+> odniesienia (F2.6b), każda z pozycją i bez niej — sześć rodzajów zadania razem z
+> `Position` i `Pose`. `AxisAlignment` to ta sama rodzina co `FixedToolDirection`,
+> `PositionAndAxis` to kompozycja, a **`FreeRotationAroundToolAxis` nie jest
+> ograniczeniem** — to własność równań kierunku, sprawdzana testem.
+>
+> 45 testów, gate 410/410 w obu konfiguracjach. Dokumenty:
+> [`F2.6-directional-constraints/`](done/F2.6-directional-constraints/proposal-directional-constraints-architecture.md).
 
 ### Cel
 
@@ -630,7 +733,7 @@ Każdy constraint ma:
 
 ---
 
-## F2.7 — integracja z fasadą i milestone Fazy 2
+## F2.7 — integracja z fasadą i milestone Fazy 2  ◀ etap bieżący
 
 ### Docelowy przepływ
 
@@ -1071,54 +1174,59 @@ v1.0-analytic-ik
 ## Faza 2
 
 ```text
-proposal-tcp-transform-architecture.md              ✅ zaimplementowane
-proposal-tcp-transform-implementation.md            ✅ zaimplementowane
+--- zamknięte, w proposal/done/ ---
 
-proposal-ik-equation-model-architecture.md          ✅ zaimplementowane
-proposal-ik-equation-model-implementation.md        ✅ zaimplementowane
+done/F2.1-F2.2-tcp-transform/
+    proposal-tcp-transform-architecture.md                  ✅ zaimplementowane
+    proposal-tcp-transform-implementation.md                ✅ zaimplementowane
 
---- F2.3.R: remediacja po review kodu (etap bieżący) ---
---- wszystko w F2.3.R-review-remediation/            ---
+done/F2.3-ik-equation-model/
+    proposal-ik-equation-model-architecture.md              ✅ zaimplementowane
+    proposal-ik-equation-model-implementation.md            ✅ zaimplementowane
 
-F2.3.R-review-remediation/
-    README.md                                       ✅ indeks etapu
+done/F2.3.R-review-remediation/                             ✅ etap zamknięty 2026-08-18
+    README.md                                               indeks etapu
+    proposal-warning-policy.md                              R1
+    proposal-loader-topology-architecture.md                R2 — implementacja bez
+                                                            osobnego proposala, na polecenie
+    proposal-loader-limits-strict-parsing-architecture.md   R3
+    proposal-loader-limits-strict-parsing-implementation.md R3
+    proposal-legacy-robot-model-boundary.md                 R4 — jeden dokument, nie para
+    proposal-expression-factory-finite-invariant-architecture.md    R5
+    proposal-expression-factory-finite-invariant-implementation.md  R5
 
-    proposal-warning-policy.md                      ◀ R1, następny do napisania
-    implementation + tests
+done/F2.4-constraint-builder-position/
+    proposal-constraint-builder-architecture.md             ✅ zaimplementowane
+    proposal-constraint-builder-implementation.md           ✅ zaimplementowane
 
-    proposal-loader-topology-architecture.md        ◀ R2
-    proposal-loader-topology-implementation.md
-    implementation + tests
+done/F2.5-constraint-builder-fullpose/
+    proposal-constraint-builder-fullpose-architecture.md    ✅ zaimplementowane
+    proposal-constraint-builder-fullpose-implementation.md  ✅ zaimplementowane
 
-    proposal-loader-limits-strict-parsing-architecture.md      ◀ R3
-    proposal-loader-limits-strict-parsing-implementation.md
-    implementation + tests
+--- w toku, w proposal/ ---
 
-    proposal-legacy-robot-model-boundary-architecture.md       ◀ R4
-    proposal-legacy-robot-model-boundary-implementation.md
-    implementation + tests
+done/F2.5Q-quaternion-target/
+    proposal-quaternion-target-architecture.md              ✅ zaimplementowane
+    proposal-quaternion-target-implementation.md            ✅ zaimplementowane
 
-    proposal-expression-factory-finite-invariant-architecture.md    ◀ R5
-    proposal-expression-factory-finite-invariant-implementation.md
-    implementation + tests
+--- w toku, w proposal/ ---
 
---- powrót do planu pierwotnego, znów w proposal/ ---
+done/F2.6-directional-constraints/
+    proposal-directional-constraints-architecture.md        ✅ zaimplementowane
+    proposal-directional-constraints-a-implementation.md    ✅ zaimplementowane
+    proposal-directional-constraints-b-implementation.md    ✅ zaimplementowane
 
-proposal-constraint-builder-position-architecture.md
-proposal-constraint-builder-position-implementation.md
-implementation + tests
+--- w toku, w proposal/ ---
 
-proposal-constraint-builder-full-pose-architecture.md
-proposal-constraint-builder-full-pose-implementation.md
-implementation + tests
-
-proposal-directional-constraints-architecture.md
-proposal-directional-constraints-implementation.md
-implementation + tests
-
-proposal-phase2-facade-integration.md
-implementation + end-to-end validation
+F2.7-facade-integration/
+    proposal-phase2-facade-integration.md                   ◀ następny do napisania
+    implementation + end-to-end validation
 ```
+
+Nazwy plików F2.4 i F2.5 różnią się od zapowiadanych tu wcześniej
+(`proposal-constraint-builder-position-*`, `-full-pose-*`). Zostają takie, jak
+zostały zatwierdzone: przenumerowanie dokumentów po fakcie kosztuje więcej, niż
+warta jest zgodność z zapowiedzią.
 
 ## Faza 3
 
@@ -1153,8 +1261,13 @@ F3.10 singularności
 ```text
 Faza 2:
     2 główne komponenty
-    7 etapów realizacyjnych planowanych
+    8 etapów realizacyjnych
+      = 7 planowanych pierwotnie
+      + F2.5Q (target kwaternionowy), wydzielony z F2.5 w review 2026-08-20
   + 1 etap remediacyjny (F2.3.R, 5 proposali) dodany po review 2026-08-17
+
+    zamknięte:  F2.1, F2.2, F2.3, F2.3.R, F2.4, F2.5, F2.5Q, F2.6
+    zostaje:    F2.7
 
 Faza 3:
     4 główne komponenty
@@ -1167,22 +1280,30 @@ Nie oznacza to, że Faza 3 jest tylko dwa razy większa. Etapy solvera są badaw
 
 # 6. Najbliższy krok
 
-**Stan na 2026-08-17.** F2.1–F2.3 są zaimplementowane. Etapem bieżącym jest
-`F2.3.R` — remediacja po review kodu — i pierwszym dokumentem do napisania jest:
+**Stan na 2026-08-21, po zamknięciu F2.6.** F2.1–F2.6 zaimplementowane,
+**410/410** testów w obu konfiguracjach (`build/` w Release i `build-werror/` z
+`-Werror` oraz żywymi asercjami). `ConstraintBuilder` obsługuje **sześć rodzajów
+zadań**: pozycję, pełną pozę, kierunek osi narzędzia i kąt do kierunku odniesienia
+— dwa ostatnie z pozycją i bez niej. Orientację celu można podać macierzą albo
+kwaternionem.
+
+Etapem bieżącym jest **F2.7** — ostatni etap Fazy 2. Do napisania:
 
 ```text
-proposal/F2.3.R-review-remediation/proposal-warning-policy.md          (R1)
+proposal/F2.7-facade-integration/proposal-phase2-facade-integration.md
 ```
 
-R1 ma odpowiedzieć wyłącznie na pytanie:
+F2.7 był celowo zostawiony na koniec: fasada zaprojektowana przed domknięciem
+rodziny ograniczeń byłaby projektowana pod ruchomy cel. Teraz rodzina jest
+zamknięta i fasada ma co wystawić.
 
-> Jakie ostrzeżenia włączamy, gdzie `-Werror` obowiązuje, i jak sprawić, żeby
-> ochrona, na którą kod już się w komentarzach powołuje (`-Wswitch` łapiący nowy
-> enumerator), rzeczywiście istniała — nie ruszając przy tym logiki?
+Dwie rzeczy, które ten etap dziedziczy i będzie musiał rozstrzygnąć, obie zapisane
+w `STATUS.md` jako znane braki: **cel nie zna swojej ramki**, a **transformacja
+nie jest związana z łańcuchem**, z którego powstała. Fasada jest pierwszą warstwą,
+która trzyma jedno i drugie naraz — czyli pierwszą, która **może** je związać.
 
-Dwa naruszenia, które trzeba przy tym naprawić, są znane i jednoliniowe:
-`IkEquationBuilder.hpp:57` oraz `KinematicChainBuilder.cpp:59`.
+Po F2.7 zostaje Definition of Done Fazy 2 i release `v0.2-ik-equations`.
 
-Po R1 idzie R2 (topologia loadera) jako znalezisko o najwyższej wadze. F2.4
-`ConstraintBuilder` jest **zablokowane** do zamknięcia gate'u F2.3.R — z jednym
-wyjątkiem: R5 nie dotyka loadera i może iść równolegle.
+Historyczny zapis „najbliższego kroku" z 2026-08-17 — R1 i kolejność
+R1 → (R2 + R4) → R3 → R5 — jest w sekcji `F2.3.R` i w
+`proposal/done/F2.3.R-review-remediation/README.md`.
