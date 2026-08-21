@@ -32,7 +32,7 @@ Ostatni etap Fazy 2.
 
 | Dokument | Temat | Stan | Linii |
 |---|---|---|---|
-| [`F2.7-facade-integration/proposal-phase2-facade-integration.md`](F2.7-facade-integration/proposal-phase2-facade-integration.md) | Cel jako argument zamiast stanu, wybór transformacji, DoD Fazy 2 | **DO REVIEW (v1)** | 475 |
+| [`F2.7-facade-integration/proposal-phase2-facade-integration.md`](F2.7-facade-integration/proposal-phase2-facade-integration.md) | Cel jako argument, TCP jako stan, który frame jest ograniczany, DoD Fazy 2 | **DO REVIEW (v2)** | 592 |
 
 ## Analizy poprzedzające proposale
 

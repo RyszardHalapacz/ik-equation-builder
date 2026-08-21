@@ -1,6 +1,22 @@
 # Proposal: integracja z fasadą i milestone Fazy 2 (F2.7), architektura
 
-**Etap:** F2.7 · **v1 — do review** · 2026-08-21 · część 1 z 2
+**Etap:** F2.7 · **v2 — do review** · 2026-08-21 · część 1 z 2
+
+> **v2, po review.** Wariant A zatwierdzony; trzy poprawki merytoryczne i jedna
+> rachunkowa:
+>
+> 1. **„Cel jest w ramce TCP" było semantycznie błędne** i mogło skłonić caller'a
+>    do przetransformowania celu do układu TCP — czyli do zbudowania złego
+>    ograniczenia. Wszystkie wielkości celu są i pozostają **w bazie**; TCP wybiera
+>    wyłącznie, **który frame robota** jest ograniczany. Przepisane 3.1, 4 i 7.
+> 2. **Test po zmianie łańcucha opisywał stan niemożliwy.** `selectChain` czyści
+>    TCP, więc błędem jest `ForwardKinematicsNotBuilt`, a nie
+>    `TcpForwardKinematicsNotBuilt`; po samym `buildForwardKinematics` zapytanie
+>    **przechodzi** ścieżką końca łańcucha. Przepisane (8).
+> 3. **Pytanie roadmapy dotyczyło celu I TCP**, a v1 rozstrzygała jawnie tylko cel.
+>    Asymetria jest zamierzona i teraz jest uzasadniona wprost (2.4).
+> 4. Lista testów miała 13 pozycji przy zapowiedzianych 12 — dwa scalone w jeden,
+>    gate `422/422` (8).
 
 Ostatni etap Fazy 2. Po nim `IkEquationBuilder` przyjmuje URDF, TCP i cel, a
 oddaje **jawny układ równań IK** — czyli to, co roadmapa zapisała jako Definition
@@ -146,6 +162,39 @@ wszystkim, którzy chcieliby dzielić jedną fasadę.
 **model robota**; ta jedna zadaje mu **pytanie**. Trzymanie obu rodzajów rzeczy w
 jednym grafie stanu nie jest spójnością, tylko zatarciem różnicy.
 
+### 2.4 Druga połowa pytania: TCP zostaje **stanem**
+
+Prompt pyta o „target i TCP". v1 rozstrzygała jawnie tylko cel, a TCP zostawał
+stanem niejako przy okazji — review słusznie to wytknęło, bo to jest **osobna
+decyzja** i zasługuje na własne uzasadnienie.
+
+```text
+robot / łańcuch / FK / TCP / TCP-FK   ->  stan modelu
+cel                                   ->  argument zapytania
+IkEquationSystem                      ->  migawka wyniku
+```
+
+Asymetria jest zamierzona i wynika z tego samego kryterium, które rozstrzygnęło
+punkt 2.3: **czy rzecz jest droga i współdzielona przez wiele zapytań.** TCP jest
+konfiguracją narzędzia — jedną dla całej operacji technologicznej — a
+`T_base_tcp(q)` liczy się raz i służy tysiącom celów:
+
+```cpp
+builder.setTcp(tcp);
+builder.buildTcpForwardKinematics();     // raz
+
+for (const auto& target : path)          // wiele razy
+    consume(builder.buildEquationSystem(target));
+```
+
+Gdyby TCP był argumentem zapytania — `buildEquationSystem(target, tcp)` — zostałyby
+dwa wyjścia, oba gorsze: albo `T_base_tcp(q)` przelicza się **przy każdym celu**
+(kompozycja całego łańcucha na wyrzucenie), albo dochodzi cache po wartości TCP —
+czyli stan, tylko ukryty i bez kontraktu.
+
+Kryterium jest więc jedno i rozdziela te dwie rzeczy czysto: **cel jest pytaniem,
+TCP jest częścią modelu, którą wiele pytań współdzieli.**
+
 **Zmiana wobec roadmapy jest jawna.** Kandydat z promptu pokazuje wariant B.
 Ten proposal go odrzuca i — zgodnie z precedensem F2.5 — **roadmapa zostaje
 zmieniona**, a nie po cichu ominięta (9). Znikają też z niej dwa testy
@@ -160,16 +209,42 @@ Fasada trzyma **dwie** transformacje: `forwardKinematics()` (koniec łańcucha) 
 którą dostał — to jest zapisany brak („cel nie zna swojej ramki"), a pomyłka daje
 układ błędny dokładnie o offset narzędzia: kompiluje się, liczy i jest nieprawdą.
 
-### 3.1 Reguła
+### 3.1 Reguła — i czego ona **nie** znaczy
 
 ```text
-TCP ustawiony        -> cel jest w ramce TCP, używana jest tcpForwardKinematics()
-TCP nieustawiony     -> cel jest w ramce końca łańcucha, używana jest forwardKinematics()
+TCP ustawiony        -> ograniczany jest frame TCP;    używane tcpForwardKinematics()
+TCP nieustawiony     -> ograniczany jest koniec łańcucha; używane forwardKinematics()
+
+w OBU przypadkach    -> wielkości celu są wyrażone w BAZIE
 ```
 
-Wybór jest **niejawny, ale nie cichy**: wynika ze stanu, który caller sam
-ustawił, i jest opisany w kontrakcie metody. Parametr `TargetFrame` byłby
-zmuszaniem go do powtórzenia informacji, którą już przekazał wołając `setTcp`.
+Ostatni wiersz jest poprawką z v2 i jest ważniejszy niż dwa pierwsze. v1 pisała
+„cel jest w ramce TCP", co jest **nieprawdą** i mogłoby kosztować caller'a
+poprawność: model mówi wprost, że `PoseTarget` to `T_base_target`, a
+`ToolDirectionTarget::direction` to kierunek **w bazie**. Równanie brzmi
+`T(0,3)(q) = target.x`, gdzie lewa strona to współrzędna TCP **w bazie** — więc
+prawa też nią jest.
+
+TCP odpowiada na pytanie **który frame robota ograniczamy**, a nie **w jakim
+układzie zapisany jest cel**. Różnica jest praktyczna: caller, który uwierzyłby
+v1, przeliczyłby cel do układu TCP i zbudował ograniczenie błędne o pełną
+transformację narzędzia.
+
+Najjaśniej widać to na rodzinie kierunkowej:
+
+```text
+ToolDirectionTarget{direction, ToolAxis::Z}   przy ustawionym TCP
+
+ToolAxis::Z   -> oś Z ramki TCP          (który frame i która jego oś)
+direction     -> kierunek w BAZIE         (dokąd ta oś ma patrzeć)
+```
+
+Dwie różne ramki w jednym celu, i żadnej z nich nie wolno pomylić z drugą.
+
+Sam wybór transformacji jest **niejawny, ale nie cichy**: wynika ze stanu, który
+caller sam ustawił, i jest opisany w kontrakcie metody. Parametr `TargetFrame`
+byłby zmuszaniem go do powtórzenia informacji, którą już przekazał wołając
+`setTcp`.
 
 ### 3.2 Przypadek, który naprawdę zabija, i jego rozstrzygnięcie
 
@@ -201,14 +276,26 @@ błędem jest `ForwardKinematicsNotBuilt` — kod, który już istnieje.
 ```cpp
 // URDF + TCP + target -> an explicit system of IK equations.
 //
-// WHICH transform is used follows from the facade's own state, and this is the
-// one place in the project where that ambiguity can be closed rather than
-// documented:
+// WHICH FRAME OF THE ROBOT is constrained follows from the facade's own state,
+// and this is the one place in the project where that ambiguity can be closed
+// rather than documented:
 //
-//     a TCP is set      -> the target is in the TCP frame, and
+//     a TCP is set      -> the TCP frame is constrained, and
 //                          tcpForwardKinematics() is used
-//     no TCP is set     -> the target is in the chain-tip frame, and
+//     no TCP is set     -> the chain-tip frame is constrained, and
 //                          forwardKinematics() is used
+//
+// What does NOT change either way: the target's own quantities are expressed in
+// the BASE frame, always. A PoseTarget is T_base_target, a direction is a
+// direction in the base frame, and the equations read T(0,3)(q) = target.x with
+// both sides in base coordinates. Setting a TCP does not mean "re-express the
+// target in tool coordinates" -- doing that would produce a constraint wrong by
+// the whole tool transform. It means "constrain the tool frame instead of the
+// chain tip".
+//
+// For a ToolDirectionTarget both frames appear at once and neither may be
+// confused for the other: the axis names an axis OF THE CONSTRAINED FRAME, while
+// the direction it must point along is given in the base frame.
 //
 // If a TCP is set but its transform has not been built, this FAILS with
 // TcpForwardKinematicsNotBuilt. It never falls back to the chain-tip transform:
@@ -310,8 +397,10 @@ może.
 Dwa wiersze z `STATUS.md` dotykają dokładnie tego, co robi F2.7. Warto powiedzieć
 precyzyjnie, co się z nimi dzieje, bo łatwo tu przesadzić w obie strony.
 
-**„Cel nie zna swojej ramki".** Fasada **usuwa okazję**, nie usuwa braku.
-`IkTarget` nadal nie wie, w jakiej ramce żyje, i nadal nie może wiedzieć. Ale
+**„Cel nie zna swojej ramki"** — przy czym „ramka" znaczy tu **który frame robota
+jest ograniczany** (TCP czy koniec łańcucha), a nie układ współrzędnych wartości
+celu; te są zawsze w bazie (3.1). Fasada **usuwa okazję**, nie usuwa braku.
+`IkTarget` nadal nie wie, który frame ogranicza, i nadal nie może wiedzieć. Ale
 caller fasady nie ma już czym się pomylić: nie podaje transformacji, więc nie
 poda złej. Brak zostaje otwarty dla użytkownika `ConstraintBuilder` wprost — i
 tak ma zostać, bo zamknięcie go w typach wymaga transformacji otagowanej ramką,
@@ -335,7 +424,7 @@ z roadmapy
   BuildsKr4PositionIkEquationsFromUrdf      end-to-end, bez TCP
   BuildsKr640PositionIkEquationsFromUrdf    end-to-end, bez TCP
   BuildsFullPoseEquationsWithTcp            end-to-end, z TCP, 12 równań
-  ChangingChainInvalidatesTcpAndEquationSystem   patrz niżej
+  ChangingChainClearsTcpAndRequiresFreshForwardKinematics   patrz niżej
   ReusesFacadeForDifferentRobotAndTarget    dwa roboty, dwa cele, jedna fasada
 
 wybór transformacji -- sedno etapu
@@ -349,15 +438,19 @@ wybór transformacji -- sedno etapu
 prerekwizyty i błędy
   ReportsFirstMissingStep                   trzy stany, trzy kody, kolejność z 6
   PreservesConstraintBuilderError           InvalidTarget + zagnieżdżony
-                                            TargetValidationErrorCode
-  DoesNotChangeStateOnFailure               akcesory nietknięte po nieudanym
-                                            wywołaniu -- metoda jest const,
-                                            ale kontrakt trzeba przypiąć
+                                            TargetValidationErrorCode, inwariant
+                                            pól błędu ORAZ nietknięte akcesory
 
 rodzaje zadań przez fasadę
   BuildsDirectionSystemThroughFacade        jeden z rodzajów F2.6, żeby wariant
                                             IkTarget był naprawdę przepuszczony
 ```
+
+Razem **dwanaście** testów: 5 + 4 + 2 + 1. v1 miała na liście trzynaście pozycji
+przy zapowiedzianych dwunastu — `DoesNotChangeStateOnFailure` jest teraz drugim
+blokiem `PreservesConstraintBuilderError`, i to jest naturalne miejsce: metoda
+jest `const`, więc sprawdzenie tożsamości wskaźników akcesorów robi się przy tym
+samym nieudanym wywołaniu, które bada zagnieżdżony błąd.
 
 **Dwa testy z roadmapy znikają i to jest konsekwencja wariantu A**, nie
 przeoczenie:
@@ -370,10 +463,29 @@ przeoczenie:
   że coś zostało wyzerowane, tylko że drugi układ naprawdę odnosi się do innego
   punktu.
 
-`ChangingChainInvalidatesTcpAndEquationSystem` zostaje, ale sprawdza wyłącznie
-pierwszą połowę nazwy — że zmiana łańcucha czyści TCP (to jest kontrakt sprzed
-F2.7) — i to, że kolejne `buildEquationSystem` zwraca teraz błąd, bo TCP FK już
-nie ma. Nazwa do skorygowania w części implementacyjnej.
+`ChangingChainClearsTcpAndRequiresFreshForwardKinematics` — v1 opisywała ten
+test przez **stan, który nie może zaistnieć**. `selectChain` czyści TCP razem z
+całą resztą poddrzewa, więc po nim nie ma żadnego TCP, a zatem nie ma też powodu
+żądać TCP FK. Prawdziwy przebieg:
+
+```text
+po selectChain
+    kinematicChain()        nowy
+    forwardKinematics()     nullptr
+    tcp()                   nullptr
+    tcpForwardKinematics()  nullptr
+
+buildEquationSystem(target)      -> ForwardKinematicsNotBuilt
+                                    (NIE TcpForwardKinematicsNotBuilt)
+
+po buildForwardKinematics()
+buildEquationSystem(target)      -> OK, ścieżką końca łańcucha
+```
+
+Ostatnie dwa wiersze są tu najważniejsze: **brak TCP nie jest brakiem
+prerekwizytu**, tylko innym, równie legalnym trybem pracy. Caller, który chce
+z powrotem TCP, musi jawnie zawołać `setTcp` i `buildTcpForwardKinematics` —
+i to jest dokładnie ten kontrakt, który fasada miała od F2.1.
 
 ---
 
@@ -438,6 +550,8 @@ razem wzięte.
 | Sześć rodzajów zadań, jedno wejście — łatwo zgubić alternatywę | niskie | Jawny zestaw przeciążeń przy `std::visit`; siódma alternatywa zatrzyma build |
 | Błąd buildera spłaszczony do stringa | niskie | `constraintError` obok `chainError`, inwariant jak w F2.3 (6) |
 | Kopiowanie `IkEquationSystem` przy zwrocie | **pozorne** | Kopia duplikuje uchwyty `Expression`, nie drzewa — typ mówi to w komentarzu klasy |
+| Caller przelicza cel do układu TCP | **realne, złapane w review v1** | Kontrakt mówi wprost, że wartości celu są w bazie, a TCP wybiera ograniczany frame (3.1, 4) |
+| Brak TCP mylony z brakiem prerekwizytu | realne | 8: po `selectChain` ścieżka końca łańcucha jest legalna i ma test |
 
 ---
 
@@ -467,6 +581,9 @@ Przyjąć **wariant A** (2.1) — cel jako argument, układ zwracany przez warto
 metoda `const`, graf stanu bez zmian. Przyjąć regułę wyboru transformacji z 3.1
 wraz z **zakazem odwrotu** z 3.2, model błędów z 6 i sformułowanie z 7 o tym, co
 ten etap naprawdę zamyka.
+
+Przyjąć też jawnie drugą połowę pytania roadmapy (2.4): **cel jest argumentem,
+TCP zostaje stanem**.
 
 Po zatwierdzeniu — proposal implementacyjny z pełnym kodem i dwunastoma testami,
 gate `422/422` (410 + 12).
