@@ -1,19 +1,117 @@
 #include <gtest/gtest.h>
 
+#include "ik_equations/UrdfModelLoader.hpp"
+#include "ik_equations/builders/ForwardKinematicsBuilder.hpp"
+#include "ik_equations/builders/JointTransformBuilder.hpp"
+#include "ik_equations/builders/KinematicChainBuilder.hpp"
 #include "ik_equations/symbolic/Expression.hpp"
+#include "ik_equations/symbolic/ExpressionEvaluator.hpp"
 #include "ik_equations/symbolic/ExpressionFactory.hpp"
+#include "ik_equations/symbolic/SymbolicTransform.hpp"
 
 #include <cmath>
+#include <cstddef>
+#include <filesystem>
 #include <numbers>
+#include <optional>
+#include <type_traits>
+#include <unordered_set>
+#include <utility>
+#include <variant>
 
+using kinemaforge::ik::EvaluationErrorCode;
 using kinemaforge::ik::Expression;
+using kinemaforge::ik::ExpressionEvaluator;
 using kinemaforge::ik::ExpressionFactory;
+using kinemaforge::ik::ExpressionNode;
 using kinemaforge::ik::ExpressionType;
+using kinemaforge::ik::SymbolValues;
 using kinemaforge::ik::constantValue;
+using kinemaforge::ik::isConstant;
 using kinemaforge::ik::isOne;
 using kinemaforge::ik::isZero;
 using kinemaforge::ik::sameNode;
 using kinemaforge::ik::structurallyEqual;
+
+namespace ik = kinemaforge::ik;
+
+namespace {
+
+// Large and tiny finite magnitudes chosen so the tested operations overflow
+// or underflow while both operands remain legitimate constants.
+constexpr double kHuge = 1e308;
+constexpr double kTiny = 1e-308;
+
+std::optional<ik::SymbolicTransform> forwardKinematics(const char* fileName)
+{
+    ik::UrdfModelLoader loader;
+    const auto robot = loader.load(std::filesystem::path(KINEMAFORGE_URDF_DATA_DIR) / fileName);
+
+    ik::KinematicChainBuilder chainBuilder;
+    const auto chain = chainBuilder.build(robot, "base_link", "tool0");
+    if (!chain)
+    {
+        ADD_FAILURE() << "chain build failed for " << fileName;
+        return std::nullopt;
+    }
+
+    const ik::JointTransformBuilder transformBuilder;
+    const ik::ForwardKinematicsBuilder fkBuilder;
+    return fkBuilder.build(*chain, transformBuilder);
+}
+
+// Walks each unique node once. An FK transform shares sub-trees heavily --
+// 281 unique nodes against 21 882 counted with multiplicity for kr640 -- so a
+// walk without the visited set would revisit the same subexpression thousands
+// of times for no additional coverage.
+//
+// Counts the constant leaves it checked, so the caller can tell "every constant
+// was finite" apart from "the walk never reached a constant".
+void expectConstantLeavesFinite(const Expression& expression,
+                                std::unordered_set<const ExpressionNode*>& visited,
+                                std::size_t& constantCount)
+{
+    if (!visited.insert(&expression.node()).second)
+        return;
+
+    std::visit(
+        [&](const auto& node) {
+            using Node = std::decay_t<decltype(node)>;
+
+            if constexpr (std::is_same_v<Node, ik::ConstantNode>)
+            {
+                ++constantCount;
+                EXPECT_TRUE(std::isfinite(node.value))
+                    << "non-finite constant leaf: " << node.value;
+            }
+            else if constexpr (std::is_same_v<Node, ik::AddNode>
+                               || std::is_same_v<Node, ik::SubtractNode>
+                               || std::is_same_v<Node, ik::MultiplyNode>
+                               || std::is_same_v<Node, ik::DivideNode>)
+            {
+                expectConstantLeavesFinite(node.lhs, visited, constantCount);
+                expectConstantLeavesFinite(node.rhs, visited, constantCount);
+            }
+            else if constexpr (std::is_same_v<Node, ik::NegateNode>
+                               || std::is_same_v<Node, ik::SinNode>
+                               || std::is_same_v<Node, ik::CosNode>)
+            {
+                expectConstantLeavesFinite(node.operand, visited, constantCount);
+            }
+            else
+            {
+                // Symbol is the only leaf with nothing to check. A node type
+                // added later must state explicitly whether it has children:
+                // without this, it would silently fall into "nothing to do" and
+                // the walk would stop above its subtree while still passing.
+                static_assert(std::is_same_v<Node, ik::SymbolNode>,
+                              "Unhandled ExpressionNode type");
+            }
+        },
+        expression.node().value);
+}
+
+} // namespace
 
 TEST(ExpressionFactoryTest, BuildsBinaryOperations)
 {
@@ -177,4 +275,106 @@ TEST(ExpressionFactoryTest, DoesNotSimplifyBeyondScope)
     // x - x -> 0 needs operand equivalence checking, which belongs to a
     // future EquationSimplifier.
     EXPECT_EQ(factory.subtract(x, x).type(), ExpressionType::Subtract);
+}
+
+// --- finite-constant closure ----------------------------------------
+
+TEST(ExpressionFactoryTest, DoesNotFoldOverflowingSum)
+{
+    const ExpressionFactory factory;
+    const auto sum = factory.add(factory.constant(kHuge), factory.constant(kHuge));
+
+    EXPECT_EQ(sum.type(), ExpressionType::Add);
+    EXPECT_FALSE(isConstant(sum));
+}
+
+TEST(ExpressionFactoryTest, DoesNotFoldOverflowingDifference)
+{
+    const ExpressionFactory factory;
+    const auto difference =
+        factory.subtract(factory.constant(-kHuge), factory.constant(kHuge));
+
+    EXPECT_EQ(difference.type(), ExpressionType::Subtract);
+    EXPECT_FALSE(isConstant(difference));
+}
+
+TEST(ExpressionFactoryTest, DoesNotFoldOverflowingProduct)
+{
+    const ExpressionFactory factory;
+    const auto product = factory.multiply(factory.constant(kHuge), factory.constant(kHuge));
+
+    EXPECT_EQ(product.type(), ExpressionType::Multiply);
+    EXPECT_FALSE(isConstant(product));
+}
+
+TEST(ExpressionFactoryTest, DoesNotFoldOverflowingQuotient)
+{
+    const ExpressionFactory factory;
+    const auto quotient = factory.divide(factory.constant(kHuge), factory.constant(kTiny));
+
+    EXPECT_EQ(quotient.type(), ExpressionType::Divide);
+    EXPECT_FALSE(isConstant(quotient));
+}
+
+TEST(ExpressionFactoryTest, OverflowingFoldEvaluatesToNonFiniteResult)
+{
+    // The other half of declining to fold: the surviving node is not a dead
+    // end, it is an expression whose value happens not to be representable,
+    // and the existing error model already says so.
+    const ExpressionFactory factory;
+    const auto product = factory.multiply(factory.constant(kHuge), factory.constant(kHuge));
+
+    ExpressionEvaluator evaluator{SymbolValues{}};
+    const auto result = evaluator.evaluate(product);
+
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error().code, EvaluationErrorCode::NonFiniteResult);
+}
+
+TEST(ExpressionFactoryTest, StillFoldsWhenResultIsFinite)
+{
+    // Explicit regression pin for R5, read together with the four DoesNotFold
+    // tests above: declining an overflow must not cost ordinary folding.
+    // FoldsConstantArithmetic covers the same values from the other side.
+    const ExpressionFactory factory;
+    const auto sum = factory.add(factory.constant(2.0), factory.constant(3.0));
+
+    ASSERT_EQ(sum.type(), ExpressionType::Constant);
+    EXPECT_DOUBLE_EQ(constantValue(sum), 5.0);
+}
+
+TEST(ExpressionFactoryTest, FoldsUnderflowingProductToZero)
+{
+    // Underflow is not the same as non-finite: 1e-308 * 1e-308 is exactly 0.0,
+    // which is finite, foldable, and reaches the shared zero node like any
+    // other zero. isfinite is the boundary, not "the result is surprising".
+    const ExpressionFactory factory;
+    const auto product = factory.multiply(factory.constant(kTiny), factory.constant(kTiny));
+
+    EXPECT_TRUE(isConstant(product));
+    EXPECT_TRUE(isZero(product));
+    EXPECT_TRUE(sameNode(product, Expression{}));
+}
+
+TEST(ExpressionFactoryTest, AllConstantLeavesRemainFinite)
+{
+    // Integration smoke test, not a proof: it says that every constant leaf in
+    // the FK DAGs the current pipeline builds for these two robots is finite.
+    // A future operation that folds without checking would slip past this
+    // unless FK uses it and overflows on these fixtures -- the direct
+    // DoesNotFold* tests and the single fold site in foldFinite are what
+    // actually guard the contract.
+    for (const char* fileName : {"kr640.urdf", "kr4_r600.urdf"})
+    {
+        const auto fk = forwardKinematics(fileName);
+        ASSERT_TRUE(fk.has_value()) << fileName;
+
+        std::unordered_set<const ExpressionNode*> visited;
+        std::size_t constantCount = 0;
+        for (std::size_t row = 0; row < ik::SymbolicTransform::rows; ++row)
+            for (std::size_t column = 0; column < ik::SymbolicTransform::columns; ++column)
+                expectConstantLeavesFinite((*fk)(row, column), visited, constantCount);
+
+        EXPECT_GT(constantCount, 0u) << fileName;
+    }
 }

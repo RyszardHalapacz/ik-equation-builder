@@ -114,9 +114,14 @@ ExpressionEvaluator::evaluateNode(const Expression& expression)
     if (!result)
         return result;
 
-    // Checked for every node, leaves included. ExpressionFactory asserts that
-    // constants are finite, but that assert is gone under NDEBUG, and an
-    // overflow such as q1 * q2 with both at 1e308 is reachable in any build.
+    // Checked for every node, leaves included. With ExpressionFactory's
+    // preconditions respected, constant leaves are finite and overflowing
+    // constant folds remain operation nodes. Finite leaves and finite symbol
+    // bindings can still produce a non-finite value during evaluation
+    // (for example q1 * q2 with both bound to 1e308).
+    //
+    // The leaf check also keeps evaluation robust if a caller violates
+    // constant()'s finite-value precondition in an NDEBUG build.
     if (!std::isfinite(*result))
         return makeError(EvaluationErrorCode::NonFiniteResult);
 

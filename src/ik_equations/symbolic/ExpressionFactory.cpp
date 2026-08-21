@@ -2,6 +2,7 @@
 
 #include <cassert>
 #include <cmath>
+#include <optional>
 #include <utility>
 
 namespace kinemaforge::ik {
@@ -14,6 +15,13 @@ Expression ExpressionFactory::constant(double value) const
     return Expression{ExpressionNode{ConstantNode{value}}};
 }
 
+std::optional<Expression> ExpressionFactory::foldFinite(double value) const
+{
+    if (!std::isfinite(value))
+        return std::nullopt;
+    return constant(value);
+}
+
 Expression ExpressionFactory::symbol(std::string name) const
 {
     assert(!name.empty() && "symbol names must not be empty");
@@ -23,7 +31,8 @@ Expression ExpressionFactory::symbol(std::string name) const
 Expression ExpressionFactory::add(Expression lhs, Expression rhs) const
 {
     if (isConstant(lhs) && isConstant(rhs))
-        return constant(constantValue(lhs) + constantValue(rhs));
+        if (auto folded = foldFinite(constantValue(lhs) + constantValue(rhs)))
+            return *folded;
     if (isZero(rhs))
         return lhs;
     if (isZero(lhs))
@@ -34,7 +43,8 @@ Expression ExpressionFactory::add(Expression lhs, Expression rhs) const
 Expression ExpressionFactory::subtract(Expression lhs, Expression rhs) const
 {
     if (isConstant(lhs) && isConstant(rhs))
-        return constant(constantValue(lhs) - constantValue(rhs));
+        if (auto folded = foldFinite(constantValue(lhs) - constantValue(rhs)))
+            return *folded;
     if (isZero(rhs))
         return lhs;
     return Expression{ExpressionNode{SubtractNode{std::move(lhs), std::move(rhs)}}};
@@ -43,7 +53,8 @@ Expression ExpressionFactory::subtract(Expression lhs, Expression rhs) const
 Expression ExpressionFactory::multiply(Expression lhs, Expression rhs) const
 {
     if (isConstant(lhs) && isConstant(rhs))
-        return constant(constantValue(lhs) * constantValue(rhs));
+        if (auto folded = foldFinite(constantValue(lhs) * constantValue(rhs)))
+            return *folded;
     // No x * 0 -> 0 here: see the class comment.
     if (isOne(rhs))
         return lhs;
@@ -56,7 +67,8 @@ Expression ExpressionFactory::divide(Expression lhs, Expression rhs) const
 {
     assert(!isZero(rhs) && "division by literal zero");
     if (isConstant(lhs) && isConstant(rhs))
-        return constant(constantValue(lhs) / constantValue(rhs));
+        if (auto folded = foldFinite(constantValue(lhs) / constantValue(rhs)))
+            return *folded;
     if (isOne(rhs))
         return lhs;
     return Expression{ExpressionNode{DivideNode{std::move(lhs), std::move(rhs)}}};

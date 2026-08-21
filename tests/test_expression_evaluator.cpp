@@ -276,9 +276,10 @@ TEST(ExpressionEvaluatorTest, PreservesDomainWhenZeroIsLeftOperand)
 
 TEST(ExpressionEvaluatorTest, ReportsNonFiniteResult)
 {
-    // Two symbols, not two constants: constant folding routes back through
-    // ExpressionFactory::constant, whose isfinite assert would abort the
-    // process while building 1e308 * 1e308.
+    // Two symbols intentionally exercise runtime overflow from finite bindings.
+    // Two constants would exercise ExpressionFactory's attempted constant-fold
+    // path instead; since R5 that fold is declined and remains a MultiplyNode --
+    // see ExpressionFactoryTest.OverflowingFoldEvaluatesToNonFiniteResult.
     const ExpressionFactory factory;
     ExpressionEvaluator evaluator{SymbolValues{{"q1", 1e308}, {"q2", 1e308}}};
 
