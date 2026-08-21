@@ -1219,7 +1219,8 @@ done/F2.6-directional-constraints/
 --- w toku, w proposal/ ---
 
 F2.7-facade-integration/
-    proposal-phase2-facade-integration.md                   ◀ v2, do review
+    proposal-phase2-facade-integration.md                   ✅ APPROVED (v2)
+    proposal-phase2-facade-integration-implementation.md    ◀ v1, do review
     implementation + end-to-end validation
 ```
 

@@ -1,6 +1,10 @@
 # Proposal: integracja z fasadą i milestone Fazy 2 (F2.7), architektura
 
-**Etap:** F2.7 · **v2 — do review** · 2026-08-21 · część 1 z 2
+**Etap:** F2.7 · **v2 — APPROVED** · 2026-08-21 · część 1 z 2
+
+> **Zatwierdzone w review v2**, bez v3. Trzy uwagi nieblokujące naniesione przy
+> zamrożeniu: liczba operacji fasady w 0, opcjonalność TCP w DoD (10) i mocniejszy
+> kształt testu ponownego użycia fasady (8).
 
 > **v2, po review.** Wariant A zatwierdzony; trzy poprawki merytoryczne i jedna
 > rachunkowa:
@@ -57,7 +61,8 @@ Poprzednik: [`../done/F2.6-directional-constraints/proposal-directional-constrai
 ## 0. Stan wyjściowy
 
 ```text
-IkEquationBuilder      pięć operacji, cztery akcesory, graf stanu
+IkEquationBuilder      sześć operacji (pięć budujących + clearTcp),
+                       cztery akcesory, graf stanu
 ConstraintBuilder      sześć rodzajów zadań, nie wpięty w fasadę
 IkTarget               sześć alternatyw
 410/410 testów w obu konfiguracjach
@@ -425,7 +430,9 @@ z roadmapy
   BuildsKr640PositionIkEquationsFromUrdf    end-to-end, bez TCP
   BuildsFullPoseEquationsWithTcp            end-to-end, z TCP, 12 równań
   ChangingChainClearsTcpAndRequiresFreshForwardKinematics   patrz niżej
-  ReusesFacadeForDifferentRobotAndTarget    dwa roboty, dwa cele, jedna fasada
+  ReusesFacadeForDifferentRobotAndTarget    dwa roboty, dwa cele, jedna fasada --
+                                            i pierwszy układ sprawdzany PONOWNIE
+                                            po przeładowaniu, patrz niżej
 
 wybór transformacji -- sedno etapu
   UsesTcpTransformWhenTcpIsSet              lhs to sameNode z tcpForwardKinematics()
@@ -445,6 +452,16 @@ rodzaje zadań przez fasadę
   BuildsDirectionSystemThroughFacade        jeden z rodzajów F2.6, żeby wariant
                                             IkTarget był naprawdę przepuszczony
 ```
+
+**`ReusesFacadeForDifferentRobotAndTarget` sprawdza przy okazji obietnicę, która
+jest sednem wariantu A.** Kształt: zbuduj układ dla pierwszego robota, **zachowaj
+go**, przeładuj fasadę drugim robotem, zbuduj drugi układ — i na koniec spytaj
+**pierwszy** jeszcze raz. Musi być nienaruszony: ta sama liczba równań, te same
+prawe strony, te same węzły `lhs`.
+
+To jest różnica między migawką a akcesorem, i jedyny test, który ją pokazuje. W
+wariancie B pierwszy układ przestałby istnieć w chwili drugiego zapytania; tutaj
+żyje tak długo, jak caller go trzyma, bo fasada nigdy go nie miała.
 
 Razem **dwanaście** testów: 5 + 4 + 2 + 1. v1 miała na liście trzynaście pozycji
 przy zapowiedzianych dwunastu — `DoesNotChangeStateOnFailure` jest teraz drugim
@@ -518,6 +535,16 @@ któryś z poprzednich etapów zostawił dziurę.
 ```text
 URDF + TCP + cel  ->  poprawny symboliczny IkEquationSystem
 ```
+
+Zapis roadmapy zostaje w brzmieniu historycznym, ale w `STATUS.md` i `README.md`
+ma paść pełniejszy, bo architektura świadomie wspiera też pracę **bez** narzędzia:
+
+```text
+URDF + wybrany łańcuch + OPCJONALNY TCP + cel  ->  IkEquationSystem
+```
+
+Bez TCP ograniczany jest koniec łańcucha — to nie jest tryb ułomny, tylko drugi
+legalny (3.1, 8).
 
 Konkretnie, po tym etapie:
 

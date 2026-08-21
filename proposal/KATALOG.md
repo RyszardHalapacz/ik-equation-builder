@@ -1,6 +1,6 @@
 # Katalog dokumentacji KinemaForge
 
-**Wygenerowany:** 2026-08-21 · **dokumentów:** 46 · **łącznie:** ~27 900 linii, 1,4 MB
+**Wygenerowany:** 2026-08-21 · **dokumentów:** 47 · **łącznie:** ~27 900 linii, 1,4 MB
 
 Spis wszystkiego, co w tym repo jest dokumentem, a nie kodem. Proces jest stały:
 **proposal architektoniczny → review → proposal implementacyjny → review →
@@ -32,7 +32,8 @@ Ostatni etap Fazy 2.
 
 | Dokument | Temat | Stan | Linii |
 |---|---|---|---|
-| [`F2.7-facade-integration/proposal-phase2-facade-integration.md`](F2.7-facade-integration/proposal-phase2-facade-integration.md) | Cel jako argument, TCP jako stan, który frame jest ograniczany, DoD Fazy 2 | **DO REVIEW (v2)** | 592 |
+| [`F2.7-facade-integration/proposal-phase2-facade-integration.md`](F2.7-facade-integration/proposal-phase2-facade-integration.md) | Cel jako argument, TCP jako stan, który frame jest ograniczany, DoD Fazy 2 | **APPROVED (v2)** | 619 |
+| [`F2.7-facade-integration/proposal-phase2-facade-integration-implementation.md`](F2.7-facade-integration/proposal-phase2-facade-integration-implementation.md) | Pełny kod fasady + 12 testów, DoD Fazy 2 | **DO REVIEW (v1)** | 466 |
 
 ## Analizy poprzedzające proposale
 

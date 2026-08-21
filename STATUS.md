@@ -799,7 +799,8 @@ Paths below are relative to `proposal/`.
 | `done/F2.6-directional-constraints/proposal-directional-constraints-architecture.md` | Directional constraints: two equation families, tool axis, DOF (F2.6) | **approved (v4)** |
 | `done/F2.6-directional-constraints/proposal-directional-constraints-a-implementation.md` | F2.6a: direction family, code + 31 tests | implemented |
 | `done/F2.6-directional-constraints/proposal-directional-constraints-b-implementation.md` | F2.6b: angle family, code + 14 tests | implemented |
-| `F2.7-facade-integration/proposal-phase2-facade-integration.md` | Facade integration, Phase 2 DoD (F2.7) | **in review (v2)** |
+| `F2.7-facade-integration/proposal-phase2-facade-integration.md` | Facade integration, Phase 2 DoD (F2.7) | approved (v2) |
+| `F2.7-facade-integration/proposal-phase2-facade-integration-implementation.md` | Facade code + 12 tests | **in review (v1)** |
 | `done/F2.3.R-review-remediation/` | Five proposals answering the 2026-08-17 code review | implemented |
 
 ## Next step
