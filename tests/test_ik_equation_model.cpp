@@ -2,6 +2,8 @@
 
 #include "ik_equations/model/Equation.hpp"
 #include "ik_equations/model/IkEquationSystem.hpp"
+#include "ik_equations/model/IkTaskDegreesOfFreedom.hpp"
+#include "ik_equations/model/ToolAxis.hpp"
 #include "ik_equations/symbolic/ExpressionFactory.hpp"
 
 #include <cstddef>
@@ -11,6 +13,8 @@
 #include <vector>
 
 using kinemaforge::ik::CartesianComponent;
+using kinemaforge::ik::DirectionAngleEquationSource;
+using kinemaforge::ik::DirectionEquationSource;
 using kinemaforge::ik::Equation;
 using kinemaforge::ik::EquationKind;
 using kinemaforge::ik::EquationSource;
@@ -22,7 +26,9 @@ using kinemaforge::ik::IkTaskKind;
 using kinemaforge::ik::JointVariable;
 using kinemaforge::ik::OrientationEquationSource;
 using kinemaforge::ik::PositionEquationSource;
+using kinemaforge::ik::ToolAxis;
 using kinemaforge::ik::kindOf;
+using kinemaforge::ik::taskSpaceConstrainedDegreesOfFreedom;
 using kinemaforge::ik::sameNode;
 
 namespace {
@@ -51,6 +57,46 @@ std::vector<Equation> positionEquations(const ExpressionFactory& factory)
     return {positionEquation(factory, CartesianComponent::X),
             positionEquation(factory, CartesianComponent::Y),
             positionEquation(factory, CartesianComponent::Z)};
+}
+
+// All nine cells, row-major -- what a Pose task must now carry. "At least one"
+// stopped being enough when partial orientation got task kinds of its own.
+std::vector<Equation> completeOrientationEquations(const ExpressionFactory& factory)
+{
+    std::vector<Equation> equations;
+    for (std::size_t row = 0; row < 3; ++row)
+        for (std::size_t column = 0; column < 3; ++column)
+            equations.push_back(orientationEquation(factory, row, column));
+    return equations;
+}
+
+std::vector<Equation> poseEquations(const ExpressionFactory& factory)
+{
+    auto equations = positionEquations(factory);
+    for (auto& equation : completeOrientationEquations(factory))
+        equations.push_back(std::move(equation));
+    return equations;
+}
+
+Equation directionEquation(const ExpressionFactory& factory, CartesianComponent component,
+                           ToolAxis axis = ToolAxis::Z)
+{
+    return Equation{factory.symbol("q1"), factory.constant(0.0),
+                    DirectionEquationSource{component, axis}};
+}
+
+std::vector<Equation> directionEquations(const ExpressionFactory& factory,
+                                         ToolAxis axis = ToolAxis::Z)
+{
+    return {directionEquation(factory, CartesianComponent::X, axis),
+            directionEquation(factory, CartesianComponent::Y, axis),
+            directionEquation(factory, CartesianComponent::Z, axis)};
+}
+
+Equation angleEquation(const ExpressionFactory& factory, ToolAxis axis = ToolAxis::Z)
+{
+    return Equation{factory.symbol("q1"), factory.constant(0.5),
+                    DirectionAngleEquationSource{axis}};
 }
 
 std::vector<JointVariable> twoUnknowns()
@@ -296,9 +342,16 @@ TEST(IkEquationModelTest, RejectsDuplicateEquationSource)
         EXPECT_EQ(system.error().code, IkEquationSystemErrorCode::DuplicateEquationSource);
     }
     {
+        // NINE orientation equations in total, one of them repeating a source
+        // -- so eight distinct cells and one missing. Nine PLUS a duplicate
+        // would be ten, and the count check would reject it as a task mismatch
+        // before the duplicate rule ever ran.
         SCOPED_TRACE("duplicate orientation cell");
         auto equations = positionEquations(factory);
-        equations.push_back(orientationEquation(factory, 1, 1));
+        for (std::size_t row = 0; row < 3; ++row)
+            for (std::size_t column = 0; column < 3; ++column)
+                if (!(row == 2 && column == 2))
+                    equations.push_back(orientationEquation(factory, row, column));
         equations.push_back(orientationEquation(factory, 1, 1));
 
         const auto system = IkEquationSystem::create(IkTaskKind::Pose, twoUnknowns(),
@@ -324,10 +377,11 @@ TEST(IkEquationModelTest, RejectsUnorderedEquations)
         EXPECT_EQ(system.error().code, IkEquationSystemErrorCode::UnorderedEquations);
     }
     {
+        // Nine DISTINCT cells, complete, with one pair swapped: content and
+        // duplicates both pass, so ordering is what decides.
         SCOPED_TRACE("orientation cells not row-major");
-        auto equations = positionEquations(factory);
-        equations.push_back(orientationEquation(factory, 1, 0));
-        equations.push_back(orientationEquation(factory, 0, 1));
+        auto equations = poseEquations(factory);
+        std::swap(equations[4], equations[5]);
 
         const auto system = IkEquationSystem::create(IkTaskKind::Pose, twoUnknowns(),
                                                      std::move(equations));
@@ -361,4 +415,281 @@ TEST(IkEquationModelTest, RejectsOutOfRangeOrientationSource)
     EXPECT_FALSE(OrientationEquationSource::create(3, 0).has_value());
     EXPECT_FALSE(OrientationEquationSource::create(0, 3).has_value());
     EXPECT_FALSE(OrientationEquationSource::create(7, 9).has_value());
+}
+
+
+// --- F2.6a: direction tasks, tool axis, task DOF ---------------------
+
+TEST(IkEquationModelTest, AcceptsPoseWithCompleteOrientation)
+{
+    // The other edge of the tightened contract: eight cells are rejected above,
+    // nine are accepted here. Without this, an over-strict implementation that
+    // refused everything would still pass.
+    const ExpressionFactory factory;
+
+    const auto system =
+        IkEquationSystem::create(IkTaskKind::Pose, twoUnknowns(), poseEquations(factory));
+
+    ASSERT_TRUE(system.has_value()) << system.error().message;
+    EXPECT_EQ(system->equations().size(), 12u);
+}
+
+TEST(IkEquationModelTest, RejectsPoseWithIncompleteOrientation)
+{
+    const ExpressionFactory factory;
+
+    auto equations = poseEquations(factory);
+    equations.pop_back();   // eight cells
+
+    const auto system =
+        IkEquationSystem::create(IkTaskKind::Pose, twoUnknowns(), std::move(equations));
+
+    ASSERT_FALSE(system.has_value());
+    EXPECT_EQ(system.error().code, IkEquationSystemErrorCode::TaskEquationMismatch);
+}
+
+TEST(IkEquationModelTest, AcceptsDirectionSystemWithoutPositionEquations)
+{
+    // The rule that used to be unconditional -- "position is complete in every
+    // task" -- is now per task kind. A direction task carries no position at all.
+    const ExpressionFactory factory;
+
+    const auto system = IkEquationSystem::create(IkTaskKind::ToolDirection, twoUnknowns(),
+                                                 directionEquations(factory));
+
+    ASSERT_TRUE(system.has_value()) << system.error().message;
+    EXPECT_EQ(system->equations().size(), 3u);
+    EXPECT_EQ(system->taskKind(), IkTaskKind::ToolDirection);
+}
+
+TEST(IkEquationModelTest, RejectsPositionEquationInDirectionTask)
+{
+    const ExpressionFactory factory;
+
+    auto equations = positionEquations(factory);
+    for (auto& equation : directionEquations(factory))
+        equations.push_back(std::move(equation));
+
+    const auto system = IkEquationSystem::create(IkTaskKind::ToolDirection, twoUnknowns(),
+                                                 std::move(equations));
+
+    ASSERT_FALSE(system.has_value());
+    EXPECT_EQ(system.error().code, IkEquationSystemErrorCode::TaskEquationMismatch);
+}
+
+TEST(IkEquationModelTest, RejectsDirectionEquationInPositionTask)
+{
+    const ExpressionFactory factory;
+
+    auto equations = positionEquations(factory);
+    for (auto& equation : directionEquations(factory))
+        equations.push_back(std::move(equation));
+
+    const auto system = IkEquationSystem::create(IkTaskKind::Position, twoUnknowns(),
+                                                 std::move(equations));
+
+    ASSERT_FALSE(system.has_value());
+    EXPECT_EQ(system.error().code, IkEquationSystemErrorCode::TaskEquationMismatch);
+}
+
+TEST(IkEquationModelTest, RejectsMixedToolAxesInOneSystem)
+{
+    // X, Y and Z all present, so completeness alone would accept this -- but the
+    // three equations talk about three different tool axes.
+    const ExpressionFactory factory;
+
+    std::vector<Equation> equations{
+        directionEquation(factory, CartesianComponent::X, ToolAxis::X),
+        directionEquation(factory, CartesianComponent::Y, ToolAxis::Y),
+        directionEquation(factory, CartesianComponent::Z, ToolAxis::Z)};
+
+    const auto system = IkEquationSystem::create(IkTaskKind::ToolDirection, twoUnknowns(),
+                                                 std::move(equations));
+
+    ASSERT_FALSE(system.has_value());
+    EXPECT_EQ(system.error().code, IkEquationSystemErrorCode::MixedToolAxes);
+}
+
+TEST(IkEquationModelTest, RejectsForgedToolAxisInEquationSource)
+{
+    const ExpressionFactory factory;
+
+    auto equations = directionEquations(factory);
+    equations[1].source = DirectionEquationSource{CartesianComponent::Y,
+                                                  static_cast<ToolAxis>(99)};
+
+    const auto system = IkEquationSystem::create(IkTaskKind::ToolDirection, twoUnknowns(),
+                                                 std::move(equations));
+
+    ASSERT_FALSE(system.has_value());
+    EXPECT_EQ(system.error().code, IkEquationSystemErrorCode::InvalidToolAxis);
+}
+
+TEST(IkEquationModelTest, RejectsForgedCartesianComponentInDirectionSource)
+{
+    // The same defence the position sources have. Without componentIndex this
+    // would index an array with 99.
+    const ExpressionFactory factory;
+
+    auto equations = directionEquations(factory);
+    equations[0].source = DirectionEquationSource{static_cast<CartesianComponent>(99),
+                                                  ToolAxis::Z};
+
+    const auto system = IkEquationSystem::create(IkTaskKind::ToolDirection, twoUnknowns(),
+                                                 std::move(equations));
+
+    ASSERT_FALSE(system.has_value());
+    EXPECT_EQ(system.error().code, IkEquationSystemErrorCode::TaskEquationMismatch);
+}
+
+TEST(IkEquationModelTest, OrdersPositionBeforeDirection)
+{
+    const ExpressionFactory factory;
+
+    auto equations = directionEquations(factory);
+    for (auto& equation : positionEquations(factory))
+        equations.push_back(std::move(equation));
+
+    const auto system = IkEquationSystem::create(IkTaskKind::PositionAndToolDirection,
+                                                 twoUnknowns(), std::move(equations));
+
+    ASSERT_FALSE(system.has_value());
+    EXPECT_EQ(system.error().code, IkEquationSystemErrorCode::UnorderedEquations);
+}
+
+TEST(IkEquationModelTest, DiagnosesEquationContentInFixedOrder)
+{
+    // The promised priority is InvalidToolAxis > MixedToolAxes >
+    // TaskEquationMismatch. Every block below is broken TWICE, and arranged so
+    // that a single-pass implementation -- or one running profileOf() first --
+    // would report the OTHER code.
+    const ExpressionFactory factory;
+
+    {
+        SCOPED_TRACE("forged component first, forged axis later");
+        auto equations = directionEquations(factory);
+        equations[0].source = DirectionEquationSource{static_cast<CartesianComponent>(99),
+                                                      ToolAxis::Z};
+        equations[2].source = DirectionEquationSource{CartesianComponent::Z,
+                                                      static_cast<ToolAxis>(99)};
+
+        const auto system = IkEquationSystem::create(IkTaskKind::ToolDirection, twoUnknowns(),
+                                                     std::move(equations));
+        ASSERT_FALSE(system.has_value());
+        EXPECT_EQ(system.error().code, IkEquationSystemErrorCode::InvalidToolAxis);
+    }
+    {
+        SCOPED_TRACE("mixed axes and an incomplete direction set");
+        std::vector<Equation> equations{
+            directionEquation(factory, CartesianComponent::X, ToolAxis::X),
+            directionEquation(factory, CartesianComponent::Y, ToolAxis::Y)};
+
+        const auto system = IkEquationSystem::create(IkTaskKind::ToolDirection, twoUnknowns(),
+                                                     std::move(equations));
+        ASSERT_FALSE(system.has_value());
+        EXPECT_EQ(system.error().code, IkEquationSystemErrorCode::MixedToolAxes);
+    }
+    {
+        // profileOf() reports TaskEquationMismatch for a forged task kind, so
+        // running it before the axis passes would report that instead.
+        SCOPED_TRACE("forged task kind and forged axis");
+        auto equations = directionEquations(factory);
+        equations[0].source = DirectionEquationSource{CartesianComponent::X,
+                                                      static_cast<ToolAxis>(99)};
+
+        const auto system = IkEquationSystem::create(static_cast<IkTaskKind>(99), twoUnknowns(),
+                                                     std::move(equations));
+        ASSERT_FALSE(system.has_value());
+        EXPECT_EQ(system.error().code, IkEquationSystemErrorCode::InvalidToolAxis);
+    }
+}
+
+TEST(IkEquationModelTest, ReportsTaskSpaceConstrainedDegreesOfFreedom)
+{
+    // The values, not just the degenerate case: an implementation with the
+    // numbers shuffled between task kinds would pass a nullopt-only test, and
+    // "a countable number of degrees of freedom" is the whole point of this API.
+    EXPECT_EQ(taskSpaceConstrainedDegreesOfFreedom(IkTaskKind::Position), 3u);
+    EXPECT_EQ(taskSpaceConstrainedDegreesOfFreedom(IkTaskKind::Pose), 6u);
+    EXPECT_EQ(taskSpaceConstrainedDegreesOfFreedom(IkTaskKind::ToolDirection), 2u);
+    EXPECT_EQ(taskSpaceConstrainedDegreesOfFreedom(IkTaskKind::PositionAndToolDirection), 5u);
+    EXPECT_EQ(taskSpaceConstrainedDegreesOfFreedom(IkTaskKind::DirectionAngle), 1u);
+    EXPECT_EQ(taskSpaceConstrainedDegreesOfFreedom(IkTaskKind::PositionAndDirectionAngle), 4u);
+
+    EXPECT_FALSE(taskSpaceConstrainedDegreesOfFreedom(static_cast<IkTaskKind>(99)).has_value());
+}
+
+
+// --- F2.6b: the angle family ----------------------------------------
+
+TEST(IkEquationModelTest, EnforcesDirectionAngleEquationProfile)
+{
+    // The angle column of EquationProfile has two sides. The happy path is the
+    // easy one; the zeros in the four earlier profiles are what actually needs
+    // pinning, or they are a declaration nobody checks.
+    const ExpressionFactory factory;
+
+    {
+        SCOPED_TRACE("DirectionAngle with exactly one angle equation");
+        const auto system = IkEquationSystem::create(IkTaskKind::DirectionAngle, twoUnknowns(),
+                                                     {angleEquation(factory)});
+        ASSERT_TRUE(system.has_value()) << system.error().message;
+        EXPECT_EQ(system->equations().size(), 1u);
+    }
+    {
+        SCOPED_TRACE("DirectionAngle carrying position equations");
+        auto equations = positionEquations(factory);
+        equations.push_back(angleEquation(factory));
+
+        const auto system = IkEquationSystem::create(IkTaskKind::DirectionAngle, twoUnknowns(),
+                                                     std::move(equations));
+        ASSERT_FALSE(system.has_value());
+        EXPECT_EQ(system.error().code, IkEquationSystemErrorCode::TaskEquationMismatch);
+    }
+    {
+        SCOPED_TRACE("DirectionAngle carrying direction equations");
+        auto equations = directionEquations(factory);
+        equations.push_back(angleEquation(factory));
+
+        const auto system = IkEquationSystem::create(IkTaskKind::DirectionAngle, twoUnknowns(),
+                                                     std::move(equations));
+        ASSERT_FALSE(system.has_value());
+        EXPECT_EQ(system.error().code, IkEquationSystemErrorCode::TaskEquationMismatch);
+    }
+    {
+        // The one that was missing: a task whose profile says angle = 0.
+        SCOPED_TRACE("Position carrying an angle equation");
+        auto equations = positionEquations(factory);
+        equations.push_back(angleEquation(factory));
+
+        const auto system = IkEquationSystem::create(IkTaskKind::Position, twoUnknowns(),
+                                                     std::move(equations));
+        ASSERT_FALSE(system.has_value());
+        EXPECT_EQ(system.error().code, IkEquationSystemErrorCode::TaskEquationMismatch);
+    }
+    {
+        SCOPED_TRACE("PositionAndDirectionAngle: three plus one");
+        auto equations = positionEquations(factory);
+        equations.push_back(angleEquation(factory));
+
+        const auto system = IkEquationSystem::create(IkTaskKind::PositionAndDirectionAngle,
+                                                     twoUnknowns(), std::move(equations));
+        ASSERT_TRUE(system.has_value()) << system.error().message;
+        EXPECT_EQ(system->equations().size(), 4u);
+    }
+}
+
+TEST(IkEquationModelTest, RejectsForgedToolAxisInAngleSource)
+{
+    // The angle source carries a ToolAxis too. Checking only
+    // DirectionEquationSource would let this slip past both axis passes and be
+    // caught later, under a different code -- outside the promised priority.
+    const ExpressionFactory factory;
+
+    const auto system = IkEquationSystem::create(
+        IkTaskKind::DirectionAngle, twoUnknowns(),
+        {angleEquation(factory, static_cast<ToolAxis>(99))});
+
+    ASSERT_FALSE(system.has_value());
+    EXPECT_EQ(system.error().code, IkEquationSystemErrorCode::InvalidToolAxis);
 }

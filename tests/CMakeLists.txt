@@ -15,10 +15,13 @@ add_executable(kinemaforge_tests
     test_kinematic_chain_builder.cpp
     test_joint_transform_builder.cpp
     test_forward_kinematics_builder.cpp
+    test_constraint_builder.cpp
+    test_directional_constraints.cpp
     test_numeric_fk_validation.cpp
     test_tcp_transform.cpp
     test_ik_equation_model.cpp
     test_target_validation.cpp
+    test_quaternion_target.cpp
     test_symbolic_expression.cpp
     test_expression_factory.cpp
     test_expression_evaluator.cpp

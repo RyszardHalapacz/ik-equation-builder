@@ -1,6 +1,8 @@
 #include "ik_equations/model/IkEquationSystem.hpp"
 
+#include <compare>
 #include <cstddef>
+#include <optional>
 #include <string>
 #include <unordered_set>
 #include <utility>
@@ -49,7 +51,7 @@ std::expected<std::size_t, IkEquationSystemError> componentIndex(CartesianCompon
     }
 
     return makeError(IkEquationSystemErrorCode::TaskEquationMismatch,
-                     "position equation carries an invalid Cartesian component");
+                     "equation source carries an invalid Cartesian component");
 }
 
 // Each rule gets its own pass over the whole vector. That is deliberate: the
@@ -91,11 +93,106 @@ checkUnknowns(const std::vector<JointVariable>& unknowns)
 
 // Content first, duplicates second, order third -- three different faults
 // with three different fixes.
+// The tool axis carried by a source, if it carries one. Two alternatives do.
+//
+// An explicit overload set rather than get_if on one type: the question "does
+// this source name a tool axis" concerns EVERY alternative, and a new one must
+// answer it deliberately. Reaching for get_if<DirectionEquationSource> here was
+// exactly the trap F2.6b would have fallen into -- the angle source carries an
+// axis too, and would have slipped past both checks below.
+std::optional<ToolAxis> toolAxisOf(const EquationSource& source)
+{
+    return std::visit(
+        Overloaded{
+            [](const PositionEquationSource&) { return std::optional<ToolAxis>{}; },
+            [](const OrientationEquationSource&) { return std::optional<ToolAxis>{}; },
+            [](const DirectionEquationSource& direction) {
+                return std::optional<ToolAxis>{direction.axis};
+            },
+            [](const DirectionAngleEquationSource& angle) {
+                return std::optional<ToolAxis>{angle.axis};
+            }},
+        source);
+}
+
+// What a task kind is allowed to contain. The zeros matter as much as the
+// completes: without them a Position task could carry a direction equation.
+struct EquationProfile
+{
+    bool position{};             // exactly X, Y, Z
+    std::size_t orientation{};   // exact count: 0 or 9
+    bool direction{};            // exactly X, Y, Z of ONE tool axis
+    std::size_t angle{};         // exact count: 0 or 1
+};
+
+std::expected<EquationProfile, IkEquationSystemError> profileOf(IkTaskKind taskKind)
+{
+    // No default: a new IkTaskKind trips -Wswitch, which -Werror turns into a
+    // build failure. Each valid case returns, so a value forged with
+    // static_cast<IkTaskKind>(99) falls through to the rejection below instead
+    // of quietly succeeding.
+    switch (taskKind)
+    {
+    case IkTaskKind::Position:                 return EquationProfile{true, 0, false, 0};
+    case IkTaskKind::Pose:                     return EquationProfile{true, 9, false, 0};
+    case IkTaskKind::ToolDirection:            return EquationProfile{false, 0, true, 0};
+    case IkTaskKind::PositionAndToolDirection: return EquationProfile{true, 0, true, 0};
+    case IkTaskKind::DirectionAngle:           return EquationProfile{false, 0, false, 1};
+    case IkTaskKind::PositionAndDirectionAngle: return EquationProfile{true, 0, false, 1};
+    }
+
+    return makeError(IkEquationSystemErrorCode::TaskEquationMismatch,
+                     "unsupported IK task kind");
+}
+
+// Three passes, not one. The priority promised by create() is per rule, not per
+// element: with a single pass the reported code would depend on which broken
+// equation came first in the vector, so
+//
+//     [0] direction with a forged CartesianComponent
+//     [1] direction with a forged ToolAxis
+//
+// would report TaskEquationMismatch, and the same two equations swapped would
+// report InvalidToolAxis. Same rule as checkUnknowns, for the same reason.
 std::expected<void, IkEquationSystemError>
 checkEquationContent(IkTaskKind taskKind, const std::vector<Equation>& equations)
 {
-    bool present[3] = {false, false, false};
+    // PASS 1 -- every tool axis is a real enumerator. First, because a forged
+    // axis makes every later statement about "the" axis meaningless.
+    for (const auto& equation : equations)
+        if (const auto axis = toolAxisOf(equation.source); axis && !toolAxisColumn(*axis))
+            return makeError(IkEquationSystemErrorCode::InvalidToolAxis,
+                             "an equation carries an invalid tool axis");
+
+    // PASS 2 -- all tool-axis equations agree about which axis. Completeness
+    // alone would accept three equations about three DIFFERENT tool axes: X, Y
+    // and Z all present, and the system internally contradictory.
+    std::optional<ToolAxis> toolAxis;
+    for (const auto& equation : equations)
+        if (const auto axis = toolAxisOf(equation.source))
+        {
+            if (toolAxis && *toolAxis != *axis)
+                return makeError(IkEquationSystemErrorCode::MixedToolAxes,
+                                 "equations disagree about the tool axis");
+            toolAxis = *axis;
+        }
+
+    // Only now. profileOf() reports TaskEquationMismatch for a forged
+    // IkTaskKind, so running it earlier would let a broken task kind outrank a
+    // broken tool axis -- and the promised order would depend on which of the
+    // two the caller got wrong. The sequence is also the honest one: integrity
+    // of a single source, then relations between sources, then agreement with
+    // the task kind.
+    const auto profile = profileOf(taskKind);
+    if (!profile)
+        return std::unexpected(profile.error());
+
+    // PASS 3 -- components and the task profile. Everything here reports
+    // TaskEquationMismatch, so the order WITHIN this pass is not observable.
+    bool position[3] = {false, false, false};
+    bool direction[3] = {false, false, false};
     std::size_t orientationCount = 0;
+    std::size_t angleCount = 0;
 
     for (const auto& equation : equations)
     {
@@ -103,17 +200,31 @@ checkEquationContent(IkTaskKind taskKind, const std::vector<Equation>& equations
         // every future alternative would be silently counted as orientation.
         const auto checked = std::visit(
             Overloaded{
-                [&present](const PositionEquationSource& position)
+                [&position](const PositionEquationSource& source)
                     -> std::expected<void, IkEquationSystemError> {
-                    const auto slot = componentIndex(position.component);
+                    const auto slot = componentIndex(source.component);
                     if (!slot)
                         return std::unexpected(slot.error());
-                    present[*slot] = true;
+                    position[*slot] = true;
                     return {};
                 },
                 [&orientationCount](const OrientationEquationSource&)
                     -> std::expected<void, IkEquationSystemError> {
                     ++orientationCount;
+                    return {};
+                },
+                [&direction](const DirectionEquationSource& source)
+                    -> std::expected<void, IkEquationSystemError> {
+                    // The axis is already known good: pass 1.
+                    const auto slot = componentIndex(source.component);
+                    if (!slot)
+                        return std::unexpected(slot.error());
+                    direction[*slot] = true;
+                    return {};
+                },
+                [&angleCount](const DirectionAngleEquationSource&)
+                    -> std::expected<void, IkEquationSystemError> {
+                    ++angleCount;
                     return {};
                 }},
             equation.source);
@@ -122,41 +233,45 @@ checkEquationContent(IkTaskKind taskKind, const std::vector<Equation>& equations
             return std::unexpected(checked.error());
     }
 
-    // Position is complete in both tasks. A task constraining two of three
-    // coordinates would be a different IkTaskKind, not a truncated Pose.
+    // Position is complete or absent, per the profile. A task constraining two
+    // of three coordinates would be a different IkTaskKind, not a truncated one.
     for (std::size_t slot = 0; slot < 3; ++slot)
-        if (!present[slot])
+        if (position[slot] != profile->position)
             return makeError(IkEquationSystemErrorCode::TaskEquationMismatch,
-                             std::string("missing position equation for ") +
-                                 describe(static_cast<CartesianComponent>(slot)));
+                             profile->position
+                                 ? std::string("missing position equation for ")
+                                       + describe(static_cast<CartesianComponent>(slot))
+                                 : std::string("this task cannot carry position equations"));
 
-    // No default: a new IkTaskKind trips -Wswitch, which -Werror turns into a
-    // build failure. Each valid case returns, so a value forged with
-    // static_cast<IkTaskKind>(99) falls through to the rejection below instead
-    // of quietly succeeding -- the two protections cover different things and
-    // neither replaces the other.
-    switch (taskKind)
-    {
-    case IkTaskKind::Position:
-        if (orientationCount != 0)
+    // A count, deliberately, not a completeness check. Nine equations plus a
+    // valid OrientationEquationSource plus no duplicate source already means
+    // nine distinct cells -- and diagnosing "missing cell" here would stop a
+    // duplicate from ever reaching DuplicateEquationSource, which exists to
+    // report exactly that.
+    if (orientationCount != profile->orientation)
+        return makeError(IkEquationSystemErrorCode::TaskEquationMismatch,
+                         "this task needs exactly " + std::to_string(profile->orientation)
+                             + " orientation equations, got "
+                             + std::to_string(orientationCount));
+
+    for (std::size_t slot = 0; slot < 3; ++slot)
+        if (direction[slot] != profile->direction)
             return makeError(IkEquationSystemErrorCode::TaskEquationMismatch,
-                             "a position task cannot carry orientation equations");
-        return {};
+                             profile->direction
+                                 ? std::string("missing direction equation for ")
+                                       + describe(static_cast<CartesianComponent>(slot))
+                                 : std::string("this task cannot carry direction equations"));
 
-    case IkTaskKind::Pose:
-        // How MANY orientation equations is F2.5's decision; presence is not.
-        if (orientationCount == 0)
-            return makeError(IkEquationSystemErrorCode::TaskEquationMismatch,
-                             "a pose task needs at least one orientation equation");
-        return {};
-    }
+    if (angleCount != profile->angle)
+        return makeError(IkEquationSystemErrorCode::TaskEquationMismatch,
+                         "this task needs exactly " + std::to_string(profile->angle)
+                             + " direction-angle equations, got " + std::to_string(angleCount));
 
-    return makeError(IkEquationSystemErrorCode::TaskEquationMismatch,
-                     "unsupported IK task kind");
+    return {};
 }
 
-// Two equations addressing one matrix cell are redundant at best and
-// contradictory at worst. Rejected explicitly rather than left to fall out of
+// Two equations occupying the same canonical constraint slot are redundant at
+// best and contradictory at worst. Rejected explicitly rather than left to fall out of
 // the strict ordering rule -- the architecture and the code must say the same
 // thing about duplicates.
 std::expected<void, IkEquationSystemError>
@@ -171,54 +286,84 @@ checkDuplicateSources(const std::vector<Equation>& equations)
     return {};
 }
 
+// (rank of the source kind, index within the kind). Strictly increasing over the
+// whole vector -- one rule instead of per-kind slot arithmetic, and it covers
+// every task kind without branching.
+struct SourceOrderKey
+{
+    std::size_t rank{};
+    std::size_t index{};
+
+    friend auto operator<=>(const SourceOrderKey&, const SourceOrderKey&) noexcept = default;
+};
+
+// Defensive on purpose: this must NOT assume checkEquationContent already ran.
+// create() calls them in the right order today, but swapping two lines must not
+// turn a validation error into an out-of-range read -- the same reason
+// componentIndex exists at all.
+std::expected<SourceOrderKey, IkEquationSystemError>
+sourceOrderKey(const EquationSource& source)
+{
+    return std::visit(
+        Overloaded{
+            [](const PositionEquationSource& position)
+                -> std::expected<SourceOrderKey, IkEquationSystemError> {
+                const auto index = componentIndex(position.component);
+                if (!index)
+                    return std::unexpected(index.error());
+                return SourceOrderKey{0, *index};
+            },
+            [](const OrientationEquationSource& orientation)
+                -> std::expected<SourceOrderKey, IkEquationSystemError> {
+                // row() and column() are 0..2 by construction: the type has no
+                // public constructor that could produce anything else.
+                return SourceOrderKey{1, orientation.row() * 3 + orientation.column()};
+            },
+            [](const DirectionEquationSource& direction)
+                -> std::expected<SourceOrderKey, IkEquationSystemError> {
+                const auto index = componentIndex(direction.component);
+                if (!index)
+                    return std::unexpected(index.error());
+
+                if (!toolAxisColumn(direction.axis))
+                    return makeError(IkEquationSystemErrorCode::InvalidToolAxis,
+                                     "a direction equation carries an invalid tool axis");
+
+                // The axis is not part of the key: MixedToolAxes already
+                // guarantees one axis per system.
+                return SourceOrderKey{2, *index};
+            },
+            [](const DirectionAngleEquationSource& angle)
+                -> std::expected<SourceOrderKey, IkEquationSystemError> {
+                if (!toolAxisColumn(angle.axis))
+                    return makeError(IkEquationSystemErrorCode::InvalidToolAxis,
+                                     "a direction-angle equation carries an invalid tool axis");
+
+                // One such equation per system, so the index is constant.
+                return SourceOrderKey{3, 0};
+            }},
+        source);
+}
+
 std::expected<void, IkEquationSystemError>
 checkEquationOrder(const std::vector<Equation>& equations)
 {
-    // Defensive, not decorative: without it this function is only safe because
-    // checkEquationContent ran first, and swapping two calls in create() would
-    // turn a validation error into an out-of-range access.
-    if (equations.size() < 3)
-        return makeError(IkEquationSystemErrorCode::TaskEquationMismatch,
-                         "the system does not contain complete X, Y, Z constraints");
+    std::optional<SourceOrderKey> previous;
 
-    for (std::size_t slot = 0; slot < 3; ++slot)
+    for (std::size_t position = 0; position < equations.size(); ++position)
     {
-        const auto* position = std::get_if<PositionEquationSource>(&equations[slot].source);
-        if (position == nullptr)
+        const auto key = sourceOrderKey(equations[position].source);
+        if (!key)
+            return std::unexpected(key.error());
+
+        if (previous && !(*previous < *key))
             return makeError(IkEquationSystemErrorCode::UnorderedEquations,
-                             "position equations must come first, in X, Y, Z order");
+                             "equation " + std::to_string(position) +
+                                 " does not follow the canonical order: position (X, Y, Z), "
+                                 "then orientation row-major, then direction (X, Y, Z), "
+                                 "then the direction angle");
 
-        // Through componentIndex rather than a raw cast, so this helper does
-        // not depend on checkEquationContent having run first.
-        const auto component = componentIndex(position->component);
-        if (!component)
-            return std::unexpected(component.error());
-
-        if (*component != slot)
-            return makeError(IkEquationSystemErrorCode::UnorderedEquations,
-                             "position equations must come first, in X, Y, Z order");
-    }
-
-    const OrientationEquationSource* previous = nullptr;
-    for (std::size_t slot = 3; slot < equations.size(); ++slot)
-    {
-        const auto* orientation =
-            std::get_if<OrientationEquationSource>(&equations[slot].source);
-        if (orientation == nullptr)
-            return makeError(IkEquationSystemErrorCode::UnorderedEquations,
-                             "orientation equations must follow the position ones");
-
-        if (previous != nullptr)
-        {
-            const bool increasing =
-                previous->row() < orientation->row() ||
-                (previous->row() == orientation->row() &&
-                 previous->column() < orientation->column());
-            if (!increasing)
-                return makeError(IkEquationSystemErrorCode::UnorderedEquations,
-                                 "orientation equations must be in row-major order");
-        }
-        previous = orientation;
+        previous = *key;
     }
 
     return {};

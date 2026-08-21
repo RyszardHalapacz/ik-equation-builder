@@ -18,6 +18,8 @@ enum class IkEquationSystemErrorCode
     DuplicateUnknownName,
     DuplicateUnknownIndex,
     UnorderedUnknowns,
+    InvalidToolAxis,
+    MixedToolAxes,
     TaskEquationMismatch,
     DuplicateEquationSource,
     UnorderedEquations
@@ -40,6 +42,19 @@ struct IkEquationSystemError
 // q1, q10, q2, and a symbolic target parameter would be indistinguishable
 // from a joint variable.
 //
+// What the equation count does NOT mean: this type stores no rank or
+// independence information, so equations may be redundant. For a Pose system
+// built by ConstraintBuilder from a rigid-FK transform, nine orientation
+// equations represent a target orientation whose geometric space has three
+// rotational degrees of freedom -- the qualifier matters, because the builder
+// accepts any SymbolicTransform and does not check that the 3x3 block is a
+// rotation at all. And when the right-hand sides come from a PoseTarget, those
+// values were accepted within TargetValidation tolerance (1e-8), so the nine
+// exact equalities need not have an exact solution even for a reachable pose.
+// A consumer must therefore not read "twelve equations" as "twelve independent
+// constraints": selecting an independent subproblem, and verifying the
+// remaining equations numerically, belongs to the solver.
+//
 // Closed, because create() enforces nine invariants an aggregate cannot.
 // Cheap to copy anyway: copying duplicates Expression handles, never trees.
 class IkEquationSystem
@@ -49,8 +64,9 @@ public:
     // when several invariants are broken at once:
     //
     //   NoEquations, NoUnknowns, EmptyUnknownName, DuplicateUnknownName,
-    //   DuplicateUnknownIndex, UnorderedUnknowns, TaskEquationMismatch,
-    //   DuplicateEquationSource, UnorderedEquations
+    //   DuplicateUnknownIndex, UnorderedUnknowns, InvalidToolAxis,
+    //   MixedToolAxes, TaskEquationMismatch, DuplicateEquationSource,
+    //   UnorderedEquations
     //
     // Two orderings are forced rather than arbitrary:
     //
@@ -59,8 +75,16 @@ public:
     //   would report a duplicate as bad ordering: true, but useless.
     //
     //   DuplicateEquationSource before UnorderedEquations -- for the same
-    //   reason, and because two equations addressing one matrix cell are
-    //   either redundant or contradictory, which is worth its own diagnosis.
+    //   reason, and because two equations occupying the same canonical
+    //   constraint slot are either redundant or contradictory, which is worth
+    //   its own diagnosis.
+    //
+    //   InvalidToolAxis and MixedToolAxes before TaskEquationMismatch -- an
+    //   axis that is not an enumerator makes every later statement about "the"
+    //   axis meaningless, and a system whose direction equations disagree about
+    //   the axis is contradictory whatever the task kind says. Both are checked
+    //   in their own pass over the equations, so the reported code does not
+    //   depend on which broken equation happens to come first.
     [[nodiscard]] static std::expected<IkEquationSystem, IkEquationSystemError>
     create(IkTaskKind taskKind,
            std::vector<JointVariable> unknowns,
@@ -71,7 +95,10 @@ public:
     // Ordered by ascending JointVariable::index -- part of the contract.
     [[nodiscard]] std::span<const JointVariable> unknowns() const noexcept;
 
-    // Position X, Y, Z first; then orientation cells in row-major order.
+    // Position X, Y, Z first; then orientation cells in row-major order; then
+    // direction components X, Y, Z; then the single direction-angle equation.
+    // Only the source kinds legal for this task kind are present, and a system
+    // carrying any tool-axis equation names exactly one tool axis.
     [[nodiscard]] std::span<const Equation> equations() const noexcept;
 
 private:
