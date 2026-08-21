@@ -2,7 +2,7 @@
 
 **Last updated:** 2026-08-21
 **Branch:** `f2.3r-review-remediation`
-**Build:** clean · **Tests:** 410/410 passing in both configurations
+**Build:** clean · **Tests:** 422/422 passing in both configurations
 (`build/` Release, `build-werror/` with `-Werror` and live assertions)
 
 > **Code review of 2026-08-17: remediation complete.** The review found 10
@@ -82,7 +82,8 @@ URDF
   → ConstraintBuilder        ✅ PositionOnly (F2.4) + FullPose (F2.5)
   → quaternion target        ✅ F2.5Q — implemented + tested
   → directional constraints  ✅ F2.6 — both families implemented + tested
-  → facade integration       ⬜ F2.7 — next, closes Phase 2
+  → facade integration       ✅ F2.7 — implemented + tested
+  ===== PHASE 2 COMPLETE: URDF + optional TCP + target -> IkEquationSystem =====
   → facade integration       ⬜ F2.7 — not started, closes Phase 2
   → EquationSimplifier       ⬜ nothing
   → EquationSolver           ⬜ nothing (the hard one)
@@ -693,6 +694,43 @@ different axis. Which robot spins about which axis was measured, not assumed:
 geometric check: a reference built at a known angle from the real FK tool axis,
 substituted back, must evaluate to `cos(angle)`.
 
+### Facade integration — one entry point, from a URDF file to IK equations
+
+`buildEquationSystem(target)` is the whole of F2.7, and what it is *not* is the
+interesting part: it is `const`, it returns the system **by value**, and it adds
+nothing to the facade's state graph. A target is a question asked of the model,
+not a part of it, so storing it would have created a sixth node whose only job
+was to be invalidated by the other five. The returned system is a snapshot that
+stays valid however the facade is used afterwards — pinned by a test that keeps
+one across a full reload of the object.
+
+Which frame gets constrained follows from the facade's own state, and this is
+the one place in the project where that ambiguity could be closed rather than
+documented: a TCP is set, so the TCP frame is constrained and
+`tcpForwardKinematics()` is used; no TCP, so the chain tip is constrained and
+`forwardKinematics()` is used. Having no TCP is **not** a missing step — it is
+the other legal mode.
+
+What does not change either way: **the target's own quantities are always in the
+base frame.** Setting a TCP does not mean "re-express the target in tool
+coordinates"; doing that would build a constraint wrong by the whole tool
+transform. A tool-direction target shows both frames at once — the axis belongs
+to the constrained frame, the direction it must point along is given in base.
+
+The one branch that is deliberately absent: with a TCP set but its transform not
+built, the facade **fails** rather than reaching for the chain-tip transform.
+That fallback would return a system wrong by exactly the tool offset — it would
+compile, run and lie — so `TcpForwardKinematicsNotBuilt` says so instead.
+
+Errors keep their layers: `ConstraintBuildFailed` -> `InvalidTarget` ->
+`NonFinitePosition`, three deep and none flattened into a string.
+
+**Tests:** 12, including two that check *which* transform was used by node
+identity rather than by value — a TCP with a zero offset produces numerically
+identical equations and would hide a wrong choice — and one that proves a changed
+TCP changes the mathematics, by substituting a configuration into both systems
+and requiring the constrained point to move by exactly the offset.
+
 ### Supporting layers
 
 - `mt::kinematics` (`robot_model`, `robot_model_loader`) — implemented.
@@ -702,22 +740,16 @@ substituted back, must evaluate to `cos(angle)`.
 
 ## Not done
 
-### Rest of Phase 2 (specified, not built)
-
-- **F2.7 — facade integration.** `FixedToolDirection`, `PositionAndAxis`,
-  `FreeRotationAroundToolAxis`, `FixedAngleToSurfaceNormal`. The largest stage
-  of the phase; no proposal yet, scope in the roadmap. The open question it
-  inherits is question 4 of
-  [`proposal/analysis-ik-pipeline-constraint-builder.md`](proposal/analysis-ik-pipeline-constraint-builder.md).
-- **F2.7 — facade integration.** `ConstraintBuilder` is deliberately not wired
-  into `IkEquationBuilder` yet: the family of constraints has to be complete
-  first, or the facade API would be designed against a moving target.
-
-### Later stages (not started, by design)
+### Phase 3 (not started, by design)
 
 `EquationSimplifier`, `EquationSolver`, `IkPatternDetector`, `CodeGenerator` —
 no code, and no proposals. Scope in
-[the roadmap](proposal/KinemaForge_Phase2_Phase3_Roadmap.md), Phase 3.
+[the roadmap](proposal/KinemaForge_Phase2_Phase3_Roadmap.md), Phase 3, which
+starts at F3.1: the semantics of the rewrite engine every later stage rests on.
+
+The roadmap flags five of those stages — F3.3, F3.5, F3.8, F3.9, F3.10 — as
+research-grade and wanting a spike before a full architecture proposal. F3.1 is
+not one of them; it is groundwork, and goes through the normal process.
 
 ## Known gaps and deferred work
 
@@ -799,8 +831,8 @@ Paths below are relative to `proposal/`.
 | `done/F2.6-directional-constraints/proposal-directional-constraints-architecture.md` | Directional constraints: two equation families, tool axis, DOF (F2.6) | **approved (v4)** |
 | `done/F2.6-directional-constraints/proposal-directional-constraints-a-implementation.md` | F2.6a: direction family, code + 31 tests | implemented |
 | `done/F2.6-directional-constraints/proposal-directional-constraints-b-implementation.md` | F2.6b: angle family, code + 14 tests | implemented |
-| `F2.7-facade-integration/proposal-phase2-facade-integration.md` | Facade integration, Phase 2 DoD (F2.7) | approved (v2) |
-| `F2.7-facade-integration/proposal-phase2-facade-integration-implementation.md` | Facade code + 12 tests | **in review (v2)** |
+| `done/F2.7-facade-integration/proposal-phase2-facade-integration.md` | Facade integration, Phase 2 DoD (F2.7) | approved (v2) |
+| `done/F2.7-facade-integration/proposal-phase2-facade-integration-implementation.md` | Facade code + 12 tests | implemented |
 | `done/F2.3.R-review-remediation/` | Five proposals answering the 2026-08-17 code review | implemented |
 
 ## Next step
@@ -838,22 +870,29 @@ quaternion is normalised before the conversion, and one promise was narrowed
 during review because it could not be kept: the threshold is not a detector of
 whether the data came through `float` — see the known-gaps row.
 
-**F2.6 is done**, both halves. `ConstraintBuilder` now covers six kinds of task:
-position, full pose, the direction of a tool axis, and the angle between that
-axis and a reference direction — the last two with and without position. The
-roadmap's five names for this stage collapsed to **two families of equations**;
-`AxisAlignment` turned out to be the first family with a different source of `d`,
-`PositionAndAxis` its composition with position, and `FreeRotationAroundToolAxis`
-not a constraint at all but a property of the direction equations, pinned by a
-test rather than given a task kind of its own.
+**Phase 2 is done.** The pipeline runs end to end through one public surface:
 
-**F2.7 is next, and it closes Phase 2**: wiring `ConstraintBuilder` into
-`IkEquationBuilder`, the Phase 2 Definition of Done, and the `v0.2-ik-equations`
-release. It was deliberately left until last — a facade designed before the
-family of constraints was complete would have been designed against a moving
-target. Now the family is closed, and the facade has something stable to expose.
+```text
+URDF file + selected chain + OPTIONAL TCP + target
+    -> IkEquationSystem
+```
 
-Two things F2.7 inherits and will have to answer, both recorded above under known
-gaps: a target still does not know its frame, and nothing couples a transform to
-the chain it came from. The facade is the first layer that holds both at once,
-so it is the first layer that *could* couple them.
+Six kinds of task are expressible — position, full pose, tool-axis direction and
+the angle to a reference direction, the last two with and without position — and
+a target orientation may be given as a matrix or as a quaternion. Everything
+under `IkEquationBuilder` stays private, as it was designed to from the start.
+
+What the milestone does **not** mean, and it is worth saying plainly at the
+moment of claiming it: **the project can formulate inverse kinematics, but it
+cannot solve it.** Deriving `q` is Phase 3, and by effort it is larger than
+everything built so far. What exists today is the statement of the problem, in a
+form a solver can work on rather than sample.
+
+Two gaps got less dangerous during F2.7 without being closed, and both are in the
+table above: a facade caller no longer picks the transform, so they cannot
+mispair it with a target, and the facade owns both transform and chain so the
+pair always matches. Neither is fixed in the type system — a caller using
+`ConstraintBuilder` directly can still do both wrong.
+
+**Next: Phase 3, starting at F3.1** — the semantics of the rewrite engine, which
+every later stage of simplification and solving rests on.

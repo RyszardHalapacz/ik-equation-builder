@@ -26,7 +26,7 @@ Ostatni etap Fazy 2. Po nim `IkEquationBuilder` przyjmuje URDF, TCP i cel, a
 oddaje **jawny układ równań IK** — czyli to, co roadmapa zapisała jako Definition
 of Done całej fazy.
 
-Poprzednik: [`../done/F2.6-directional-constraints/proposal-directional-constraints-architecture.md`](../done/F2.6-directional-constraints/proposal-directional-constraints-architecture.md)
+Poprzednik: [`../done/F2.6-directional-constraints/proposal-directional-constraints-architecture.md`](../F2.6-directional-constraints/proposal-directional-constraints-architecture.md)
 (F2.6, zaimplementowane w dwóch połowach 2026-08-21).
 
 ## Prompt

@@ -17,7 +17,10 @@ F2.4  ConstraintBuilder: PositionOnly           ✅ zaimplementowane
 F2.5  ConstraintBuilder: FullPose               ✅ zaimplementowane
 F2.5Q target kwaternionowy                      ✅ zaimplementowane
 F2.6  constrainty kierunkowe                    ✅ zaimplementowane (a + b)
-F2.7  integracja z fasadą + milestone           ◀ TUTAJ JESTEŚMY
+F2.7  integracja z fasadą + milestone           ✅ zaimplementowane
+
+FAZA 2 ZAMKNIĘTA — URDF + opcjonalny TCP + cel -> IkEquationSystem
+Faza 3, F3.1 (semantyka rewrite engine)          ◀ TUTAJ JESTEŚMY
 ```
 
 Proposale etapów zamkniętych leżą w `proposal/done/<etap>/` — przeniesienie tam
@@ -733,7 +736,29 @@ Każdy constraint ma:
 
 ---
 
-## F2.7 — integracja z fasadą i milestone Fazy 2  ◀ etap bieżący
+## F2.7 — integracja z fasadą i milestone Fazy 2  ✅ zaimplementowane 2026-08-21
+
+> **Zamknięty, i razem z nim cała Faza 2.** Kandydat z „docelowego przepływu"
+> niżej **został odrzucony w review architektury**: cel jest **argumentem**
+> zapytania, a nie stanem fasady, więc nie ma `buildConstraints()` ani
+> `equationSystem()`. Jest jedna metoda `const`:
+>
+> ```cpp
+> std::expected<IkEquationSystem, IkEquationBuilderError>
+> buildEquationSystem(const IkTarget& target) const;
+> ```
+>
+> Powód: graf stanu istnieje dla rzeczy **drogich i współdzielonych**, a cel jest
+> jednym pytaniem o taniej odpowiedzi. TCP **zostaje** stanem, bo jest
+> konfiguracją narzędzia współdzieloną przez tysiące celów.
+>
+> Z listy testów end-to-end niżej **wypadły dwa** — `ChangingTargetInvalidates...`
+> i `ChangingTcpInvalidates...` — bo przy tym API nie mają czego sprawdzać;
+> zastąpiły je `ChangingTcpChangesTheEquationSystem` (test semantyczny, z
+> podstawieniem) i `ChangingChainClearsTcpAndRequiresFreshForwardKinematics`.
+>
+> 12 testów, gate **422/422** w obu konfiguracjach. Dokumenty:
+> [`done/F2.7-facade-integration/`](done/F2.7-facade-integration/proposal-phase2-facade-integration.md).
 
 ### Docelowy przepływ
 
@@ -1218,10 +1243,14 @@ done/F2.6-directional-constraints/
 
 --- w toku, w proposal/ ---
 
-F2.7-facade-integration/
-    proposal-phase2-facade-integration.md                   ✅ APPROVED (v2)
-    proposal-phase2-facade-integration-implementation.md    ◀ v2, do review
-    implementation + end-to-end validation
+done/F2.7-facade-integration/
+    proposal-phase2-facade-integration.md                   ✅ zaimplementowane
+    proposal-phase2-facade-integration-implementation.md    ✅ zaimplementowane
+
+--- w toku, w proposal/ ---
+
+Faza 3 — jeszcze nic nie napisane. Pierwszy dokument: F3.1, semantyka
+rewrite engine'u.
 ```
 
 Nazwy plików F2.4 i F2.5 różnią się od zapowiadanych tu wcześniej
@@ -1267,8 +1296,9 @@ Faza 2:
       + F2.5Q (target kwaternionowy), wydzielony z F2.5 w review 2026-08-20
   + 1 etap remediacyjny (F2.3.R, 5 proposali) dodany po review 2026-08-17
 
-    zamknięte:  F2.1, F2.2, F2.3, F2.3.R, F2.4, F2.5, F2.5Q, F2.6
-    zostaje:    F2.7
+    zamknięte:  wszystkie — F2.1, F2.2, F2.3, F2.3.R, F2.4, F2.5, F2.5Q,
+                F2.6, F2.7
+    FAZA 2 ZAMKNIĘTA 2026-08-21, release v0.2-ik-equations
 
 Faza 3:
     4 główne komponenty
@@ -1281,29 +1311,34 @@ Nie oznacza to, że Faza 3 jest tylko dwa razy większa. Etapy solvera są badaw
 
 # 6. Najbliższy krok
 
-**Stan na 2026-08-21, po zamknięciu F2.6.** F2.1–F2.6 zaimplementowane,
-**410/410** testów w obu konfiguracjach (`build/` w Release i `build-werror/` z
-`-Werror` oraz żywymi asercjami). `ConstraintBuilder` obsługuje **sześć rodzajów
-zadań**: pozycję, pełną pozę, kierunek osi narzędzia i kąt do kierunku odniesienia
-— dwa ostatnie z pozycją i bez niej. Orientację celu można podać macierzą albo
-kwaternionem.
-
-Etapem bieżącym jest **F2.7** — ostatni etap Fazy 2. Do napisania:
+**Stan na 2026-08-21: Faza 2 zamknięta.** Wszystkie dziewięć etapów
+zaimplementowanych, **422/422** testów w obu konfiguracjach (`build/` w Release i
+`build-werror/` z `-Werror` oraz żywymi asercjami). Pipeline działa end-to-end
+przez jedną fasadę:
 
 ```text
-proposal/F2.7-facade-integration/proposal-phase2-facade-integration.md
+URDF + wybrany łańcuch + opcjonalny TCP + cel  ->  IkEquationSystem
 ```
 
-F2.7 był celowo zostawiony na koniec: fasada zaprojektowana przed domknięciem
-rodziny ograniczeń byłaby projektowana pod ruchomy cel. Teraz rodzina jest
-zamknięta i fasada ma co wystawić.
+Sześć rodzajów zadań, orientacja celu jako macierz albo kwaternion, wszystko pod
+`IkEquationBuilder` prywatne. Release: **`v0.2-ik-equations`**.
 
-Dwie rzeczy, które ten etap dziedziczy i będzie musiał rozstrzygnąć, obie zapisane
-w `STATUS.md` jako znane braki: **cel nie zna swojej ramki**, a **transformacja
-nie jest związana z łańcuchem**, z którego powstała. Fasada jest pierwszą warstwą,
-która trzyma jedno i drugie naraz — czyli pierwszą, która **może** je związać.
+Zdanie, które musi paść razem z tym milestone'em: **projekt umie formułować IK,
+ale nie umie go rozwiązywać.** Wyprowadzenie `q` to Faza 3 i mierzone wysiłkiem
+jest większe niż wszystko dotychczas razem wzięte.
 
-Po F2.7 zostaje Definition of Done Fazy 2 i release `v0.2-ik-equations`.
+Etapem bieżącym jest **F3.1** — semantyka rewrite engine'u, na której stoi każdy
+późniejszy etap upraszczania i rozwiązywania. Do napisania:
+
+```text
+proposal/F3.1-rewrite-engine/proposal-rewrite-engine-semantics-architecture.md
+```
+
+Uwaga z sekcji 4, która staje się teraz aktualna: `F3.3` (trygonometria), `F3.5`
+(pattern detector), `F3.8` (solver pozycji 6R), `F3.9` (solver wrist) i `F3.10`
+(singularności) są badawczo najcięższe i **wymagają spike'a przed pełną
+architekturą**. F3.1 do nich nie należy — jest fundamentem, który kładzie się
+normalnym procesem.
 
 Historyczny zapis „najbliższego kroku" z 2026-08-17 — R1 i kolejność
 R1 → (R2 + R4) → R3 → R5 — jest w sekcji `F2.3.R` i w

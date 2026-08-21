@@ -1,6 +1,12 @@
 # Proposal: integracja z fasadą (F2.7), implementacja
 
-**Etap:** F2.7 · **v2 — do review** · 2026-08-21 · część 2 z 2
+**Etap:** F2.7 · **v2 — APPROVED, ZAIMPLEMENTOWANE 2026-08-21** · część 2 z 2
+
+> **Zaimplementowane.** Kod wszedł w brzmieniu z tego dokumentu; gate osiągnięty
+> dokładnie jak zapowiedziany: **422/422 w obu konfiguracjach**, zero ostrzeżeń, a
+> `git diff --stat` pokazuje wyłącznie dwa pliki fasady i jeden testowy — czyli
+> fasada rzeczywiście **złożyła** to, co istniało, nie poprawiając niczego pod
+> siebie. To był najważniejszy wiersz w bramce i przeszedł bez wyjątków.
 
 > **v2, po review.** Dwa blockery kompilacyjne, jeden testowy i dwie decyzje
 > domknięte:
@@ -310,7 +316,7 @@ IkEquationBuilder::buildEquationSystem(const IkTarget& target) const
     if (!system)
         return constraintBuildFailed(std::move(system.error()));
 
-    return std::move(*system);
+    return *std::move(system);
 }
 ```
 
@@ -538,7 +544,7 @@ poprawia. Ostatni jest sprawdzianem wariantu A.
 |---|---|---|
 | Cichy odwrót do FK przy ustawionym TCP | **realne, główne ryzyko etapu** | Brak gałęzi fallbacku w `transformForConstraints` (2.1) + `RejectsTargetWhenTcpForwardKinematicsMissing` |
 | Zła transformacja niewidoczna w teście | **realne** | Porównanie przez `sameNode`, nie przez wartość: TCP o zerowym offsecie daje te same liczby (3.2) |
-| Siódma alternatywa `IkTarget` przemyka | realne | Jawny zestaw przeciążeń w `ConstraintDispatch` (2.2), otwarte pytanie 8.1 |
+| Siódma alternatywa `IkTarget` przemyka | realne | Jawny zestaw sześciu przeciążeń w `ConstraintDispatch` (2.2, decyzja 8.1) |
 | Błąd buildera spłaszczony do stringa | niskie | `constraintBuildFailed` zachowuje trzy warstwy (2.3) |
 | Inwariant pól błędu złamany | realne | `PreservesConstraintBuilderError`, blok 2 — obie strony, `true` i `false` |
 | `*kinematicChain_` bez sprawdzenia | niskie | `transformForConstraints` sprawdza łańcuch pierwszy; zależność zapisana w komentarzu (2.3) |

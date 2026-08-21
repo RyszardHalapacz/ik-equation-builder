@@ -99,11 +99,30 @@ if (const auto result = builder.buildTcpForwardKinematics(); !result)
 
 const SymbolicTransform* tcpFk = builder.tcpForwardKinematics();
 
-// Substitute a joint configuration. One evaluator is one substitution; all
-// sixteen cells share its cache.
+// Ask the model a question: where must the tool be? The target's own values are
+// in the BASE frame; the TCP decides which frame of the robot is constrained.
+const auto system = builder.buildEquationSystem(PositionTarget{{2.0, 0.5, 1.5}});
+if (!system)
+{
+    std::cerr << system.error().message << '
+';   // error().constraintError has the detail
+    return;
+}
+
+// Three equations, lhs = rhs, in the joint variables q1..qn.
+for (const auto& equation : system->equations())
+    use(equation.lhs, equation.rhs);
+
+// Or substitute a joint configuration into the transform directly. One
+// evaluator is one substitution; all sixteen cells share its cache.
 ExpressionEvaluator evaluator{{{"q1", 0.0}, {"q2", -1.57}, /* ... */}};
 const auto x = evaluator.evaluate((*tcpFk)(0, 3));
 ```
+
+`buildEquationSystem` is a **query**: it is `const`, it returns the system by
+value, and the facade never stores it. A target is a question asked of the model,
+not a part of it — so one prepared robot answers as many targets as you like, and
+each answer stays valid however you use the facade afterwards.
 
 Accessors return `nullptr` until the corresponding step has succeeded, and a failed call leaves the object exactly as it was — results are built into locals and committed only once they exist.
 
@@ -152,18 +171,19 @@ IkEquationBuilder
 ├── (done) constant TCP offset → T_base_tcp(q)
 ├── (done) the equation and target model — what an equation and a target *are*
 ├── (done) ConstraintBuilder — FK + a target → an explicit system of IK equations
+├── (done) quaternion targets, directional targets, angle-to-a-direction targets
+├── (done) all of it behind IkEquationBuilder — PHASE 2 COMPLETE
 │
-└── (in progress, then future)
-    ├── quaternion targets   — the same constraint, given as a quaternion (in review)
-    ├── directional targets  — tool axis, surface angle, free spin around the nozzle
-    ├── facade integration   — the whole of the above behind IkEquationBuilder
+└── (future)
     ├── EquationSimplifier   — collapse the raw symbolic mess into something readable
     ├── EquationSolver       — actually solve the equation for inverse kinematics
     ├── IkPatternDetector    — recognize known structural shortcuts (e.g. spherical wrist)
     └── CodeGenerator        — emit fast, specialized code straight from the derived formula
 ```
 
-The project now **states** an IK problem end to end: a URDF and a target pose go in, and a system of twelve symbolic equations in the joint variables comes out. It does not solve them, and nothing beyond that exists yet, on purpose. `ConstraintBuilder` is also not wired into the facade yet — the family of constraints has to be complete first, or the facade API would be designed against a moving target.
+The project now **states** an IK problem end to end, through one public surface: a URDF file, a chain, an optional tool offset and a target go in; an explicit system of symbolic equations in the joint variables comes out. Six kinds of task are expressible — position, full pose, the direction of a tool axis, and the angle between that axis and a reference direction, the last two with and without position — and a target orientation may be given as a rotation matrix or as a quaternion.
+
+It does **not** solve them. That is the honest shape of the milestone: the project can formulate inverse kinematics, and deriving `q` is the next phase and the larger one.
 
 One thing worth saying plainly: everything built so far was mechanical translation with a known correct answer — parse, walk, compose, evaluate. What follows is not. `EquationSolver` has no single algorithm; it is case analysis, and for some robots a closed-form solution does not exist at all. Measured by effort rather than by component count, the first phase is closer to a quarter of the whole than to half.
 

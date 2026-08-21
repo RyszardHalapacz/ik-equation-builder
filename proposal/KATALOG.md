@@ -26,14 +26,10 @@ aktualizowany na bieżąco, bez wersji.
 | [`done/README.md`](done/README.md) | Indeks archiwum zamkniętych etapów | żywy | 45 |
 | [`KATALOG.md`](KATALOG.md) | Ten spis | żywy | — |
 
-## Etap bieżący — F2.7, integracja z fasadą
+## Etap bieżący — Faza 3, F3.1
 
-Ostatni etap Fazy 2.
-
-| Dokument | Temat | Stan | Linii |
-|---|---|---|---|
-| [`F2.7-facade-integration/proposal-phase2-facade-integration.md`](F2.7-facade-integration/proposal-phase2-facade-integration.md) | Cel jako argument, TCP jako stan, który frame jest ograniczany, DoD Fazy 2 | **APPROVED (v2)** | 619 |
-| [`F2.7-facade-integration/proposal-phase2-facade-integration-implementation.md`](F2.7-facade-integration/proposal-phase2-facade-integration-implementation.md) | Pełny kod fasady + 12 testów, DoD Fazy 2 | **DO REVIEW (v2)** | 566 |
+Faza 2 zamknięta 2026-08-21. Pierwszy dokument Fazy 3 — semantyka rewrite
+engine'u — jeszcze nie powstał.
 
 ## Analizy poprzedzające proposale
 
@@ -106,6 +102,15 @@ Folder: [`done/F2.4-constraint-builder-position/`](done/F2.4-constraint-builder-
 |---|---|---|---|
 | [`proposal-constraint-builder-architecture.md`](done/F2.4-constraint-builder-position/proposal-constraint-builder-architecture.md) | ConstraintBuilder PositionOnly — projekt | APPROVED (v2) | 506 |
 | [`proposal-constraint-builder-implementation.md`](done/F2.4-constraint-builder-position/proposal-constraint-builder-implementation.md) | ConstraintBuilder — kod + 12 testów | ZAIMPLEMENTOWANE | 790 |
+
+## F2.7 — integracja z fasadą, milestone Fazy 2 (zamknięte 2026-08-21)
+
+Folder: [`done/F2.7-facade-integration/`](done/F2.7-facade-integration/)
+
+| Dokument | Temat | Stan | Linii |
+|---|---|---|---|
+| [`proposal-phase2-facade-integration.md`](done/F2.7-facade-integration/proposal-phase2-facade-integration.md) | Cel jako argument, TCP jako stan, który frame jest ograniczany | APPROVED (v2) | 619 |
+| [`proposal-phase2-facade-integration-implementation.md`](done/F2.7-facade-integration/proposal-phase2-facade-integration-implementation.md) | Kod fasady + 12 testów, DoD Fazy 2 | ZAIMPLEMENTOWANE | 572 |
 
 ## F2.6 — constrainty kierunkowe (zamknięte 2026-08-21)
 

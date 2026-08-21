@@ -1,6 +1,6 @@
 # Archiwum zamkniętych etapów
 
-**Utworzone:** 2026-08-21 · **etapów:** 8 · **proposali:** 37
+**Utworzone:** 2026-08-21 · **etapów:** 9 · **proposali:** 39
 
 Tu leżą proposale etapów, które są **zaimplementowane, zbudowane i pokryte
 testami**. Przeniesienie do `done/` jest ostatnim krokiem etapu — po clean
@@ -33,6 +33,7 @@ Pełny spis wszystkich dokumentów repo, razem z żywymi:
 | [`F2.3.R-review-remediation/`](F2.3.R-review-remediation/README.md) | F2.3.R | 10 uwag z review kodu z 2026-08-17, w tym dwie o wadze HIGH | 7 (+ własny README) |
 | [`F2.4-constraint-builder-position/`](F2.4-constraint-builder-position/) | F2.4 | `ConstraintBuilder` dla `PositionTarget` — trzy równania pozycji | 2 |
 | [`F2.5-constraint-builder-fullpose/`](F2.5-constraint-builder-fullpose/) | F2.5 | `ConstraintBuilder` dla `PoseTarget` — dwanaście równań, w tym dziewięć rotacji | 2 |
+| [`F2.7-facade-integration/`](F2.7-facade-integration/) | F2.7 | Jedno wejście: URDF + opcjonalny TCP + cel → IkEquationSystem; milestone Fazy 2 | 2 |
 | [`F2.6-directional-constraints/`](F2.6-directional-constraints/) | F2.6 | Dwie rodziny ograniczeń częściowej orientacji: kierunek osi narzędzia i kąt do kierunku odniesienia | 3 |
 | [`F2.5Q-quaternion-target/`](F2.5Q-quaternion-target/) | F2.5Q | Kwaternion jako wejście orientacji celu — jedne drzwi na granicy modelu, własna tolerancja normy | 2 |
 
@@ -44,4 +45,5 @@ Pełny spis wszystkich dokumentów repo, razem z żywymi:
   ograniczeń kierunkowych nie zostało przez F2.5 zamknięte.
 - **`proposal-loader-topology-implementation.md`** (R2) — nie powstał; implementacja
   wyszła wprost z zatwierdzonej architektury, na polecenie. Szczegóły w README etapu.
-- **Proposal F2.7** — jeszcze nie zamknięty, więc leży w `proposal/`.
+- **Proposale Fazy 3** — jeszcze nie powstały. Pierwszy to F3.1, semantyka
+  rewrite engine'u.

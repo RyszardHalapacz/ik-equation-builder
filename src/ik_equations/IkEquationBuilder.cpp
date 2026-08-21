@@ -15,9 +15,72 @@ namespace {
 std::unexpected<IkEquationBuilderError> makeError(IkEquationBuilderErrorCode code,
                                                   std::string message)
 {
+    // Four initialisers, not three: -Wextra turns a missing one into
+    // -Wmissing-field-initializers, and -Werror turns that into a failed build.
+    // That is the warning policy doing its job -- every site that constructs an
+    // error has to answer for a new field instead of receiving a default in
+    // silence, and the answer here is the invariant from the header.
     return std::unexpected(
-        IkEquationBuilderError{code, std::move(message), std::nullopt});
+        IkEquationBuilderError{code, std::move(message), std::nullopt, std::nullopt});
 }
+
+// The nested error is preserved, not flattened: the caller gets
+// ConstraintBuildFailed -> InvalidTarget -> NonFinitePosition, three layers
+// deep, and none of them lost. The same treatment chainError has had since the
+// facade first reported a chain failure.
+std::unexpected<IkEquationBuilderError> constraintBuildFailed(ConstraintBuilderError error)
+{
+    auto message = "constraint build failed: " + error.message;
+    return std::unexpected(IkEquationBuilderError{
+        IkEquationBuilderErrorCode::ConstraintBuildFailed, std::move(message),
+        std::nullopt, std::move(error)});
+}
+
+// Explicit overload set, no generic lambda: a seventh IkTarget alternative must
+// stop the build here until somebody decides how the facade builds it. The same
+// idiom as TargetVisitor, EquationKindVisitor and toolAxisOf.
+struct ConstraintDispatch
+{
+    const ConstraintBuilder& builder;
+    const SymbolicTransform& transform;
+    const KinematicChain& chain;
+
+    [[nodiscard]] std::expected<IkEquationSystem, ConstraintBuilderError>
+    operator()(const PositionTarget& target) const
+    {
+        return builder.build(transform, chain, target);
+    }
+
+    [[nodiscard]] std::expected<IkEquationSystem, ConstraintBuilderError>
+    operator()(const PoseTarget& target) const
+    {
+        return builder.build(transform, chain, target);
+    }
+
+    [[nodiscard]] std::expected<IkEquationSystem, ConstraintBuilderError>
+    operator()(const ToolDirectionTarget& target) const
+    {
+        return builder.build(transform, chain, target);
+    }
+
+    [[nodiscard]] std::expected<IkEquationSystem, ConstraintBuilderError>
+    operator()(const PositionAndToolDirectionTarget& target) const
+    {
+        return builder.build(transform, chain, target);
+    }
+
+    [[nodiscard]] std::expected<IkEquationSystem, ConstraintBuilderError>
+    operator()(const DirectionAngleTarget& target) const
+    {
+        return builder.build(transform, chain, target);
+    }
+
+    [[nodiscard]] std::expected<IkEquationSystem, ConstraintBuilderError>
+    operator()(const PositionAndDirectionAngleTarget& target) const
+    {
+        return builder.build(transform, chain, target);
+    }
+};
 
 const char* describe(KinematicChainError error) noexcept
 {
@@ -89,7 +152,8 @@ IkEquationBuilder::selectChain(const std::string& baseLink, const std::string& t
             IkEquationBuilderErrorCode::ChainBuildFailed,
             "cannot select chain '" + baseLink + "' -> '" + toolLink + "': " +
                 describe(selected.error()),
-            selected.error()});
+            selected.error(),
+            std::nullopt});
 
     kinematicChain_ = std::move(*selected);
     forwardKinematics_.reset();
@@ -163,6 +227,50 @@ IkEquationBuilder::buildTcpForwardKinematics()
     const SymbolicTransform fixed = buildFixedRigidTransform(*tcp_, factory);
     tcpForwardKinematics_ = multiplyTransforms(*forwardKinematics_, fixed, factory);
     return {};
+}
+
+std::expected<const SymbolicTransform*, IkEquationBuilderError>
+IkEquationBuilder::transformForConstraints() const
+{
+    if (!kinematicChain_)
+        return makeError(IkEquationBuilderErrorCode::KinematicChainNotSelected,
+                         "no kinematic chain selected; call selectChain first");
+
+    if (!forwardKinematics_)
+        return makeError(IkEquationBuilderErrorCode::ForwardKinematicsNotBuilt,
+                         "forward kinematics not built; call buildForwardKinematics first");
+
+    // Having no TCP is not a missing step: it is the other legal mode, and the
+    // constraints then apply to the chain tip.
+    if (!tcp_)
+        return &*forwardKinematics_;
+
+    // A TCP that is set but not built IS a missing step, and there is
+    // deliberately no fallback branch beside this one. Returning the chain-tip
+    // transform here would produce a system wrong by exactly the tool offset.
+    if (!tcpForwardKinematics_)
+        return makeError(IkEquationBuilderErrorCode::TcpForwardKinematicsNotBuilt,
+                         "a TCP is set but its transform is not built; call "
+                         "buildTcpForwardKinematics first");
+
+    return &*tcpForwardKinematics_;
+}
+
+std::expected<IkEquationSystem, IkEquationBuilderError>
+IkEquationBuilder::buildEquationSystem(const IkTarget& target) const
+{
+    const auto transform = transformForConstraints();
+    if (!transform)
+        return std::unexpected(transform.error());
+
+    // *kinematicChain_ is safe: transformForConstraints checked the chain first.
+    auto system = std::visit(
+        ConstraintDispatch{constraintBuilder_, **transform, *kinematicChain_}, target);
+
+    if (!system)
+        return constraintBuildFailed(std::move(system.error()));
+
+    return *std::move(system);
 }
 
 const KinematicChain* IkEquationBuilder::kinematicChain() const noexcept
