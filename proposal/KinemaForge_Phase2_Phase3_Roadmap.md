@@ -1219,7 +1219,7 @@ done/F2.6-directional-constraints/
 --- w toku, w proposal/ ---
 
 F2.7-facade-integration/
-    proposal-phase2-facade-integration.md                   ◀ następny do napisania
+    proposal-phase2-facade-integration.md                   ◀ v1, do review
     implementation + end-to-end validation
 ```
 
