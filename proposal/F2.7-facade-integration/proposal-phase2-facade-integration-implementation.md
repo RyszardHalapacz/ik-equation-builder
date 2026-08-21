@@ -1,6 +1,24 @@
 # Proposal: integracja z fasadą (F2.7), implementacja
 
-**Etap:** F2.7 · **v1 — do review** · 2026-08-21 · część 2 z 2
+**Etap:** F2.7 · **v2 — do review** · 2026-08-21 · część 2 z 2
+
+> **v2, po review.** Dwa blockery kompilacyjne, jeden testowy i dwie decyzje
+> domknięte:
+>
+> 1. **`transformForConstraints` nie było zadeklarowane w klasie.** Definicja w
+>    `.cpp` nie odpowiadała żadnej metodzie — dopisana prywatna deklaracja (1.2).
+> 2. **Nowe pole `constraintError` łamie istniejące inicjalizatory agregatowe.**
+>    Odtworzone: `-Wextra -Werror` daje
+>    `error: missing initializer for member [-Werror=missing-field-initializers]`,
+>    więc deklarowany gate **nie byłby osiągalny**. Oba miejsca w `.cpp` dostają
+>    czwarty inicjalizator (2.0).
+> 3. **`ChangingTcpChangesTheEquationSystem` mógł przejść z błędnego powodu.**
+>    `buildTcpForwardKinematics` buduje świeże drzewo, więc `!sameNode` zachodzi
+>    nawet dla dwóch **identycznych** TCP — a implementacja ignorująca wartość TCP
+>    też by przeszła. Test przepisany na **semantyczny**, z podstawieniem (3.3).
+> 4. `rhs` → `lhs` w krótkim opisie tego testu (3.1).
+> 5. Otwarte pytania zamknięte decyzjami: sześć zwykłych przeciążeń i prywatna
+>    metoda (8).
 
 Architektura: [`proposal-phase2-facade-integration.md`](proposal-phase2-facade-integration.md)
 — **v2, APPROVED** w review 2026-08-21.
@@ -15,8 +33,11 @@ URDF, opcjonalny TCP i cel, a oddaje jawny układ równań IK.
 ## 0. Zakres
 
 ```text
-IkEquationBuilder.hpp    +2 kody błędu, +1 pole, +1 metoda, +1 składowa
-IkEquationBuilder.cpp    +buildEquationSystem, +wizytor wariantu, +2 helpery
+IkEquationBuilder.hpp    +2 kody błędu, +1 pole błędu, +1 metoda publiczna,
+                         +1 prywatny helper, +1 składowa
+IkEquationBuilder.cpp    +buildEquationSystem, +transformForConstraints,
+                         +wizytor wariantu, +1 helper błędu,
+                         +2 istniejące inicjalizatory agregatowe do poprawienia
 tests/test_ik_equation_builder.cpp   +12 testów
 STATUS.md, README.md, roadmapa       DoD Fazy 2 (5)
 
@@ -129,8 +150,23 @@ umowy, tylko dokłada do niej drugi wiersz.
     buildEquationSystem(const IkTarget& target) const;
 ```
 
-Do składowych dochodzi `ConstraintBuilder constraintBuilder_;` obok czterech
-istniejących budowniczych.
+W części prywatnej, obok budowniczych:
+
+```cpp
+private:
+    // Which transform the constraints are built on, or the first missing
+    // prerequisite. Reads four members, so it belongs to the class rather than
+    // being a free function with four parameters.
+    [[nodiscard]] std::expected<const SymbolicTransform*, IkEquationBuilderError>
+    transformForConstraints() const;
+
+    // ... cztery istniejące budowniczy ...
+    ConstraintBuilder constraintBuilder_;
+```
+
+v1 pokazywała definicję `transformForConstraints` w `.cpp`, nie deklarując jej w
+klasie — czyli definicję metody, której nie ma. Stąd bilans nagłówka w 0 mówi o
+**dwóch** metodach, nie jednej.
 
 ### 1.3 Czego **nie** dochodzi
 
@@ -141,6 +177,47 @@ jaki jest — i to jest mierzalny skutek wariantu A, wart odnotowania w diffie.
 ---
 
 ## 2. `IkEquationBuilder.cpp`
+
+### 2.0 Czwarte pole łamie istniejące inicjalizatory — i to jest błąd **buildu**
+
+Pierwsza rzecz do zrobienia w `.cpp`, przed czymkolwiek nowym. `IkEquationBuilderError`
+ma dziś trzy pola i dwa miejsca inicjalizują je agregatowo, podając komplet.
+Po dodaniu `constraintError` komplet ma cztery pozycje, a oba miejsca podają
+trzy.
+
+Odtworzone na tym toolchainie, dokładnie w konfiguracji gate'u
+(`-Wall -Wextra -Wswitch -Werror`):
+
+```text
+error: missing initializer for member 'E::b' [-Werror=missing-field-initializers]
+```
+
+Czyli **`build-werror` przestaje się budować**, a deklarowany gate `422/422` jest
+nieosiągalny, dopóki oba miejsca nie zostaną poprawione:
+
+```cpp
+std::unexpected<IkEquationBuilderError> makeError(IkEquationBuilderErrorCode code,
+                                                  std::string message)
+{
+    return std::unexpected(
+        IkEquationBuilderError{code, std::move(message), std::nullopt, std::nullopt});
+}
+```
+
+```cpp
+        return std::unexpected(IkEquationBuilderError{
+            IkEquationBuilderErrorCode::ChainBuildFailed,
+            "cannot select chain '" + baseLink + "' -> '" + toolLink + "': " +
+                describe(selected.error()),
+            selected.error(),
+            std::nullopt});
+```
+
+Warto zauważyć, że to **nie jest** przypadkowa uciążliwość polityki ostrzeżeń,
+tylko dokładnie to, po co R1 ją wprowadził: każde miejsce konstruujące błąd musi
+świadomie odpowiedzieć na pytanie „a co z nowym polem", zamiast dostać domyślną
+wartość po cichu. Odpowiedź jest tu za każdym razem `std::nullopt` — i to jest
+treść inwariantu z 1.1, zapisana w kodzie, a nie tylko w komentarzu.
 
 ### 2.1 Wybór transformacji
 
@@ -197,21 +274,25 @@ struct ConstraintDispatch
     const SymbolicTransform& transform;
     const KinematicChain& chain;
 
-    template <class Target>
     [[nodiscard]] std::expected<IkEquationSystem, ConstraintBuilderError>
-    operator()(const Target& target) const = delete;
+    operator()(const PositionTarget& target) const
+    {
+        return builder.build(transform, chain, target);
+    }
 
-    // ... sześć jawnych przeciążeń, każde jedną linią:
-    //     return builder.build(transform, chain, target);
+    // ... i pięć pozostałych, każde tak samo jednolinijkowe:
+    //     PoseTarget, ToolDirectionTarget, PositionAndToolDirectionTarget,
+    //     DirectionAngleTarget, PositionAndDirectionAngleTarget
 };
 
 } // namespace
 ```
 
-> **Uwaga do review, 8.1:** zapis z `template ... = delete` jest jednym z dwóch
-> rozważanych; drugi to sześć zwykłych przeciążeń bez szablonu. Oba dają błąd
-> kompilacji przy siódmej alternatywie, ale w innym momencie i z innym
-> komunikatem. Rekomendacja i uzasadnienie niżej.
+**Sześć zwykłych przeciążeń, bez szablonu z `= delete`** — decyzja, nie pytanie
+otwarte (8). `std::visit` sam wymusi kompletność, a jawny zestaw przeciążeń jest
+w tym projekcie idiomem użytym już trzy razy: `TargetVisitor`,
+`EquationKindVisitor` i `toolAxisOf`. Nowy idiom dla nieco krótszego komunikatu
+kompilatora kosztowałby przy każdym czytaniu więcej, niż daje raz na etap.
 
 ### 2.3 Metoda
 
@@ -271,7 +352,8 @@ wybór transformacji
   UsesTcpTransformWhenTcpIsSet               lhs to sameNode z tcpForwardKinematics()
   UsesChainTipTransformWhenNoTcpIsSet        lhs to sameNode z forwardKinematics()
   RejectsTargetWhenTcpForwardKinematicsMissing
-  ChangingTcpChangesTheEquationSystem        offset narzędzia widoczny w rhs
+  ChangingTcpChangesTheEquationSystem        offset narzędzia widoczny w lhs,
+                                             sprawdzany przez podstawienie
 
 prerekwizyty i błędy
   ReportsFirstMissingStep                    trzy stany, trzy kody
@@ -300,11 +382,38 @@ Kształt: `selectChain`, `buildForwardKinematics`, `setTcp` — i **bez**
 padłby na implementacji, która „życzliwie" wzięłaby FK końca łańcucha, i to jest
 jego jedyny cel.
 
-**`ChangingTcpChangesTheEquationSystem`** pokazuje, że wybór transformacji
-naprawdę coś znaczy liczbowo: ten sam cel, dwa TCP różniące się o 120 mm wzdłuż
-Z, dwa układy — prawe strony identyczne (bo cel się nie zmienił), a **lewe strony
-to inne węzły**, bo pochodzą z innej transformacji. Gdyby fasada ignorowała TCP,
-oba układy byłyby tym samym.
+**`ChangingTcpChangesTheEquationSystem`** jest testem **semantycznym**, i to jest
+poprawka z v2. Wersja z v1 sprawdzała, że lewe strony to **inne węzły** — co jest
+prawdą z niewłaściwego powodu i przechodziłoby w dwóch przypadkach, które test ma
+wyłapywać:
+
+```text
+dwa IDENTYCZNE TCP        -> buildTcpForwardKinematics buduje świeże drzewo,
+                             więc !sameNode zachodzi mimo braku różnicy
+implementacja ignorująca   -> też buduje świeże węzły przy każdym wywołaniu,
+wartość TCP                 więc też przechodzi
+```
+
+`sameNode` odpowiada na pytanie „czy fasada użyła **tej** transformacji, którą
+ma" — i do tego służy w dwóch testach wyżej. Nie odpowiada na pytanie „czy zmiana
+**wartości** TCP zmieniła matematykę". Na to odpowiada podstawienie:
+
+```text
+ten sam cel, ta sama konfiguracja q, dwa TCP różniące się o 120 mm wzdłuż
+lokalnej osi Z narzędzia
+
+pA = [lhs_X(q), lhs_Y(q), lhs_Z(q)]   z pierwszego układu
+pB = [lhs_X(q), lhs_Y(q), lhs_Z(q)]   z drugiego
+
+EXPECT_NEAR(norm(pB - pA), 0.120, 1e-12)
+EXPECT_DOUBLE_EQ(rhs_A[i], rhs_B[i])      dla wszystkich trzech
+```
+
+Pierwsze oczekiwanie działa **niezależnie od orientacji narzędzia**, bo obrót
+zachowuje długość wektora przesunięcia — więc test nie musi znać konfiguracji, w
+której jest liczony, i nie ma w nim żadnej liczby wziętej z uruchomienia. Drugie
+pilnuje, że zmieniła się wyłącznie strona robota: cel jest ten sam, więc prawe
+strony muszą być identyczne co do bitu.
 
 **`PreservesConstraintBuilderError`** ma trzy bloki w jednym teście:
 
@@ -433,28 +542,19 @@ poprawia. Ostatni jest sprawdzianem wariantu A.
 | Błąd buildera spłaszczony do stringa | niskie | `constraintBuildFailed` zachowuje trzy warstwy (2.3) |
 | Inwariant pól błędu złamany | realne | `PreservesConstraintBuilderError`, blok 2 — obie strony, `true` i `false` |
 | `*kinematicChain_` bez sprawdzenia | niskie | `transformForConstraints` sprawdza łańcuch pierwszy; zależność zapisana w komentarzu (2.3) |
+| Nowe pole błędu łamie build pod `-Werror` | **realne, złapane w review v1** | Oba istniejące inicjalizatory agregatowe poprawione **przed** resztą zmian (2.0); odtworzone na tym toolchainie |
+| Test TCP przechodzi z niewłaściwego powodu | **realne, złapane w review v1** | Test semantyczny z podstawieniem zamiast `!sameNode` (3.3); świeże drzewo powstaje przy każdym `buildTcpForwardKinematics` |
 
 ---
 
-## 8. Otwarte pytania do review
+## 8. Rozstrzygnięte w review (v2)
 
-**8.1 Kształt `ConstraintDispatch`.** Wariant z `template ... = delete` daje błąd
-przy **próbie użycia** brakującego przeciążenia i komunikat wskazujący na
-usunięty szablon; sześć zwykłych przeciążeń daje błąd `std::visit` o niepełnym
-zestawie, dłuższy i mniej czytelny, ale bez sztuczki z `= delete`.
+| # | Pytanie z v1 | Rozstrzygnięcie |
+|---|---|---|
+| 1 | Kształt `ConstraintDispatch` | **Sześć zwykłych przeciążeń**, bez szablonu z `= delete`. `std::visit` wymusza kompletność, a jawny zestaw przeciążeń jest idiomem użytym w projekcie już trzy razy — spójność z nimi jest warta więcej niż krótszy komunikat kompilatora (2.2) |
+| 2 | `transformForConstraints`: metoda czy wolna funkcja | **Prywatna metoda.** Czyta cztery składowe fasady; jako wolna funkcja dostawałaby je wszystkie argumentami i przestałaby być prostsza (1.2) |
 
-Rekomendacja: **sześć zwykłych przeciążeń**, bez szablonu. Precedens jest w
-projekcie i był stosowany trzy razy — `TargetVisitor`, `EquationKindVisitor`,
-`toolAxisOf` — a spójność z nimi jest warta więcej niż nieco lepszy komunikat
-kompilatora. Sztuczka, której nie ma nigdzie indziej, kosztuje więcej przy
-czytaniu, niż daje przy jednym błędzie kompilacji na etap.
-
-**8.2 Czy `transformForConstraints` ma być metodą prywatną, czy wolną funkcją w
-anonimowej przestrzeni nazw?** Rekomendacja: **metoda prywatna** — czyta cztery
-składowe fasady, więc jako wolna funkcja musiałaby dostać je wszystkie
-argumentami i przestałaby być prostsza.
-
----
+Otwarte pytania: **brak**.
 
 ## 9. Rekomendacja
 

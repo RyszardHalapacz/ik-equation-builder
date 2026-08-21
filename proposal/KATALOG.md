@@ -33,7 +33,7 @@ Ostatni etap Fazy 2.
 | Dokument | Temat | Stan | Linii |
 |---|---|---|---|
 | [`F2.7-facade-integration/proposal-phase2-facade-integration.md`](F2.7-facade-integration/proposal-phase2-facade-integration.md) | Cel jako argument, TCP jako stan, który frame jest ograniczany, DoD Fazy 2 | **APPROVED (v2)** | 619 |
-| [`F2.7-facade-integration/proposal-phase2-facade-integration-implementation.md`](F2.7-facade-integration/proposal-phase2-facade-integration-implementation.md) | Pełny kod fasady + 12 testów, DoD Fazy 2 | **DO REVIEW (v1)** | 466 |
+| [`F2.7-facade-integration/proposal-phase2-facade-integration-implementation.md`](F2.7-facade-integration/proposal-phase2-facade-integration-implementation.md) | Pełny kod fasady + 12 testów, DoD Fazy 2 | **DO REVIEW (v2)** | 566 |
 
 ## Analizy poprzedzające proposale
 
