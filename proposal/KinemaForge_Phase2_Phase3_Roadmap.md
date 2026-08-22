@@ -1257,7 +1257,7 @@ done/F2.7-facade-integration/
 --- w toku, w proposal/ ---
 
 F3.1-rewrite-engine/
-    proposal-rewrite-engine-semantics-architecture.md       ◀ v5, do review
+    proposal-rewrite-engine-semantics-architecture.md       ◀ v6, do review
     proposal-rewrite-engine-semantics-implementation.md     po review
     implementation + tests
 ```
@@ -1369,6 +1369,12 @@ wraca do przepisania **dzieci**, a nie do próby reguł na tym samym węźle. Se
 posiada też swoje reguły, a limit `1 000 000` jest przedstawiony jako budżet
 defensywny — granica `steps ≤ measure(root)` **nie** jest prawdziwa, bo krok
 odrzucony przez representability guard liczy się, a miary korzenia nie zmniejsza.
+
+W v6 autor reguły dostaje **trzeci kontrakt: determinizm**. Bez niego memoizacja
+nie jest poprawna — reguła odpowiadająca inaczej za drugim razem zamienia inwariant
+„każdy wpis memo jest punktem stałym" w zamrożenie pierwszej z kilku odpowiedzi.
+Zadeklarowana jest też semantyka kolejności reguł: wygrywa pierwsza dopuszczalna,
+konfluencji silnik nie obiecuje.
 
 Uwaga z sekcji 4, która staje się teraz aktualna: `F3.3` (trygonometria), `F3.5`
 (pattern detector), `F3.8` (solver pozycji 6R), `F3.9` (solver wrist) i `F3.10`

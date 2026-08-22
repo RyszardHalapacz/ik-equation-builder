@@ -833,7 +833,7 @@ Paths below are relative to `proposal/`.
 | `done/F2.6-directional-constraints/proposal-directional-constraints-b-implementation.md` | F2.6b: angle family, code + 14 tests | implemented |
 | `done/F2.7-facade-integration/proposal-phase2-facade-integration.md` | Facade integration, Phase 2 DoD (F2.7) | approved (v2) |
 | `done/F2.7-facade-integration/proposal-phase2-facade-integration-implementation.md` | Facade code + 12 tests | implemented |
-| `F3.1-rewrite-engine/proposal-rewrite-engine-semantics-architecture.md` | Rewrite engine semantics: domain guards, fixed point, transactional memo (F3.1) | **in review (v5)** |
+| `F3.1-rewrite-engine/proposal-rewrite-engine-semantics-architecture.md` | Rewrite engine semantics: domain guards, fixed point, rule contracts (F3.1) | **in review (v6)** |
 | `done/F2.3.R-review-remediation/` | Five proposals answering the 2026-08-17 code review | implemented |
 
 ## Next step

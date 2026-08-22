@@ -33,7 +33,7 @@ Faza 2 zamknięta 2026-08-21.
 
 | Dokument | Temat | Stan | Linii |
 |---|---|---|---|
-| [`F3.1-rewrite-engine/proposal-rewrite-engine-semantics-architecture.md`](F3.1-rewrite-engine/proposal-rewrite-engine-semantics-architecture.md) | Granice gwarancji silnika, lokalny warunek dziedziny, poprawna definicja punktu stałego | **DO REVIEW (v5)** | 1224 |
+| [`F3.1-rewrite-engine/proposal-rewrite-engine-semantics-architecture.md`](F3.1-rewrite-engine/proposal-rewrite-engine-semantics-architecture.md) | Granice gwarancji silnika, warunek dziedziny, punkt stały, kontrakty autora reguły | **DO REVIEW (v6)** | 1366 |
 
 ## Analizy poprzedzające proposale
 

@@ -1,6 +1,20 @@
 # Proposal: semantyka rewrite engine (F3.1), architektura
 
-**Etap:** F3.1 · **v5 — do review** · 2026-08-22 · część 1 z 2
+**Etap:** F3.1 · **v6 — do review** · 2026-08-22 · część 1 z 2
+
+> **v6, po piątym review.** Jeden blocker kontraktowy i trzy poprawki:
+>
+> 1. **`RewriteRule` nie deklarował determinizmu**, a cała memoizacja na nim
+>    stoi: reguła odpowiadająca inaczej za drugim razem zamienia inwariant
+>    „każdy wpis memo jest punktem stałym" w zamrożenie pierwszej z kilku
+>    odpowiedzi. Trzeci kontrakt autora reguły, obok (E) i miary (3.2).
+> 2. **5.3 nadal powoływało się na `steps ≤ measure(root)`** — twierdzenie
+>    wycofane w v5, wraz z kontrprzykładem w 11.2. Uzasadnienie zasięgów
+>    przepisane na to, które jest prawdziwe.
+> 3. **Kolejność reguł jest obserwowalna**, więc przestaje być przemilczana:
+>    wygrywa pierwsza dopuszczalna, konfluencji nie ma i nie będzie (4.4).
+> 4. Inwariant wstawiania do memo — wpis dopiero po zakończeniu pętli, nigdy
+>    dla stanów pośrednich (5.5).
 
 > **v5, po czwartym review.** Jeden blocker, tym razem w **definicji punktu
 > stałego**, plus trzy rekomendacje przyjęte w całości:
@@ -373,6 +387,20 @@ ma własne kontrakty. To dwa różne pytania i potrzebne są oba.
 // nullopt means "does not apply", NOT "applies and changes nothing". A rule that
 // returned its input unchanged would spin the fixed-point loop, so the engine
 // treats an unchanged result as a defect (4.3).
+//
+// SEMANTIC CONTRACT: apply() must be deterministic with respect to its
+// arguments. For the same Expression and the same factory semantics it must
+// always make the same decision and produce the same replacement. External
+// mutable state must not affect whether the rule applies or what it returns.
+//
+// Diagnostic side effects are allowed as long as they cannot reach the result
+// -- a test counting how often a rule was consulted is fine; a rule that
+// declines the first time and applies the second is not.
+//
+// This is not decoration. The session memoises results across roots (5.5), so
+// a rule consulted once may never be consulted again for that node; a rule
+// whose answer depends on when it was asked makes the memo hold a claim the
+// rules would no longer agree with.
 struct RewriteRule
 {
     // An owning std::string, not a string_view. A view would make the rule's
@@ -421,6 +449,7 @@ przy konstrukcji.
 ```text
 REGUŁA odpowiada za:    (E) -- że B jest algebraicznie równe A na dom(A)
                         malejącą miarę (4.3)
+                        DETERMINIZM -- ta sama decyzja dla tego samego wejścia
                         własne testy wartości, w F3.2
 
 SILNIK odpowiada za:    warunek składniowy dziedziny (2.3)
@@ -436,6 +465,50 @@ skończoności zamiast liczyć na pamięć wołających.
 
 Symetrycznie: silnik **nie** sprawdza (E), bo nie umie. Ta asymetria jest treścią
 2.2 i jedyną rzeczą, którą trzeba o tym etapie zapamiętać.
+
+**Trzeci kontrakt — determinizm — doszł w v6 i nie jest kosmetyką.** Cała
+memoizacja z 5 stoi na cichym założeniu:
+
+```text
+ten sam Expression  +  ten sam zestaw reguł   ->   zawsze ten sam wynik
+```
+
+Typ `RewriteRule` tego nie gwarantował **ani nawet nie deklarował**, a wskaźnik na
+funkcję wolno napisać tak:
+
+```cpp
+std::optional<Expression> badRule(const Expression&, const ExpressionFactory& factory)
+{
+    static int call = 0;
+    if (++call == 1)
+        return std::nullopt;      // za pierwszym razem: nie pasuje
+    return factory.constant(0.0); // za drugim: pasuje
+}
+```
+
+Skutek nie jest lokalny. Pierwsze `session.rewrite(x)` ustala `x -> x`, zapisuje
+`memo[x] = x` i **commituje to jako udowodniony punkt stały** (5.5). Drugie
+użycie `x` — w innym równaniu tego samego układu — nie zapyta już żadnej reguły.
+Inwariant z 5.5:
+
+> każdy wpis w memo sesji jest punktem stałym względem zestawu reguł tej sesji
+
+jest więc prawdziwy **dokładnie wtedy, gdy reguły są semantycznie czyste**. Bez
+tego kontraktu memoizacja nie jest optymalizacją tego samego wyniku, tylko
+zamrożeniem pierwszej z kilku możliwych odpowiedzi.
+
+Nie egzekwujemy tego maszynowo — tak samo jak (E). To kontrakt autora reguły i
+jego miejsce jest w komentarzu przy typie oraz w tej tabelce, a nie w `assert`cie,
+którego nie da się napisać. Różnica wobec (E) jest jedna i warto ją znać:
+złamanie (E) daje złą matematykę **w sposób powtarzalny**, a złamanie determinizmu
+daje wynik zależny od tego, w jakiej kolejności ktoś przepisywał równania — czyli
+błąd, który znika przy próbie odtworzenia.
+
+Rozróżnienie, które musi być wyraźne, bo testy z 8 z niego korzystają: efekt
+uboczny **diagnostyczny** jest dozwolony, dopóki nie może dosięgnąć wyniku.
+Licznik „ile razy pytano o tę regułę" jest w porządku i właśnie na nim stoi
+`RewritesSharedSubtreeOnce`. Reguła, która na podstawie tego licznika **zmienia
+odpowiedź**, nie jest.
 
 ---
 
@@ -545,6 +618,37 @@ Kontrakt: `measure(B) < measure(A)`. Sprawdzany `assert`em z nazwą reguły w
 komunikacie — złamanie to błąd programisty, a limit i tak zamienia go w
 skończone zakończenie. Precedens takiego `assert`a bez wyłuskania: F2.5Q.
 
+### 4.4 Kolejność reguł jest częścią semantyki — i to jest świadome
+
+Krok 3 z 4.1 mówi „**pierwsza** dopuszczalna reguła", co czyni kolejność w
+`rules_` obserwowalną. v5 zostawiała to jako szczegół implementacyjny; to błąd
+opisu, bo dwie poprawne reguły mogą prowadzić do **różnych** postaci końcowych:
+
+```text
+R1:  A -> B
+R2:  A -> C          obie spełniają (E), obie zmniejszają miarę
+                     B i C mogą być różnymi punktami stałymi
+```
+
+Deklaracja, wprost:
+
+> `RewriteSession` zachowuje **kolejność reguł podaną konstruktorowi**. Gdy
+> dopuszczalnych jest kilka, wygrywa **pierwsza**. Silnik **nie** gwarantuje
+> konfluencji ani jednoznacznej postaci normalnej. Za dobór i kolejność reguł
+> odpowiada F3.2.
+
+To nie jest brak, tylko wybór proporcjonalny do rozmiaru narzędzia. Konfluencja
+wymagałaby dowodzenia par krytycznych dla każdego dodanego wzorca albo domknięcia
+zestawu Knuthem-Bendixem — czyli budowania CAS-a, żeby uprościć dwanaście równań.
+Silnik daje w zamian coś słabszego, ale sprawdzalnego: **deterministyczny** wynik
+dla danego zestawu i danej kolejności.
+
+Praktyczna konsekwencja jest jedna i dlatego to tu stoi: **zmiana kolejności dwóch
+reguł w F3.2 może zmienić postać symboliczną wyniku**, nie łamiąc przy tym żadnego
+kontraktu tego etapu. Ktoś, kto zobaczy taką zmianę w diffie za trzy etapy, ma
+prawo wiedzieć, że to zachowanie przewidziane. Test
+`UsesFirstAdmissibleRuleInDeclaredOrder` pilnuje samej reguły pierwszeństwa.
+
 ---
 
 ## 5. DAG
@@ -640,10 +744,16 @@ stepLimit     na WYWOŁANIE
 steps         na WYWOŁANIE
 ```
 
-Limit i licznik są per `rewrite(root)`, bo tylko wtedy zdanie z 11.2 — *liczba
-kroków jest ograniczona przez `measure(root)`* — pozostaje prawdziwe. Budżet
-wspólny dla sesji obsługującej dwadzieścia cztery strony równań znaczyłby coś
-zupełnie innego i nie dałoby się go wyprowadzić z miary pojedynczego wyrażenia.
+Limit i licznik są per `rewrite(root)`, bo **opisują wykonanie jednego
+wywołania**. Budżet wspólny dla sesji splótłby niezależne korzenie: `reachedLimit`
+jednego wyniku zależałoby wtedy od pracy wykonanej wcześniej dla zupełnie innego
+wyrażenia, a caller nie miałby jak odróżnić „moje wyrażenie nie zbiegło" od
+„ktoś przede mną zużył budżet".
+
+(v3 uzasadniała to inaczej — że tylko wtedy `steps ≤ measure(root)` pozostaje
+prawdziwe. To zdanie zostało wycofane w v6 razem z całym tym twierdzeniem:
+11.2 pokazuje kontrprzykład. Rozdzielenie zasięgów było słuszne, uzasadnienie
+nie.)
 
 Wolna funkcja jednorazowa zostaje jako wygoda dla testów i wywołań pojedynczych,
 zaimplementowana przez sesję.
@@ -790,8 +900,33 @@ punkt stały     -> commit memo lokalnego I lokalnych strażników
 reachedLimit    -> porzucone OBA
 ```
 
-Koszt ponownego policzenia strażników po nieudanym przebiegu jest żadny — dziś
+Koszt ponownego policzenia strażników po nieudanym przebiegu jest żaden — dziś
 zbiory są puste (5.4), a jutro liczy się je kompozycyjnie.
+
+**Inwariant wstawiania, do wyegzekwowania w kodzie.** Żeby zdanie „każdy
+commitowany wpis jest punktem stałym" było prawdziwe, memo lokalne nie może
+zbierać pośrednich `current` z pętli 4.1 — to są stany **w trakcie**, nie wyniki:
+
+```cpp
+Expression rewriteNode(const Expression& input)
+{
+    if (auto hit = lookup(input))
+        return *hit;
+
+    Expression current = input;
+    // ... pełna pętla fixed-point z 4.1 ...
+
+    localMemo.emplace(input, current);   // DOPIERO tutaj, po zakończeniu pętli
+    return current;
+}
+```
+
+Klucz jest zawsze **wejściem** tego wywołania, wartość zawsze jego **punktem
+stałym**, a wpis powstaje po wyjściu z pętli. Przy `reachedLimit` całe memo lokalne
+i tak ginie, więc oba mechanizmy mówią to samo dwa razy — i dobrze, bo inwariant
+zależny od jednego `if`a w środku pętli jest inwariantem tylko do najbliższej
+refaktoryzacji. Szczegół należy do proposalu implementacyjnego; stoi tu, bo wynika
+z 5.5, a nie z wygody kodowania.
 
 ---
 
@@ -993,6 +1128,7 @@ silnik
   KeepsNodeIdentityWhenNothingApplies             sameNode(wejście, wynik) (6.3)
   AppliesRulesInnermostFirst
   DiscardsUnsafeRuleAndContinues             odrzucona nie blokuje kolejnych
+  UsesFirstAdmissibleRuleInDeclaredOrder     kolejność jest semantyką (4.4)
 
 DAG
   PreservesSharingAcrossRewrite
@@ -1068,7 +1204,7 @@ NOWE   symbolic/RewriteRule.hpp        RewriteRule, RewriteResult, limit
        symbolic/RewriteEngine.hpp      divisorsOf, hasSameDomainGuards,
                                        RewriteSession, rewrite()
        symbolic/RewriteEngine.cpp      sesja, memo, guardy, miara
-       tests/test_rewrite_engine.cpp   25 testów
+       tests/test_rewrite_engine.cpp   26 testów
 
 ZMIENIONE  CMakeLists.txt, tests/CMakeLists.txt   +1 wiersz każdy
 
@@ -1106,6 +1242,8 @@ właśnie po to, żeby nie trzeba było ruszać kontraktu fabryki.
 | Limit porównany z niewłaściwym maksimum | **realne, złapane w review v1 i v3** | Zmierzone oba roboty; `kr4_r600` = 153 703 jest maksimum, limit `1 000 000` (11.2) |
 | Rekurencyjny retry zabija proces przed limitem | **realne, złapane w review v3** | Krok 5 jest pętlą; rekurencja zostaje tylko po dzieciach (4.1) |
 | Silnik melduje punkt stały, który nim nie jest | **realne, złapane w review v4** | Powrót po regule do przepisania dzieci, nie do próby reguł; kontrprzykład i test w 4.1 |
+| Reguła niedeterministyczna zatruwa memo | **realne, złapane w review v5** | Trzeci kontrakt autora reguły, w tabelce 3.2 i w komentarzu typu (3.1); niesprawdzalny maszynowo tak samo jak (E) |
+| Zmiana kolejności reguł cicho zmienia postać wyniku | świadome, zadeklarowane | 4.4: pierwsza dopuszczalna wygrywa, brak gwarancji konfluencji, odpowiedzialność F3.2 |
 | Sesja z wiszącym `span`em reguł | **realne, złapane w review v4** | Sesja kopiuje reguły, `name` jest `std::string` (3.1), własny test |
 | Cache strażników trzyma milion tymczasowych DAG-ów po limicie | **realne, złapane w review v4** | Ten sam reżim transakcyjny co memo (5.5) |
 | Limit przedstawiony jako wyprowadzona granica | **realne, złapane w review v4** | 11.2: budżet defensywny; kontrprzykład na `steps ≤ measure(root)` wprost w dokumencie |
@@ -1216,8 +1354,12 @@ nie znormalizował (4.1). Plus własność reguł przez sesję (3.1), transakcyj
 cache strażników (5.5) i limit przedstawiony jako budżet, nie jako wyprowadzona
 granica (11.2).
 
+Z v6 — **trzeci kontrakt autora reguły: determinizm** (3.2), bez którego
+memoizacja z 5 nie jest poprawna, oraz jawna semantyka kolejności reguł wraz z
+odmową obiecywania konfluencji (4.4).
+
 Po zatwierdzeniu — proposal implementacyjny z pełnym kodem trzech nowych plików
-i dwudziestoma pięcioma testami, gate `447/447` (422 + 25).
+i dwudziestoma sześcioma testami, gate `448/448` (422 + 26).
 
 Po F3.1 wchodzi **F3.2** — pierwsze prawdziwe reguły: `x + 0`, `x * 1`, zwijanie
 stałych, `q - q → 0`. To tam okaże się, czy guard z 2.7 był potrzebny — i to
