@@ -1,6 +1,6 @@
 # Archiwum zamkniętych etapów
 
-**Utworzone:** 2026-08-21 · **etapów:** 9 · **proposali:** 39
+**Utworzone:** 2026-08-21 · **zaktualizowane:** 2026-08-22 · **etapów:** 10 · **proposali:** 41
 
 Tu leżą proposale etapów, które są **zaimplementowane, zbudowane i pokryte
 testami**. Przeniesienie do `done/` jest ostatnim krokiem etapu — po clean

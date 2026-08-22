@@ -1,6 +1,31 @@
 # Proposal: silnik przepisywania — F3.1, implementacja
 
-**Etap:** F3.1 · **v3 — do review** · 2026-08-22 · część 2 z 2
+**Etap:** F3.1 · **v4 — APPROVED, ZAIMPLEMENTOWANE 2026-08-22** · część 2 z 2
+
+> **Zaimplementowane.** Kod wszedł w brzmieniu z tego dokumentu — dosłownie:
+> pliki źródłowe zostały **wyekstrahowane z bloków kodu tego proposala**, a nie
+> przepisane ręcznie, więc repo i dokument są znakowo identyczne.
+>
+> ```text
+> src/ik_equations/symbolic/RewriteRule.hpp        122 linie
+> src/ik_equations/symbolic/RewriteEngine.hpp      169
+> src/ik_equations/symbolic/RewriteEngine.cpp      434
+> tests/test_rewrite_engine.cpp                    688
+> ```
+>
+> **Gate wyszedł `450/450` w obu konfiguracjach**, dokładnie tak, jak deklarowała
+> v3 — po raz pierwszy w tym etapie, bo v1 i v2 deklarowały liczby dla kodu,
+> który nie zbudowałby się pod `-Werror` (6.7).
+>
+> **v4, po trzecim review.** Jedna poprawka kontraktowa, bez zmiany kodu silnika:
+> `RewriteResult` przypisywało silnikowi zbyt dużo w kwestii dziedziny.
+> Globalnego zachowania dziedziny silnik **też** nie gwarantuje bez (E) —
+> kontrprzykład `a/sin(q)` z regułą `sin(q) -> 1` przechodzi warunek strażników
+> (`{}` po obu stronach) i miarę (2 -> 1), a rozszerza dziedzinę z `q != k*pi`
+> na wszystkie `q`. Indukcja z architektury biegnie przez
+> `d == d' => zeroSet(d) == zeroSet(d')`, a tą przesłanką jest właśnie (E).
+> Poprawiony też komentarz `collectGuards`: referencja wychodzi do `pending`
+> **albo** `committed`.
 
 > **v3, po drugim review.** Jeden blocker mechaniczny, jedna rekomendacja
 > i jedno doprecyzowanie — wszystkie przyjęte. Do tego **kod z tego dokumentu
@@ -191,10 +216,25 @@ inline constexpr std::size_t kDefaultRewriteStepLimit = 1'000'000;
 //
 // Consumers driving repeated passes must test `changed`, never `steps > 0`.
 //
-// reachedLimit is NOT an error, which is why this is not an expected<>: the
-// expression is valid and has the same domain -- the engine enforces that part
-// itself -- and it is equivalent to the input ASSUMING EVERY RULE HELD ITS (E)
-// CONTRACT, which the engine cannot verify. It is merely not canonical.
+// reachedLimit is NOT an error, which is why this is not an expected<>.
+//
+// The returned Expression is structurally valid and respects the engine's
+// representability invariants. Assuming every accepted rule satisfies its
+// algebraic-equivalence contract (E), the result is equivalent to the input and
+// has the same domain. The engine itself enforces only the LOCAL syntactic
+// domain-guard condition; GLOBAL domain preservation also relies on (E).
+//
+// That last sentence is not hedging. A rule breaking (E) can preserve the
+// syntactic guards and still widen the domain:
+//
+//     a / sin(q)     with a broken rule  sin(q) -> 1
+//     guards {} -> {}, measure 2 -> 1    => the engine accepts it
+//     domain q != k*pi  becomes  every q
+//
+// The induction that carries the local condition to the whole tree runs
+// d == d' => zeroSet(d) == zeroSet(d'), and that premise IS (E).
+//
+// The expression may simply not have reached its canonical form.
 struct RewriteResult
 {
     Expression expression;
@@ -540,9 +580,10 @@ void appendAll(std::vector<Expression>& guards, const std::vector<Expression>& m
 // `committed` is the session-wide cache when a session calls this and nullptr
 // when a free function does; `pending` always receives the new entries.
 //
-// Returns a reference INTO `pending`. std::unordered_map keeps references to
-// its elements valid across rehashing -- only iterators are invalidated -- so
-// the recursive calls below cannot dangle what this returns.
+// Returns a reference into either `pending` or `committed`. std::unordered_map
+// keeps references to its elements valid across rehashing -- only iterators are
+// invalidated -- so the recursive calls below cannot dangle what this returns,
+// and `committed` is not written to at all while a call is in flight.
 const std::vector<Expression>& collectGuards(const Expression& expression,
                                              GuardCache& pending,
                                              const GuardCache* committed)

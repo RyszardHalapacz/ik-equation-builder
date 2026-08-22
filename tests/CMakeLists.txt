@@ -25,6 +25,7 @@ add_executable(kinemaforge_tests
     test_symbolic_expression.cpp
     test_expression_factory.cpp
     test_expression_evaluator.cpp
+    test_rewrite_engine.cpp
     test_symbolic_matrix.cpp
     test_symbolic_transform.cpp
     support/NumericForwardKinematics.cpp

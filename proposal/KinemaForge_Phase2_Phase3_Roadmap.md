@@ -27,7 +27,7 @@ F2.6  constrainty kierunkowe                    ✅ zaimplementowane (a + b)
 F2.7  integracja z fasadą + milestone           ✅ zaimplementowane
 
 FAZA 2 ZAMKNIĘTA — URDF + opcjonalny TCP + cel -> IkEquationSystem
-Faza 3, F3.1 (semantyka rewrite engine)          ◀ TUTAJ JESTEŚMY
+Faza 3, F3.2 (postać kanoniczna)                  ◀ TUTAJ JESTEŚMY
 ```
 
 Proposale etapów zamkniętych leżą w `proposal/done/<etap>/` — przeniesienie tam
@@ -867,7 +867,7 @@ Realizacyjnie dzielimy ją na **12 etapów**.
 
 ---
 
-## F3.1 — semantyka rewrite engine
+## F3.1 — semantyka rewrite engine ✅ ZAMKNIĘTE 2026-08-22
 
 ### Cel
 
@@ -901,6 +901,14 @@ nie może zostać bezwarunkowo zamienione na `0`.
 ---
 
 ## F3.2 — `EquationSimplifier`: kanonizacja algebraiczna
+
+> **⚠ Zakres tego etapu jest kwestionowany przez proposal z 2026-08-22.**
+> Lista „pierwszy bezpieczny zakres" poniżej powstała **przed Fazą 1** i została
+> zmierzona jako pusta: `ExpressionFactory` normalizuje te tożsamości przy
+> budowie, więc żaden z tych wzorców nie występuje w równaniach. Szczegóły
+> i propozycja nowego zakresu:
+> [`F3.2-canonical-form/proposal-canonical-form-architecture.md`](F3.2-canonical-form/proposal-canonical-form-architecture.md).
+> Tekst poniżej zostaje **niezmieniony** do czasu decyzji.
 
 ### Pierwszy bezpieczny zakres
 
@@ -1254,11 +1262,15 @@ done/F2.7-facade-integration/
     proposal-phase2-facade-integration.md                   ✅ zaimplementowane
     proposal-phase2-facade-integration-implementation.md    ✅ zaimplementowane
 
+F3.1-rewrite-engine/
+    proposal-rewrite-engine-semantics-architecture.md       ✅ v6, APPROVED
+    proposal-rewrite-engine-semantics-implementation.md     ✅ v4, zaimplementowane
+
 --- w toku, w proposal/ ---
 
-F3.1-rewrite-engine/
-    proposal-rewrite-engine-semantics-architecture.md       ◀ v6, ZATWIERDZONY
-    proposal-rewrite-engine-semantics-implementation.md     ◀ v3, do review
+F3.2-canonical-form/
+    proposal-canonical-form-architecture.md                 ◀ v1, do review
+    proposal-canonical-form-implementation.md               po review
     implementation + tests
 ```
 
@@ -1320,8 +1332,8 @@ Nie oznacza to, że Faza 3 jest tylko dwa razy większa. Etapy solvera są badaw
 
 # 6. Najbliższy krok
 
-**Stan na 2026-08-21: Faza 2 zamknięta.** Wszystkie dziewięć etapów
-zaimplementowanych, **422/422** testów w obu konfiguracjach (`build/` w Release i
+**Stan na 2026-08-22: Faza 2 zamknięta, F3.1 zamknięte.** Dziesięć etapów
+zaimplementowanych, **450/450** testów w obu konfiguracjach (`build/` w Release i
 `build-werror/` z `-Werror` oraz żywymi asercjami). Pipeline działa end-to-end
 przez jedną fasadę:
 
@@ -1336,51 +1348,54 @@ Zdanie, które musi paść razem z tym milestone'em: **projekt umie formułować
 ale nie umie go rozwiązywać.** Wyprowadzenie `q` to Faza 3 i mierzone wysiłkiem
 jest większe niż wszystko dotychczas razem wzięte.
 
-Etapem bieżącym jest **F3.1** — semantyka rewrite engine'u, na której stoi każdy
-późniejszy etap upraszczania i rozwiązywania. Do napisania:
+**F3.1 — semantyka rewrite engine'u — jest zamknięte.** Sześć wersji
+architektury i cztery implementacji; dokumenty w
+`proposal/done/F3.1-rewrite-engine/`. Rdzeń ustaleń:
 
-```text
-proposal/F3.1-rewrite-engine/proposal-rewrite-engine-semantics-architecture.md
-```
+- bezpieczeństwo dziedziny nie jest zasadą do zapamiętania, tylko **warunkiem
+  sprawdzanym maszynowo przy każdym trafieniu reguły** — i **lokalnie**, między
+  wejściem reguły a jej wyjściem, nie między całymi drzewami;
+- silnik gwarantuje strażników, representability i terminację; **(E), miara
+  i determinizm to trzy kontrakty autora reguły**, których silnik nie sprawdza —
+  i bez (E) nie ma też gwarancji dziedziny **globalnej**;
+- memo sesji przechowuje **wyłącznie udowodnione punkty stałe**, więc wywołanie
+  przerwane limitem nie zostawia po sobie niczego;
+- **kolejność reguł jest semantyką**: wygrywa pierwsza dopuszczalna, konfluencji
+  silnik nie obiecuje;
+- limit `1 000 000` to **budżet defensywny**, nie granica wyprowadzona z rozmiaru
+  wejścia — `steps ≤ measure(root)` nie jest prawdziwe.
 
-**Napisany 2026-08-22, czeka na review.** Główne ustalenie: bezpieczeństwo
-dziedziny przestaje być zasadą, o której trzeba pamiętać, a staje się
-**warunkiem sprawdzanym maszynowo przy każdym trafieniu reguły** — reguła
-proponuje, silnik dopuszcza. Konsekwencja, która coś daje: `x * 0 -> 0` jest
-**dopuszczalne**, gdy `x` nie zawiera dzielenia, i odrzucane, gdy zawiera. Ten sam
-zakaz z Fazy 1, zamieniony z globalnego na lokalny, wyprowadzany warunek.
+Gate: **450/450** w obu konfiguracjach. Silnik **nie ma jeszcze żadnej reguły**
+ani żadnego wołającego — to był fundament, nie funkcja.
 
-W v2 (po review) doprecyzowane są **granice** tej gwarancji: silnik pilnuje
-składniowych strażników dziedziny i terminacji, natomiast równoważności
-algebraicznej **nie sprawdza i nie może** — to kontrakt autora reguły,
-egzekwowany testami tej reguły.
+---
 
-W v3 dochodzi rozliczenie **sesji dzielonej między korzeniami**: kontrakt pól
-`changed` i `steps` (memo-hit nie jest krokiem), wymóg zachowania tożsamości
-węzła, deterministyczne punkty biegunowe w teście dziedziny oraz drugi cache
-sesji na strażników dziedziny.
+Etapem bieżącym jest **F3.2**. Proposal architektoniczny leży w
+`proposal/F3.2-canonical-form/` i **proponuje zmianę zakresu tego etapu wobec
+tego, co zapisano wyżej w sekcji F3.2** — na podstawie pomiaru, nie preferencji.
 
-W v4 memo sesji staje się **transakcyjne**: przyjmuje wyłącznie udowodnione punkty
-stałe, więc wynik przerwany limitem nie może wyciec do następnego korzenia.
+Zmierzone na obu robotach, na pełnym układzie równań `Pose`: **każdy wzorzec
+z listy „pierwszy bezpieczny zakres" występuje zero razy.** `x + 0`, `x - 0`,
+`x * 1`, `x / 1`, zwijanie stałych, `-(-x)` — wszystkie zero, oba roboty. Powód:
+`ExpressionFactory` jest **zamknięta nad tymi tożsamościami** i normalizuje przy
+budowie, więc wzorzec nie istnieje w chwili, gdy reguła mogłaby go zobaczyć. Ta
+lista powstawała przed Fazą 1 i nie mogła tego przewidzieć.
 
-W v5 poprawiona jest sama **definicja punktu stałego**: reguła dostaje fabrykę, więc
-może zbudować poddrzewo, którego w wejściu nie było, i po jej zastosowaniu silnik
-wraca do przepisania **dzieci**, a nie do próby reguł na tym samym węźle. Sesja
-posiada też swoje reguły, a limit `1 000 000` jest przedstawiony jako budżet
-defensywny — granica `steps ≤ measure(root)` **nie** jest prawdziwa, bo krok
-odrzucony przez representability guard liczy się, a miary korzenia nie zmniejsza.
+Co równania faktycznie zawierają: sumy do **11 (kr640) i 19 (kr4_r600)
+składników**, każdy iloczynem sin/cos, w kolejności będącej przypadkiem
+kompozycji FK. To blokuje `F3.3`, `F3.5` i `F3.8`, bo żaden z nich nie dopasuje
+wzorca do materiału, w którym to samo wyrażenie ma wiele zapisów.
 
-W v6 autor reguły dostaje **trzeci kontrakt: determinizm**. Bez niego memoizacja
-nie jest poprawna — reguła odpowiadająca inaczej za drugim razem zamienia inwariant
-„każdy wpis memo jest punktem stałym" w zamrożenie pierwszej z kilku odpowiedzi.
-Zadeklarowana jest też semantyka kolejności reguł: wygrywa pierwsza dopuszczalna,
-konfluencji silnik nie obiecuje.
+Proponowany zakres F3.2: **kanoniczne uporządkowanie łańcuchów AC** — to, co
+lista wymienia ostatnie jako „porządkowanie składników", i co F3.1 świadomie
+wypchnęło poza silnik, bo przestawienie **nie zmienia miary** i jako reguła
+zapętliłoby przepisywanie na `a+b → b+a`.
 
 Uwaga z sekcji 4, która staje się teraz aktualna: `F3.3` (trygonometria), `F3.5`
 (pattern detector), `F3.8` (solver pozycji 6R), `F3.9` (solver wrist) i `F3.10`
 (singularności) są badawczo najcięższe i **wymagają spike'a przed pełną
-architekturą**. F3.1 do nich nie należy — jest fundamentem, który kładzie się
-normalnym procesem.
+architekturą**. Ani F3.1, ani F3.2 do nich nie należą — oba są fundamentem,
+kładzionym normalnym procesem.
 
 Historyczny zapis „najbliższego kroku" z 2026-08-17 — R1 i kolejność
 R1 → (R2 + R4) → R3 → R5 — jest w sekcji `F2.3.R` i w

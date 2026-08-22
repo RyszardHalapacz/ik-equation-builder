@@ -1,8 +1,8 @@
 # Project Status
 
-**Last updated:** 2026-08-21
+**Last updated:** 2026-08-22
 **Branch:** `f2.3r-review-remediation`
-**Build:** clean · **Tests:** 422/422 passing in both configurations
+**Build:** clean · **Tests:** 450/450 passing in both configurations
 (`build/` Release, `build-werror/` with `-Werror` and live assertions)
 
 > **Code review of 2026-08-17: remediation complete.** The review found 10
@@ -738,18 +738,60 @@ and requiring the constrained point to move by exactly the offset.
   discarded at the `UrdfModelLoader` boundary.
 - Model structs — complete aggregates, no behaviour.
 
+## Phase 3, F3.1 — the rewrite engine (done)
+
+`RewriteSession` applies rules to an expression DAG and stops at a fixed point,
+under three guarantees it enforces itself and three contracts it cannot check.
+
+```text
+src/ik_equations/symbolic/RewriteRule.hpp     rule and result types, the contracts
+src/ik_equations/symbolic/RewriteEngine.hpp   divisorsOf, hasSameDomainGuards, session
+src/ik_equations/symbolic/RewriteEngine.cpp   domain analyser, fixed-point loop
+tests/test_rewrite_engine.cpp                 28 tests
+```
+
+**What the engine enforces.** A rule fires only if the divisors of its output
+match the divisors of its input **as sets**, checked locally at the point the
+rule fires rather than between whole trees. A replacement that would put a
+literal zero in a denominator is dropped and the original kept, so
+`ExpressionFactory::divide`'s assertion never had to be loosened. Rewriting
+terminates, and a step budget catches a rule that breaks its measure contract.
+
+**What it does not.** Algebraic equivalence (E), the decreasing measure, and
+determinism are the rule author's contracts. The measure is asserted where
+assertions are live and nowhere else. Global domain preservation **also** rests
+on (E): a rule breaking it can keep the syntactic guards and still widen the
+domain — `a / sin(q)` with a broken `sin(q) -> 1` passes both checks the engine
+can make.
+
+**No production rules ship with this stage.** The engine has no callers yet;
+`ConstraintBuilder` and the facade are untouched. Rules are F3.2 and later.
+
+Two decisions worth knowing before writing rules. Rule **order is semantics** —
+the first admissible rule wins, and neither confluence nor a unique normal form
+is promised. And the session memo holds **only proven fixed points**: a call
+stopped by the step budget commits nothing, so an unfinished result cannot leak
+into the next root.
+
 ## Not done
 
-### Phase 3 (not started, by design)
+### Phase 3 beyond F3.1
 
 `EquationSimplifier`, `EquationSolver`, `IkPatternDetector`, `CodeGenerator` —
-no code, and no proposals. Scope in
-[the roadmap](proposal/KinemaForge_Phase2_Phase3_Roadmap.md), Phase 3, which
-starts at F3.1: the semantics of the rewrite engine every later stage rests on.
+no code. Scope in
+[the roadmap](proposal/KinemaForge_Phase2_Phase3_Roadmap.md).
 
-The roadmap flags five of those stages — F3.3, F3.5, F3.8, F3.9, F3.10 — as
-research-grade and wanting a spike before a full architecture proposal. F3.1 is
-not one of them; it is groundwork, and goes through the normal process.
+**F3.2 is in review and proposes a change of scope.** Measured on both robots:
+every rewrite pattern the roadmap assigns to F3.2 — `x + 0`, `x * 1`, `x / 1`,
+constant folding, `-(-x)` and the rest — occurs **zero times** in the equation
+systems this project builds, because `ExpressionFactory` is closed over those
+identities and normalises while building. What the equations do contain is sums
+of up to 19 products whose term order is an accident of how FK was composed, and
+that blocks pattern matching in F3.3, F3.4 and F3.8. The proposal is in
+[`proposal/F3.2-canonical-form/`](proposal/F3.2-canonical-form/proposal-canonical-form-architecture.md).
+
+The roadmap flags five stages — F3.3, F3.5, F3.8, F3.9, F3.10 — as
+research-grade and wanting a spike before a full architecture proposal.
 
 ## Known gaps and deferred work
 
@@ -757,6 +799,7 @@ not one of them; it is groundwork, and goes through the normal process.
 |---|---|---|
 | The equation count is not the constraint count | `IkEquationSystem`, `ConstraintBuilder` | A `Pose` system carries nine orientation equations for three rotational degrees of freedom, and the type stores no rank or independence information. Worse for a naive consumer: a target accepted by `TargetValidation` may be only an approximation of SO(3) — the tolerance is `1e-8`, and a rotation rounded to nine decimals deviates by ~7.4e-10 — so the nine exact equalities need not have an exact solution even for a reachable pose. Reading "twelve equations" as "twelve independent constraints" is therefore wrong twice over. Selecting an independent subproblem, and verifying the remaining equations numerically, belongs to the solver (Phase 3), which has to end with a `q → FK(q) → compare` round trip anyway. |
 | The `(transform, chain)` pair is not checked for provenance | `ConstraintBuilder` | `build()` takes the transform and the chain as separate arguments and nothing couples them. The symbol check proves that every symbol used is a declared unknown — it cannot prove the two came from the same robot: symbol names are positional (`"q1"`, `"q2"`, …), and both robots in `data/urdf` have six actuated joints, so the FK of one passes the check against the chain of the other. Detecting that needs symbol identity stronger than a name — a `SymbolId` with a provenance token, or a transform coupled to its chain by type. Same root cause as the `IkTarget` frame row above: a pair of arguments the type system does not bind together. |
+| Node-identity hashing is defined twice | `ExpressionEvaluator`, `RewriteEngine` | Both memoise by node identity with a key that owns its node, and each carries its own `ExpressionIdentityHash` / `ExpressionIdentityEqual`. The engine's pair lives in `namespace detail` in `RewriteEngine.hpp`; the evaluator's is private to the class. One shared definition would mean editing `ExpressionEvaluator` during a stage that otherwise does not touch it, so the duplication was left deliberately. Whoever unifies them should keep the pair out of the public vocabulary — it is cache machinery, not a type the module offers. |
 | A limits check must reject `NaN` explicitly | future limits check in the `ik` layer (F3.10 solver) | `mt::kinematics::RobotModel::within_limits()` was **removed** in F2.3.R/R4: once the loader stopped tracing a chain it had nothing to check against, and it had no caller anywhere in the repo. Removing it did **not** fix the bug it carried — `v < lower \|\| v > upper` is **false on both sides for `NaN`**, so it reported `NaN` as within limits. Whoever writes the replacement — in the `ik` layer, against `KinematicChain`, where joint order is meaningful — must reject non-finite values with an explicit `if (!std::isfinite(v)) reject;`. The naive comparison repeats exactly this bug. |
 | `continuous` joints unsupported | `robot_model_loader.cpp` | `mt::kinematics::JointType` has no `continuous` value, so `type="continuous"` rejects the whole file. `KinematicChainBuilder` and `JointTransformBuilder` both handle `JointType::Continuous` already — that code is covered only by hand-built joints and is unreachable end to end. Fixing it also touches limit semantics (URDF requires no `lower`/`upper` for continuous), so it needs its own proposal. Pinned by `ReportsContinuousAsUnsupportedUntilImplemented`. |
 | Validation starts at `KinematicChain`, not at the URDF file | numeric FK validation | The quaternion reference reads the **same** `KinematicChain` the symbolic side does. If `UrdfModelLoader` mis-parses an axis or `KinematicChainBuilder` gets the joint order wrong, both sides see the identical mistake and agree. So the cross-check covers the symbolic pipeline **from `KinematicChain` upward** — `JointTransformBuilder`, `multiplyTransforms`, `ForwardKinematicsBuilder`, `ExpressionEvaluator` — and says nothing about URDF parsing. Parsing has its own 56 tests, but they are structural, not end-to-end against a known pose. |
@@ -833,8 +876,9 @@ Paths below are relative to `proposal/`.
 | `done/F2.6-directional-constraints/proposal-directional-constraints-b-implementation.md` | F2.6b: angle family, code + 14 tests | implemented |
 | `done/F2.7-facade-integration/proposal-phase2-facade-integration.md` | Facade integration, Phase 2 DoD (F2.7) | approved (v2) |
 | `done/F2.7-facade-integration/proposal-phase2-facade-integration-implementation.md` | Facade code + 12 tests | implemented |
-| `F3.1-rewrite-engine/proposal-rewrite-engine-semantics-architecture.md` | Rewrite engine semantics: domain guards, fixed point, rule contracts (F3.1) | **approved (v6)** |
-| `F3.1-rewrite-engine/proposal-rewrite-engine-semantics-implementation.md` | Rewrite engine: full code, exhaustive domain visitor, 28 tests run green (F3.1) | **in review (v3)** |
+| `done/F3.1-rewrite-engine/proposal-rewrite-engine-semantics-architecture.md` | Rewrite engine semantics: domain guards, fixed point, rule contracts (F3.1) | **approved (v6)** |
+| `done/F3.1-rewrite-engine/proposal-rewrite-engine-semantics-implementation.md` | Rewrite engine: full code, exhaustive domain visitor, 28 tests (F3.1) | **implemented (v4)** |
+| `F3.2-canonical-form/proposal-canonical-form-architecture.md` | Canonical form for AC chains; proposes a change of scope, from measurements (F3.2) | **in review (v1)** |
 | `done/F2.3.R-review-remediation/` | Five proposals answering the 2026-08-17 code review | implemented |
 
 ## Next step
@@ -896,5 +940,8 @@ mispair it with a target, and the facade owns both transform and chain so the
 pair always matches. Neither is fixed in the type system — a caller using
 `ConstraintBuilder` directly can still do both wrong.
 
-**Next: Phase 3, starting at F3.1** — the semantics of the rewrite engine, which
-every later stage of simplification and solving rests on.
+**Next: F3.2** — a canonical form for associative-commutative chains. The
+architecture proposal is in review and argues, from measurements on both robots,
+that the stage should deliver ordering rather than the rewrite rules the roadmap
+lists: those rules have nothing to match, because the factory already normalises
+while building.

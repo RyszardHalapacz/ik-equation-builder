@@ -91,7 +91,7 @@
 > wiersz" przy `sqrt`/`log` (2.1), wycofany rzekomy szew dla reguł porządkujących
 > (7.3) i rozstrzygnięte, czy silnik jest sesją (5.3).
 
-Pierwszy dokument Fazy 3. Poprzednik: [`../done/F2.7-facade-integration/proposal-phase2-facade-integration.md`](../done/F2.7-facade-integration/proposal-phase2-facade-integration.md)
+Pierwszy dokument Fazy 3. Poprzednik: [`../F2.7-facade-integration/proposal-phase2-facade-integration.md`](../F2.7-facade-integration/proposal-phase2-facade-integration.md)
 — Faza 2 zamknięta 2026-08-21, 422/422 w obu konfiguracjach.
 
 Ten etap nie upraszcza jeszcze niczego. Buduje **mechanizm**, w którym da się

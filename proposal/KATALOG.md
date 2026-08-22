@@ -1,6 +1,6 @@
 # Katalog dokumentacji KinemaForge
 
-**Wygenerowany:** 2026-08-22 · **dokumentów:** 49 · **łącznie:** ~27 900 linii, 1,4 MB
+**Wygenerowany:** 2026-08-22 · **dokumentów:** 50 · **łącznie:** ~30 300 linii, 1,5 MB
 
 Spis wszystkiego, co w tym repo jest dokumentem, a nie kodem. Proces jest stały:
 **proposal architektoniczny → review → proposal implementacyjny → review →
@@ -27,14 +27,20 @@ aktualizowany na bieżąco, bez wersji.
 | [`done/README.md`](done/README.md) | Indeks archiwum zamkniętych etapów | żywy | 45 |
 | [`KATALOG.md`](KATALOG.md) | Ten spis | żywy | — |
 
-## Etap bieżący — Faza 3, F3.1
+## Etap bieżący — Faza 3, F3.2
 
-Faza 2 zamknięta 2026-08-21.
+Faza 2 zamknięta 2026-08-21, F3.1 zamknięte 2026-08-22.
 
 | Dokument | Temat | Stan | Linii |
 |---|---|---|---|
-| [`F3.1-rewrite-engine/proposal-rewrite-engine-semantics-architecture.md`](F3.1-rewrite-engine/proposal-rewrite-engine-semantics-architecture.md) | Granice gwarancji silnika, warunek dziedziny, punkt stały, kontrakty autora reguły | **ZATWIERDZONY (v6)** | 1366 |
-| [`F3.1-rewrite-engine/proposal-rewrite-engine-semantics-implementation.md`](F3.1-rewrite-engine/proposal-rewrite-engine-semantics-implementation.md) | Pełny kod trzech plików, wyliczający analizator dziedziny, 28 testów skompilowanych i uruchomionych | **DO REVIEW (v3)** | 1904 |
+| [`F3.2-canonical-form/proposal-canonical-form-architecture.md`](F3.2-canonical-form/proposal-canonical-form-architecture.md) | Postać kanoniczna łańcuchów AC; **proponuje zmianę zakresu etapu** wobec roadmapy, na podstawie pomiaru | **DO REVIEW (v1)** | 435 |
+
+## Faza 3, F3.1 — silnik przepisywania (zamknięta)
+
+| Dokument | Temat | Stan | Linii |
+|---|---|---|---|
+| [`done/F3.1-rewrite-engine/proposal-rewrite-engine-semantics-architecture.md`](done/F3.1-rewrite-engine/proposal-rewrite-engine-semantics-architecture.md) | Granice gwarancji silnika, warunek dziedziny, punkt stały, kontrakty autora reguły | **APPROVED (v6)** | 1366 |
+| [`done/F3.1-rewrite-engine/proposal-rewrite-engine-semantics-implementation.md`](done/F3.1-rewrite-engine/proposal-rewrite-engine-semantics-implementation.md) | Pełny kod trzech plików, wyliczający analizator dziedziny, 28 testów | **ZAIMPLEMENTOWANE (v4)** | 1945 |
 
 ## Analizy poprzedzające proposale
 

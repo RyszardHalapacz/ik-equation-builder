@@ -101,6 +101,7 @@ add_library(kinemaforge_ik STATIC
     src/ik_equations/symbolic/Expression.cpp
     src/ik_equations/symbolic/ExpressionFactory.cpp
     src/ik_equations/symbolic/ExpressionEvaluator.cpp
+    src/ik_equations/symbolic/RewriteEngine.cpp
     src/ik_equations/symbolic/SymbolicTransform.cpp
 )
 target_include_directories(kinemaforge_ik PUBLIC src)

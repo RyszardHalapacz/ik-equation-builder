@@ -174,6 +174,8 @@ IkEquationBuilder
 ├── (done) quaternion targets, directional targets, angle-to-a-direction targets
 ├── (done) all of it behind IkEquationBuilder — PHASE 2 COMPLETE
 │
+├── (done) a rewrite engine with machine-checked domain safety — no rules yet
+│
 └── (future)
     ├── EquationSimplifier   — collapse the raw symbolic mess into something readable
     ├── EquationSolver       — actually solve the equation for inverse kinematics
