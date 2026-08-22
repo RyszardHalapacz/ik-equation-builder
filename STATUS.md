@@ -5,6 +5,30 @@
 **Build:** clean · **Tests:** 450/450 passing in both configurations
 (`build/` Release, `build-werror/` with `-Werror` and live assertions)
 
+---
+
+## ▶ Where we are right now
+
+> **Stage F3.2 — waiting for review of the architecture proposal, version v4.**
+>
+> ```text
+> proposal/F3.2-canonical-form/proposal-canonical-form-architecture.md    v4
+> ```
+>
+> **Nothing about F3.2 is implemented and nothing should be.** No
+> `ExpressionCanonicalizer`, no `CanonicalizationSession`, no
+> `EquationSimplifier` — the proposal is a document, and the code in this repo
+> ends at F3.1. The next action is **the reviewer's verdict on v4**, not typing.
+>
+> After APPROVED, in this order: implementation proposal → review → code → both
+> builds green → update these documents → move F3.2 to `proposal/done/`.
+>
+> This block is the answer to „where are we?" and is rewritten at every change
+> of stage or version. If it disagrees with the tables further down, trust the
+> tables and fix this block.
+
+---
+
 > **Code review of 2026-08-17: remediation complete.** The review found 10
 > issues, all reproduced experimentally; two were HIGH and both sat in the
 > legacy `mt::kinematics` loader. Stage **F2.3.R** answered all ten across five

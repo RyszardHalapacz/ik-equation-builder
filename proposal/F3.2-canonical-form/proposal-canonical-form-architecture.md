@@ -1,6 +1,12 @@
 # Proposal: postać kanoniczna — F3.2, architektura
 
-**Etap:** F3.2 · **v4 — do review** · 2026-08-22 · część 1 z 2
+**Etap:** F3.2 · **v4 — CZEKA NA REVIEW** · 2026-08-22 · część 1 z 2
+
+> **Stan tego dokumentu:** wersja **v4**, oddana do review, **werdyktu jeszcze
+> nie ma**. Nic z F3.2 nie jest zaimplementowane i nie powinno być — kod w repo
+> kończy się na F3.1. Następny krok to **decyzja recenzenta o v4**, nie pisanie
+> kodu. Po APPROVED: proposal implementacyjny → review → kod → oba buildy
+> zielone → aktualizacja dokumentów → `proposal/done/`.
 
 > **v4, po trzecim review.** Trzy blockery, wszystkie z próby złamania definicji:
 >

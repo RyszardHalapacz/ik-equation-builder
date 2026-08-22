@@ -27,7 +27,8 @@ F2.6  constrainty kierunkowe                    ✅ zaimplementowane (a + b)
 F2.7  integracja z fasadą + milestone           ✅ zaimplementowane
 
 FAZA 2 ZAMKNIĘTA — URDF + opcjonalny TCP + cel -> IkEquationSystem
-Faza 3, F3.2 (postać kanoniczna)                  ◀ TUTAJ JESTEŚMY
+Faza 3, F3.2 (postać AC-normalna)                 ◀ TUTAJ JESTEŚMY
+                                                    architektura v4, CZEKA NA REVIEW
 ```
 
 Proposale etapów zamkniętych leżą w `proposal/done/<etap>/` — przeniesienie tam
