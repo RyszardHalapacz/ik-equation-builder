@@ -1256,8 +1256,10 @@ done/F2.7-facade-integration/
 
 --- w toku, w proposal/ ---
 
-Faza 3 — jeszcze nic nie napisane. Pierwszy dokument: F3.1, semantyka
-rewrite engine'u.
+F3.1-rewrite-engine/
+    proposal-rewrite-engine-semantics-architecture.md       ◀ v1, do review
+    proposal-rewrite-engine-semantics-implementation.md     po review
+    implementation + tests
 ```
 
 Nazwy plików F2.4 i F2.5 różnią się od zapowiadanych tu wcześniej
@@ -1340,6 +1342,13 @@ późniejszy etap upraszczania i rozwiązywania. Do napisania:
 ```text
 proposal/F3.1-rewrite-engine/proposal-rewrite-engine-semantics-architecture.md
 ```
+
+**Napisany 2026-08-22, czeka na review.** Główne ustalenie: bezpieczeństwo
+dziedziny przestaje być zasadą, o której trzeba pamiętać, a staje się
+**warunkiem sprawdzanym maszynowo przy każdym trafieniu reguły** — reguła
+proponuje, silnik dopuszcza. Konsekwencja, która coś daje: `x * 0 -> 0` jest
+**dopuszczalne**, gdy `x` nie zawiera dzielenia, i odrzucane, gdy zawiera. Ten sam
+zakaz z Fazy 1, zamieniony z globalnego na lokalny, wyprowadzany warunek.
 
 Uwaga z sekcji 4, która staje się teraz aktualna: `F3.3` (trygonometria), `F3.5`
 (pattern detector), `F3.8` (solver pozycji 6R), `F3.9` (solver wrist) i `F3.10`

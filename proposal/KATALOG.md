@@ -1,6 +1,6 @@
 # Katalog dokumentacji KinemaForge
 
-**Wygenerowany:** 2026-08-21 · **dokumentów:** 48 · **łącznie:** ~27 900 linii, 1,4 MB
+**Wygenerowany:** 2026-08-22 · **dokumentów:** 49 · **łącznie:** ~27 900 linii, 1,4 MB
 
 Spis wszystkiego, co w tym repo jest dokumentem, a nie kodem. Proces jest stały:
 **proposal architektoniczny → review → proposal implementacyjny → review →
@@ -29,8 +29,11 @@ aktualizowany na bieżąco, bez wersji.
 
 ## Etap bieżący — Faza 3, F3.1
 
-Faza 2 zamknięta 2026-08-21. Pierwszy dokument Fazy 3 — semantyka rewrite
-engine'u — jeszcze nie powstał.
+Faza 2 zamknięta 2026-08-21.
+
+| Dokument | Temat | Stan | Linii |
+|---|---|---|---|
+| [`F3.1-rewrite-engine/proposal-rewrite-engine-semantics-architecture.md`](F3.1-rewrite-engine/proposal-rewrite-engine-semantics-architecture.md) | Bezpieczeństwo dziedziny jako warunek sprawdzalny maszynowo; reguła proponuje, silnik dopuszcza | **DO REVIEW (v1)** | 543 |
 
 ## Analizy poprzedzające proposale
 
