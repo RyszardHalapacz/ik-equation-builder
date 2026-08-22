@@ -1,8 +1,15 @@
 # KinemaForge / IkEquationBuilder — roadmapa Fazy 2 i Fazy 3
 
-**Data:** 2026-08-03 · **ostatnia aktualizacja:** 2026-08-21  
+**Data:** 2026-08-03 · **ostatnia aktualizacja:** 2026-08-22  
 **Zakres:** rozwój po zakończeniu Fazy 1 (`URDF → zweryfikowane symboliczne FK`)  
 **Założenie wejściowe:** `IkEquationBuilder` jest zaimplementowany, pełny clean build przechodzi, a Faza 1 jest oznaczona jako zakończona.
+
+> **Rodowód pliku, 2026-08-22.** Ten dokument wywodzi się wprost z kopii sprzed
+> odtworzenia z 2026-08-21 (identycznej z commitem `de94a03`), doprowadzonej do
+> stanu bieżącego. Wersja odtworzona leży obok jako
+> [`KinemaForge_Phase2_Phase3_Roadmap_deprecated.md`](KinemaForge_Phase2_Phase3_Roadmap_deprecated.md)
+> i jest **wycofana**. Treść obu jest identyczna — porównanie wykazało, że
+> odtworzenie nie zgubiło niczego merytorycznego — ale pracujemy na tej.
 
 ---
 

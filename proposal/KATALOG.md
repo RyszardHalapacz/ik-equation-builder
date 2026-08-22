@@ -1,6 +1,6 @@
 # Katalog dokumentacji KinemaForge
 
-**Wygenerowany:** 2026-08-21 · **dokumentów:** 47 · **łącznie:** ~27 900 linii, 1,4 MB
+**Wygenerowany:** 2026-08-21 · **dokumentów:** 48 · **łącznie:** ~27 900 linii, 1,4 MB
 
 Spis wszystkiego, co w tym repo jest dokumentem, a nie kodem. Proces jest stały:
 **proposal architektoniczny → review → proposal implementacyjny → review →
@@ -22,7 +22,8 @@ aktualizowany na bieżąco, bez wersji.
 | [`../README.md`](../README.md) | Opis pipeline'u i wizji projektu | żywy | 202 |
 | [`../STATUS.md`](../STATUS.md) | Co naprawdę istnieje, znane braki, następny krok | żywy | 732 |
 | [`../COMMANDS.md`](../COMMANDS.md) | Komendy build/test, nota o MinGW i PATH | żywy | 67 |
-| [`KinemaForge_Phase2_Phase3_Roadmap.md`](KinemaForge_Phase2_Phase3_Roadmap.md) | Roadmapa Phase 2/3: etapy F2.1–F2.7, F2.3.R i F2.5Q | żywy | 1278 |
+| [`KinemaForge_Phase2_Phase3_Roadmap.md`](KinemaForge_Phase2_Phase3_Roadmap.md) | Roadmapa Phase 2/3: etapy F2.1–F2.7, F2.3.R i F2.5Q, plan Fazy 3 | żywy | 1352 |
+| [`KinemaForge_Phase2_Phase3_Roadmap_deprecated.md`](KinemaForge_Phase2_Phase3_Roadmap_deprecated.md) | Wersja odtworzona 2026-08-21, wycofana 2026-08-22 — ta sama treść, inny rodowód | WYCOFANY | 1364 |
 | [`done/README.md`](done/README.md) | Indeks archiwum zamkniętych etapów | żywy | 45 |
 | [`KATALOG.md`](KATALOG.md) | Ten spis | żywy | — |
 
