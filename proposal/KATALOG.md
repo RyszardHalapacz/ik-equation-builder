@@ -33,7 +33,7 @@ Faza 2 zamknięta 2026-08-21.
 
 | Dokument | Temat | Stan | Linii |
 |---|---|---|---|
-| [`F3.1-rewrite-engine/proposal-rewrite-engine-semantics-architecture.md`](F3.1-rewrite-engine/proposal-rewrite-engine-semantics-architecture.md) | Granice gwarancji silnika, lokalny warunek dziedziny, representability guard | **DO REVIEW (v2)** | 704 |
+| [`F3.1-rewrite-engine/proposal-rewrite-engine-semantics-architecture.md`](F3.1-rewrite-engine/proposal-rewrite-engine-semantics-architecture.md) | Granice gwarancji silnika, lokalny warunek dziedziny, kontrakt changed/steps przy dzielonym memo | **DO REVIEW (v3)** | 887 |
 
 ## Analizy poprzedzające proposale
 

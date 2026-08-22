@@ -1257,7 +1257,7 @@ done/F2.7-facade-integration/
 --- w toku, w proposal/ ---
 
 F3.1-rewrite-engine/
-    proposal-rewrite-engine-semantics-architecture.md       ◀ v2, do review
+    proposal-rewrite-engine-semantics-architecture.md       ◀ v3, do review
     proposal-rewrite-engine-semantics-implementation.md     po review
     implementation + tests
 ```
@@ -1354,6 +1354,11 @@ W v2 (po review) doprecyzowane są **granice** tej gwarancji: silnik pilnuje
 składniowych strażników dziedziny i terminacji, natomiast równoważności
 algebraicznej **nie sprawdza i nie może** — to kontrakt autora reguły,
 egzekwowany testami tej reguły.
+
+W v3 dochodzi rozliczenie **sesji dzielonej między korzeniami**: kontrakt pól
+`changed` i `steps` (memo-hit nie jest krokiem), wymóg zachowania tożsamości
+węzła, deterministyczne punkty biegunowe w teście dziedziny oraz drugi cache
+sesji na strażników dziedziny.
 
 Uwaga z sekcji 4, która staje się teraz aktualna: `F3.3` (trygonometria), `F3.5`
 (pattern detector), `F3.8` (solver pozycji 6R), `F3.9` (solver wrist) i `F3.10`

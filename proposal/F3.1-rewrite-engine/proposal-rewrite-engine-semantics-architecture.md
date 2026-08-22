@@ -1,8 +1,28 @@
 # Proposal: semantyka rewrite engine (F3.1), architektura
 
-**Etap:** F3.1 · **v2 — do review** · 2026-08-22 · część 1 z 2
+**Etap:** F3.1 · **v3 — do review** · 2026-08-22 · część 1 z 2
 
-> **v2, po review.** Rdzeń utrzymany — `divisorsOf`, przejście innermost, malejąca
+> **v3, po drugim review.** Rdzeń nietknięty; trzy problemy, wszystkie na
+> **stykach** mechanizmów wprowadzonych w v2:
+>
+> 1. **`changed` i `steps` traciły sens przy sesji dzielonej między korzeniami.**
+>    Z memo możliwe są oba przypadki naraz: reguła zadziałała, a wynik jest
+>    identyczny z wejściem, oraz wynik się różni, choć żadna reguła w tym wywołaniu
+>    nie poszła. Kontrakt obu pól zdefiniowany od nowa, razem z wymogiem
+>    **zachowania tożsamości węzła** (6).
+> 2. **Test dziedziny nadal mógł przejść mimo błędu, przed którym chroni.** Dla
+>    `(1/q)*0 -> 0` punkty **blisko** zera dają po obu stronach `0`; różnica jest
+>    widoczna **wyłącznie w dokładnym zerze**. Test dostaje deterministyczne punkty
+>    graniczne (8).
+> 3. **Obietnica złożoności liniowej nie była uzasadniona**, bo `divisorsOf`
+>    skanowało pod-DAG przy każdym trafieniu reguły. Dochodzi drugi cache sesji,
+>    liczony kompozycyjnie (5.4).
+>
+> Plus dwie drobne: porównanie strażników **niezależne od kolejności** (7.2) oraz
+> rozdzielenie zasięgów — memo na sesję, limit i licznik kroków **na wywołanie**
+> (5.3, 11.2).
+
+> **v2, po pierwszym review.** Rdzeń utrzymany — `divisorsOf`, przejście innermost, malejąca
 > miara i podział „reguła proponuje, silnik dopuszcza" zostają. Cztery blockery,
 > wszystkie przyjęte, i wszystkie sprowadzają się do jednego: **v1 obiecywała
 > więcej, niż silnik potrafi sprawdzić.**
@@ -420,9 +440,14 @@ Naiwna rekurencja odwiedza **każde wystąpienie** poddrzewa: dla FK `kr640` to
 Skutki memoizacji są dwa i oba są wymagane:
 
 ```text
-złożoność   liniowa w liczbie UNIKALNYCH węzłów
+złożoność   liniowa w liczbie UNIKALNYCH węzłów      (warunkowo -- p. 5.4)
 struktura   współdzielenie przeżywa przepisanie -- wynik jest DAG-iem, nie drzewem
 ```
+
+Pierwszy skutek jest **warunkowy** i v2 to przemilczała: memo załatwia koszt
+samego przejścia, ale analiza dziedziny wołana przy każdym trafieniu reguły ma
+własny koszt i wymaga własnego cache'u. Dopiero z nim ta linijka jest prawdziwa
+— rozliczone w 5.4.
 
 Drugi jest ważniejszy dla F3.2: gdyby wynik był drzewem, każde kolejne przejście
 symplifikatora startowałoby od materiału 77 razy większego.
@@ -473,27 +498,142 @@ Dziedziczy przy tym ostrzeżenie z evaluatora, wpisane w komentarz klasy: **memo
 rośnie monotonicznie**, a jedna sesja to jeden zestaw reguł. Sesja jest tania —
 kilka pól — więc dla innego zestawu tworzy się nową.
 
+**Zasięgi, rozdzielone świadomie** (poprawka z v3):
+
+```text
+memo          na SESJĘ    -- po to sesja istnieje: współdzielenie między korzeniami
+guard cache   na SESJĘ    -- 5.4
+stepLimit     na WYWOŁANIE
+steps         na WYWOŁANIE
+```
+
+Limit i licznik są per `rewrite(root)`, bo tylko wtedy zdanie z 11.2 — *liczba
+kroków jest ograniczona przez `measure(root)`* — pozostaje prawdziwe. Budżet
+wspólny dla sesji obsługującej dwadzieścia cztery strony równań znaczyłby coś
+zupełnie innego i nie dałoby się go wyprowadzić z miary pojedynczego wyrażenia.
+
 Wolna funkcja jednorazowa zostaje jako wygoda dla testów i wywołań pojedynczych,
 zaimplementowana przez sesję.
+
+### 5.4 Drugi cache: strażnicy dziedziny
+
+v2 obiecywała złożoność **liniową w liczbie unikalnych węzłów** i to było
+nieuzasadnione. Samo przejście z memo — owszem. Ale przy **każdym trafieniu
+reguły** silnik woła `hasSameDomainGuards`, a to dwa razy `divisorsOf`, a to
+skan pod-DAG-u. Bez pamiętania wyników powtarzające się skany tych samych
+poddrzew dokładają do kosztu składnik śmiało kwadratowy, plus porównania
+`structurallyEqual`.
+
+Sesja dostaje więc **drugi cache**, kluczowany tak samo jak memo:
+
+```cpp
+std::unordered_map<Expression, std::vector<Expression>,
+                   ExpressionIdentityHash, ExpressionIdentityEqual> guards_;
+```
+
+liczony **kompozycyjnie**, nie przez skan od zera:
+
+```text
+guards(Constant | Symbol)        = {}
+guards(op(a, b))                 = guards(a) u guards(b)
+guards(op(a))                    = guards(a)
+guards(Divide(a, b))             = guards(a) u guards(b) u { b }
+```
+
+Przy memoizacji po tożsamości węzła policzenie strażników dla całego DAG-a jest
+liniowe w liczbie **unikalnych** węzłów, więc deklaracja z 5.1 staje się
+prawdziwa — zamiast być wycofana.
+
+**Ile to realnie kosztuje: zero.** Zmierzone w tym repo: **żaden** budowniczy nie
+woła `ExpressionFactory::divide` — dwa trafienia na `divide` w `src/ik_equations/`
+poza samą fabryką to komentarze. FK, kompozycja TCP i wszystkie równania
+ograniczeń nie zawierają **ani jednego** węzła `Divide`, więc dla dzisiejszego
+materiału wszystkie zbiory strażników są puste, a `hasSameDomainGuards` porównuje
+dwa puste zbiory.
+
+Cała maszyneria z 2 jest więc **ubezpieczeniem**, nie kosztem na gorącej ścieżce:
+dzielenie pojawi się dopiero wtedy, gdy wprowadzi je reguła Fazy 3 (podstawienia
+półkątowe, `tan`) albo caller zbuduje je ręcznie. Warto to wiedzieć przy ocenie
+proporcji: płacimy dziś niemal nic za własność, która stanie się krytyczna, gdy
+solver zacznie dzielić.
 
 ---
 
 ## 6. Wynik
 
+### 6.1 Problem, którego v2 nie widziała
+
+Sesja dzielona między korzeniami (5.3) rozjechała znaczenie obu pól, i to w obie
+strony naraz. Przykład z review, dosłownie:
+
+```text
+shared = q - q
+root1  = 1 / shared
+root2  = shared + 5
+
+rewrite(root1)   reguła q-q -> 0 ODPALA i trafia do memo,
+                 ale representability guard (2.7) nie wpuszcza 0 do mianownika
+                 => WYNIK IDENTYCZNY Z WEJŚCIEM, choć reguła zadziałała
+
+rewrite(root2)   memo już ma shared -> 0, więc wynik to 0 + 5
+                 => WYNIK INNY NIŻ WEJŚCIE, choć w tym wywołaniu żadna reguła
+                    nie poszła
+```
+
+Przy definicji z v2 (`changed` = „czy cokolwiek zadziałało") dostalibyśmy
+`root1: changed = true` przy niezmienionym wyniku i `root2: changed = false`
+przy zmienionym. Oba kłamią, a F3.2 ma na `changed` sterować przebiegami.
+
+### 6.2 Kontrakt
+
 ```cpp
 struct RewriteResult
 {
     Expression expression;      // punkt stały albo stan po wyczerpaniu limitu
-    bool changed{};
-    std::size_t steps{};
+    bool changed{};             // wynik RÓŻNI SIĘ od wejścia TEGO wywołania
+    std::size_t steps{};        // NOWE przyjęte zastosowania reguł w TYM wywołaniu
     bool reachedLimit{};
 };
 ```
 
-`changed` ma konkretnego konsumenta: F3.2 puszcza kilka przebiegów różnymi
-zestawami reguł i musi wiedzieć, kiedy przestać.
+```text
+changed  =  !sameNode(wejście, wynik)
+steps    =  liczba reguł przyjętych w tym wywołaniu; trafienie w memo NIE liczy się
+```
 
-`reachedLimit` **nie jest błędem**, więc nie jest `expected`. Wyrażenie po
+Dla przykładu z 6.1:
+
+```text
+root1:   changed = false,  steps = 1
+root2:   changed = true,   steps = 0
+```
+
+Wygląda to na pierwszy rzut oka przewrotnie i **takie ma być**: te dwa pola
+odpowiadają na dwa różne pytania. `changed` mówi konsumentowi, czy dostał coś
+nowego; `steps` mówi, ile pracy wykonało to konkretne wywołanie. Przy dzielonym
+memo te liczby **muszą** się rozjechać i lepiej, żeby rozjechały się zgodnie z
+kontraktem niż przypadkiem.
+
+Konsekwencja dla F3.2, wpisana wprost w komentarz: **do sterowania przebiegami
+służy `changed`, nigdy `steps > 0`.**
+
+### 6.3 Wymóg: zachowanie tożsamości węzła
+
+Definicja `changed` przez `sameNode` nakłada na silnik obowiązek, który v2
+przemilczała, a który i tak byłby potrzebny:
+
+> Jeśli po przepisaniu dzieci **nic się nie zmieniło**, węzeł **nie jest
+> przebudowywany** — silnik zwraca oryginalny `Expression`.
+
+Bez tego każde przejście budowałoby strukturalnie identyczny, ale nowy graf,
+`changed` byłoby zawsze prawdziwe, a współdzielenie z 5 przestawałoby istnieć przy
+pierwszym przebiegu, który niczego nie uprasza. Dzięki temu wymogowi
+`changed` jest też **darmowe**: jedno porównanie wskaźników, bez chodzenia po
+drzewie.
+
+### 6.4 Czego tu nie ma
+
+`reachedLimit` **nie jest błędem**, więc wynik nie jest `expected`. Wyrażenie po
 wyczerpaniu limitu jest poprawne — o tej samej dziedzinie i (przy dotrzymanym (E))
 równoważne — tylko nie kanoniczne. Zwracanie go jako błędu zmuszałoby caller'a do
 wyrzucenia poprawnego wyniku.
@@ -524,11 +664,18 @@ W `symbolic/`, nie w `builders/`: to narzędzie warstwy wyrażeń.
 // more entry here.
 [[nodiscard]] std::vector<Expression> divisorsOf(const Expression& expression);
 
-// Compares those guards. Deliberately NOT called preservesDomain: it decides a
-// syntactic question, and only LOCALLY -- at the point a rule fires, between the
-// rule's input and its output. Applying it to whole trees before and after a
-// rewrite is wrong and would reject correct rewrites; the whole-tree property
-// follows by induction instead.
+// Compares those guards AS SETS -- order-independent, because divisorsOf walks
+// the tree and the same two guards may come out in either order. A plain
+// vector == vector would reject a rewrite for reordering its own output.
+// Matching is pairwise structurallyEqual, which is quadratic in the number of
+// guards and irrelevant in practice: nothing this project builds today contains
+// a single Divide node (5.4), and even a solver-era expression carries a handful.
+//
+// Deliberately NOT called preservesDomain: it decides a syntactic question, and
+// only LOCALLY -- at the point a rule fires, between the rule's input and its
+// output. Applying it to whole trees before and after a rewrite is wrong and
+// would reject correct rewrites; the whole-tree property follows by induction
+// instead.
 [[nodiscard]] bool hasSameDomainGuards(const Expression& before, const Expression& after);
 ```
 
@@ -579,6 +726,9 @@ silnik
   ReportsChangedWhenARuleFires
   ReportsUnchangedOnFixedPoint
   StopsAtStepLimitAndSaysSo                  reachedLimit, wynik poprawny
+  ReportsUnchangedWhenGuardRejectsInDenominator   root1 z 6.1: changed=false, steps=1
+  ReportsChangedWithoutStepsOnMemoHit             root2 z 6.1: changed=true,  steps=0
+  KeepsNodeIdentityWhenNothingApplies             sameNode(wejście, wynik) (6.3)
   AppliesRulesInnermostFirst
   DiscardsUnsafeRuleAndContinues             odrzucona nie blokuje kolejnych
 
@@ -597,26 +747,44 @@ równoważność Z DZIEDZINĄ
 jest zbudowany inaczej, bo tamten zawierał błąd z 2.4:
 
 ```text
-1. weź wyrażenie z dzieleniem, np. a/(q1 - 0.5)
+1. weź wyrażenie z dzieleniem o ZNANYM zerze mianownika, np. a/(q1 - 0.5)
 2. przepisz
-3. wylosuj N konfiguracji ze STAŁYM ziarnem, w tym punkty BLISKO bieguna
-4. dla każdej policz evaluate(przed) i evaluate(po)
+3. zbuduj listę punktów z DWOCH ZRODEL:
+      a) DETERMINISTYCZNE punkty graniczne, wpisane ręcznie:
+             q1 = 0.5          <- DOKŁADNE zero mianownika
+             q1 = 0.5 +/- 1e-9, 0.5 +/- 1e-6
+      b) losowe ze stałym ziarnem, w użytecznym zakresie
+4. dla każdego punktu policz evaluate(przed) i evaluate(po)
 5. wymagaj ZGODNOŚCI CO DO OKREŚLONOŚCI:
        obie zwracają wartość            -> wartości równe w granicach 1e-12
        obie zwracają DivisionByZero     -> zgoda
        jedna i druga inaczej            -> BŁĄD, dziedzina się zmieniła
 ```
 
-Krok 5 jest sednem. v1 kazała pomijać punkty przy biegunie i **osobno** porównywać
-`divisorsOf` przed i po — czyli robić dokładnie to, czego 2.4 zabrania, bo
-`a/-(-q)` i `a/q` mają różne dzielniki, a tę samą dziedzinę. Test behawioralny
-mierzy **dziedzinę**, a nie jej składniowy zapis, więc przechodzi tam, gdzie
-tamten dawał fałszywy alarm, i wywala się przy `(1/q)*0 → 0`, gdzie jedna postać
-jest w zerze określona, a druga nie.
+**Punkt 3a jest tym, czego brakowało w v2, i bez niego test przechodzi mimo
+błędu, przed którym ma chronić.** v2 kazała losować „blisko bieguna". Weźmy
+kanoniczny przypadek `(1/q) * 0 -> 0`:
 
-Sama równość wartości poza biegunem **nie potrafi** wykryć błędu, przed którym
-chroni ten etap — i to jest powód, dla którego krok 3 celowo losuje punkty blisko
-zera mianownika.
+```text
+q = 1e-6    przed: (1/1e-6)*0 = 0        po: 0     ZGODA
+q = 1e-12   przed: (1/1e-12)*0 = 0       po: 0     ZGODA
+q = 0       przed: DivisionByZero        po: 0     RÓŻNICA
+```
+
+Poza dokładnym zerem obie postacie są **równe**, więc losowanie — choćby
+najbliższe bieguna — może przejść w stu procentach. Różnica dziedziny ujawnia
+się **wyłącznie w punkcie osobliwym**, więc ten punkt musi być w teście **z
+nazwiska**, a nie z losowania.
+
+Nie budujemy przy tym żadnego szukacza zer mianownika: test operuje na
+**kontrolowanym** wyrażeniu, więc jego biegun jest znany z konstrukcji i wpisuje
+się go ręcznie. Automatyczne znajdowanie osobliwości to zadanie z F3.10, nie
+z tego etapu.
+
+Krok 5 jest drugą połową poprawki. v1 kazała **osobno** porównywać `divisorsOf`
+przed i po — czyli robić dokładnie to, czego zabrania 2.4, bo `a/-(-q)` i `a/q`
+mają różne dzielniki i tę samą dziedzinę. Test behawioralny mierzy **dziedzinę**,
+a nie jej składniowy zapis.
 
 ---
 
@@ -627,7 +795,7 @@ NOWE   symbolic/RewriteRule.hpp        RewriteRule, RewriteResult, limit
        symbolic/RewriteEngine.hpp      divisorsOf, hasSameDomainGuards,
                                        RewriteSession, rewrite()
        symbolic/RewriteEngine.cpp      sesja, memo, guardy, miara
-       tests/test_rewrite_engine.cpp   ~18 testów
+       tests/test_rewrite_engine.cpp   21 testów
 
 ZMIENIONE  CMakeLists.txt, tests/CMakeLists.txt   +1 wiersz każdy
 
@@ -657,6 +825,10 @@ właśnie po to, żeby nie trzeba było ruszać kontraktu fabryki.
 | Rozbicie współdzielenia między równaniami | realne | Sesja z jednym memo dla wielu korzeni (5.3) |
 | Nowy operator częściowy łamie model dziedziny | **realne, nie zamykane** | 2.1 mówi wprost: `divisorsOf` jest kompletne dla dziewięciu typów; dziesiąty wymaga uogólnienia, a `std::visit` zatrzyma build |
 | Reguły porządkujące nie mieszczą się w mierze | świadome | 7.3: to osobny mechanizm, poza tym silnikiem |
+| `changed`/`steps` mylące przy dzielonym memo | **realne, złapane w review v2** | Kontrakt obu pól zdefiniowany osobno, z przykładem obu patologii; `changed` przez `sameNode` (6) |
+| Współdzielenie ginie przy przebiegu bez zmian | **realne** | Wymóg zachowania tożsamości węzła (6.3) — warunek konieczny dla `changed` i dla 5.1 |
+| Test dziedziny przechodzi mimo rozszerzenia | **realne, złapane w review v2** | Deterministyczne punkty graniczne, w tym **dokładne** zero mianownika (8) |
+| Deklarowana liniowość nieprawdziwa przez `divisorsOf` | **realne, złapane w review v2** | Drugi cache sesji, strażnicy liczeni kompozycyjnie (5.4) |
 
 ---
 
@@ -683,6 +855,11 @@ kDefaultRewriteStepLimit = 100 000
 Rząd wielkości powyżej miary największego znanego wejścia. Liczba pozostaje
 arbitralna i taka ma zostać — to siatka bezpieczeństwa, nie próg numeryczny.
 
+Warunek konieczny, żeby to rozumowanie w ogóle działało: limit i licznik są
+**per wywołanie `rewrite(root)`**, nie na sesję (5.3). Budżet wspólny dla sesji
+przepisującej dwadzieścia cztery strony równań nie ma związku z miarą
+pojedynczego wyrażenia i nie dałoby się go z niej wyprowadzić.
+
 **11.3 Czy sesja ma przyjmować `ExpressionFactory` przez wartość?** Rekomendacja:
 tak, jak robią to `JointTransformBuilder` i `ForwardKinematicsBuilder`. Fabryka
 jest dziś bezstanowa; gdyby kiedyś zyskała stan (hash-consing), zmiana własności
@@ -696,8 +873,14 @@ Przyjąć: definicję z 2.1 wraz z jej jawnym ograniczeniem, rozdział gwarancji
 2.2, **lokalny** warunek z 2.3 z indukcją z 2.4, representability guard z 2.7,
 sesję z 5.3 i klucz memo z 5.2.
 
+Z v3 dochodzą trzy rozstrzygnięcia, wszystkie wymuszone przez sesję dzieloną
+między korzeniami: kontrakt `changed`/`steps` z 6.2 wraz z wymogiem zachowania
+tożsamości węzła z 6.3, deterministyczne punkty graniczne w teście dziedziny z 8
+oraz drugi cache sesji z 5.4, bez którego deklaracja złożoności z 5.1 nie była
+prawdziwa.
+
 Po zatwierdzeniu — proposal implementacyjny z pełnym kodem trzech nowych plików
-i około osiemnastoma testami, gate `440/440` (422 + 18).
+i około dwudziestoma jeden testami, gate `443/443` (422 + 21).
 
 Po F3.1 wchodzi **F3.2** — pierwsze prawdziwe reguły: `x + 0`, `x * 1`, zwijanie
 stałych, `q - q → 0`. To tam okaże się, czy guard z 2.7 był potrzebny — i to
