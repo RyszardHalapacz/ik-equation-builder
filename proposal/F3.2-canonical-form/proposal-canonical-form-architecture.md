@@ -1,6 +1,26 @@
 # Proposal: postać kanoniczna — F3.2, architektura
 
-**Etap:** F3.2 · **v2 — do review** · 2026-08-22 · część 1 z 2
+**Etap:** F3.2 · **v3 — do review** · 2026-08-22 · część 1 z 2
+
+> **v3, po drugim review.** Dwa blockery i jedno rozstrzygnięcie — wszystkie
+> dotyczą tego samego: **v2 nazywała „postacią normalną" coś, co nie było
+> jednoznaczne**.
+>
+> 1. **Redukcja stałych w kolejności wejściowej nie jest deterministyczna.**
+>    Zmierzone: `1e16 + x + (-1e16) + y + 1` daje **1**, a to samo z przestawionymi
+>    stałymi daje **0**. Stałe są teraz sortowane **przed** redukcją, składane
+>    w ustalonym układzie, a obietnica ograniczona do tego, na co pozwala
+>    fabryka (3.2).
+> 2. **„Normalizacja znaku" nie definiowała jednej postaci.** `-(a*b)`, `(-a)*b`
+>    i `a*(-b)` muszą wyjść jako jeden DAG; do tego transformacja znaku stała
+>    **po** sortowaniu, więc mogła rozbić własny wynik. Wprowadzona konwencja
+>    przez **parzystość** (3.3).
+> 3. **`-(-x)` i `Subtract` wracają do kanonizatora**, bo inaczej jeden przebieg
+>    nie daje postaci normalnej — z konsekwencją, którą trzeba powiedzieć wprost:
+>    **F3.2 dostarcza zero reguł produkcyjnych dla silnika F3.1** (8).
+> 4. Rozstrzygnięte: **`EquationSimplifier` powstaje już w F3.2**, cienki (13).
+>
+> Plus doprecyzowanie kontraktu równoważności wobec zwijania stałych (6.1).
 
 > **v2, po review.** Kierunek zatwierdzony, pięć poprawek — trzy z nich
 > powtarzają błędy, które F3.1 już raz naprawiło, i to jest najważniejsza rzecz
@@ -161,24 +181,24 @@ wzorców to `F3.5`.)
 zapisów. **Postać AC-normalna jest przesłanką tamtych etapów, a nie ozdobą
 tego.**
 
-Proponowany zakres F3.2:
+Proponowany zakres F3.2 — **jeden przebieg, który kończy robotę**:
 
 ```text
-1. spłaszczenie maksymalnych łańcuchów Add i Multiply
-2. wydzielenie i zredukowanie STAŁYCH łańcucha do jednej      <-- jawnie, nie „przy okazji"
-3. odrzucenie stałej neutralnej, jeśli taka wyszła
-4. uporządkowanie pozostałych składników porządkiem TOTALNYM i deterministycznym
-5. odbudowa w JEDNOZNACZNYM kształcie drzewa                  <-- 5.5
-6. normalizacja odejmowania i znaku                            <-- 9, tu, nie w regułach
-7. jedna reguła silnika F3.1: -(-x) -> x
+canonicalize(E), dla węzła złożonego:
+
+  1. zbierz składniki/czynniki maksymalnego łańcucha AC
+        Subtract wchodzi TUTAJ, nigdy nie wychodzi           <-- 3.4
+  2. kanonizuj rekurencyjnie każdy składnik
+  3. dla iloczynu: zdejmij minusy, policz PARZYSTOŚĆ        <-- 3.3
+  4. rozdziel na STAŁE i pozostałe
+  5. posortuj stałe porządkiem z 5.2, potem je zredukuj      <-- 3.2, w tej kolejności
+  6. odrzuć stałą neutralną, jeśli taka wyszła
+  7. posortuj pozostałe składniki porządkiem z 5.2
+  8. odbuduj w zbalansowanym kształcie                       <-- 5.5
+  9. jeśli parzystość nieparzysta: JEDEN Negate na zewnątrz  <-- 3.3
 ```
 
-Punkty 2 i 3 były w v1 zapisane jako „fabryka zrobi to sama, gdy porządek zbierze
-stałe obok siebie". To było **liczenie na przypadek**: zwijanie zachodzi tylko dla
-stałych, które po odbudowie trafią do jednego węzła `Add`, a przy zbalansowanym
-kształcie z 5.5 nie ma gwarancji, że trafią. Redukcja stałych jest teraz
-**osobnym, jawnym krokiem** — wykonywanym na płaskiej liście, gdzie jest trywialna
-i deterministyczna.
+Zestaw reguł dla silnika F3.1: **pusty** — uzasadnienie w 8.
 
 ### 3.1 Nazwa: **AC-normalna**, nie „kanoniczna"
 
@@ -201,6 +221,118 @@ Musi to stać w komentarzu klasy, bo `F3.5` jest o krok od założenia
 `structurallyEqual == algebraically equal`, a to założenie będzie fałszywe jeszcze
 przez kilka etapów — i będzie fałszywe **cicho**.
 
+### 3.2 Stałe: **najpierw kolejność, potem redukcja**
+
+Blocker z review i — jak się okazuje — ten sam problem, który §7 opisuje dla
+składników symbolicznych, tylko groźniejszy, bo dotyczy **postaci**, a nie tylko
+wartości.
+
+v2 kazała redukować stałe „na płaskiej liście, gdzie jest to trywialne
+i deterministyczne". Trywialne — tak. Deterministyczne — **nie**, jeśli redukcja
+idzie w kolejności przyjścia z wejścia. Dodawanie `double` nie jest łączne, więc
+dwa **AC-równoważne** wejścia dają różne stałe wynikowe:
+
+```text
+E1:  1e16 + x + (-1e16) + y + 1        stałe w kolejności:  1e16, -1e16, 1
+E2:  1e16 + x + 1       + y + (-1e16)  stałe w kolejności:  1e16, 1, -1e16
+
+zmierzone:
+    (1e16 + -1e16) + 1  =  1
+    (1e16 + 1) + -1e16  =  0
+```
+
+Fabryka nie zwinie ich wcześniej — stałe są rozdzielone symbolami, więc żaden
+`add` nie widzi dwóch stałych naraz. Dwa wejścia równoważne względem AC
+dostałyby więc **różne postacie normalne**, co przewraca cały sens etapu.
+
+**Poprawka: stałe są sortowane porządkiem z 5.2 przed redukcją**, a redukcja idzie
+tym samym zbalansowanym układem, co odbudowa (5.5) — bo skoro kształt ma być
+ustalony dla drzewa wynikowego, nie ma powodu, żeby składanie stałych było
+`left-fold`em. Wtedy oba wejścia widzą `-1e16, 1, 1e16` i składają je identycznie.
+
+**Granica obietnicy.** Nie wolno napisać „wszystkie stałe → jedna stała", bo
+`ExpressionFactory` **odmawia zwinięcia**, gdy wynik nie jest skończony — i to nie
+jest przypadek teoretyczny, zwłaszcza dla mnożenia:
+
+```text
+zmierzone:
+    (1e200 * 1e200) * 1e-200  =  inf        fabryka ODMÓWI zwinięcia
+     1e200 * (1e200 * 1e-200) =  1e200      zwija się normalnie
+```
+
+Kontrakt brzmi więc:
+
+> stałe są redukowane deterministycznie **na tyle, na ile pozwala
+> `ExpressionFactory`**; stałe niezredukowane zostają w deterministycznej
+> kolejności AC-normalnej.
+
+Zauważ, że ustalona kolejność stałych **poprawia** też szansę na zwinięcie:
+posortowane rosnąco i składane parami rzadziej trafiają na przepełnienie niż
+przypadkowa kolejność z wejścia. To skutek uboczny, nie gwarancja — ale w dobrą
+stronę.
+
+### 3.3 Znak: konwencja przez **parzystość**, nie przez wybór czynnika
+
+Drugi blocker. v2 zostawiała w kanonizatorze transformację
+`Negate(Multiply(a,b)) → Multiply(Negate(a), b)` i nazywała to „normalizacją
+znaku". To nie jest normalizacja — to **przesunięcie problemu**:
+
+```text
+-(a*b)      (-a)*b      a*(-b)        trzy zapisy jednej rzeczy
+```
+
+Reguła v2 sprowadza pierwszy do drugiego i **nie dotyka trzeciego**. Gorzej:
+`Negate(a)` ma inną rangę niż `a` (5.2), więc wynik nie jest już posortowany —
+a transformacja stała **po** sortowaniu, czyli jeden przebieg mógł zostawić
+postać wymagającą kolejnego. `IsIdempotent` z 11 poległby na tym.
+
+**Poprawka: znak wychodzi z iloczynu w całości, przez parzystość** — kroki 3 i 9
+z 3.1:
+
+```text
+zdejmij Negate ze WSZYSTKICH czynników bezpośrednich, licząc ile ich było
+posortuj czynniki JUŻ BEZ znaków
+odbuduj iloczyn
+parzysta liczba minusów  -> zostaw
+nieparzysta               -> jeden Negate NA ZEWNĄTRZ
+```
+
+Wynik:
+
+```text
+-(a*b)  ->  -(a*b)
+(-a)*b  ->  -(a*b)
+a*(-b)  ->  -(a*b)          jeden DAG, niezależnie od zapisu wejściowego
+(-a)*(-b) ->  a*b           parzystość załatwia to sama, bez osobnej reguły
+```
+
+Sortowanie **bez znaków** jest tu istotne: gdyby minus został przy czynniku,
+kolejność zależałaby od tego, który czynnik go akurat niósł na wejściu — czyli
+znowu od przypadku konstrukcyjnego.
+
+### 3.4 `Subtract` nie wychodzi z kanonizatora
+
+To samo rozumowanie, co w 3.3, i też z review. v2 wymieniała normalizację
+odejmowania jako krok **po** odbudowie — czyli tworzyła świeży `Add`, który nie
+przeszedł ani spłaszczenia, ani sortowania, ani zbalansowanej odbudowy.
+
+Poprawnie `Subtract` znika **przy zbieraniu składników**, zanim cokolwiek się
+posortuje:
+
+```text
+canonicalize(Subtract(a, b))
+    = canonicalizeAddChain( canonicalize(a), negated(canonicalize(b)) )
+```
+
+Daje to postcondition, który warto wypowiedzieć osobno, bo jest mocny i tani:
+
+> **Wyjście AC-normalne nie zawiera żadnego węzła `Subtract`.**
+
+`F3.3` i `F3.5` dostają dzięki temu język o jeden rodzaj węzła węższy — wzorce
+nie muszą mieć wariantu na odejmowanie. Zamiana jest przy tym **dokładna
+zmiennoprzecinkowo**: `a - b` i `a + (-b)` dają bitowo ten sam wynik, więc nie
+dokłada się do dryfu z 7.
+
 ---
 
 ## 4. Dlaczego to **nie** może być regułą silnika F3.1
@@ -222,20 +354,44 @@ kontrakt, `assert` w buildzie diagnostycznym zatrzyma proces, a jeśli ktoś ten
 przewiduje 4.2 architektury F3.1.
 
 Wniosek: **kanonizacja AC to osobny przebieg**, nie wpis w tablicy reguł.
-Kolejność względem silnika ma znaczenie i proponuję:
+
+Kolejność względem silnika była w v2 opisana jako:
 
 ```text
-normalize(E)   ->   rewrite(E)   ->   normalize(E)
-     |                  |                  |
-CanonicalizationSession  |        ta sama sesja, to samo memo
-              RewriteSession
+normalize(E)  ->  rewrite(E)  ->  normalize(E)
 ```
 
-Pierwszy przebieg daje regułom przewidywalny kształt do dopasowania, drugi
-porządkuje to, co reguły zbudowały. Obie sesje są tworzone **raz na układ
-równań**, nie raz na wyrażenie — z powodu opisanego w 5.4. Alternatywa — przeplatanie do punktu stałego
-obu mechanizmów — jest **odrzucona** w tym etapie: terminacja takiej pętli nie
-wynika już z jednej miary i wymagałaby własnego dowodu.
+i review słusznie to podważyło. Skoro kanonizator sam normalizuje odejmowanie
+i znak (3.3, 3.4), to **drugi przebieg kanonizujący może odtworzyć redex**, który
+przed chwilą usunęła reguła — `a - (-b)` przechodzi w `a + (-(-b))`, więc
+kanonizacja **produkuje** dokładnie ten wzorzec, który `-(-x) → x` miało usuwać.
+Wynik nie byłby punktem stałym względem reguł, a jedynym wyjściem stałoby się
+przeplatanie:
+
+```text
+normalize -> rewrite -> normalize -> rewrite -> ...
+```
+
+**Odrzucone, i to zdecydowanie.** Terminacja takiej pętli nie wynika z miary
+żadnego z mechanizmów z osobna i wymagałaby własnego dowodu — tego rodzaju
+konstrukcji F3.1 uniknęło świadomie i nie ma powodu wprowadzać jej tutaj.
+
+Wyjście wychodzi samo z 3.3: **`-(-x)` należy do kanonizatora**, jako
+konsekwencja parzystości znaku, a nie jako osobna reguła. Wówczas:
+
+```text
+F3.2:    normalize(E)                    jeden przebieg, pełna postać AC-normalna
+F3.3+:   normalize(E) -> rewrite(E)      gdy pojawią się reguły trygonometryczne
+```
+
+i nie ma drugiego mechanizmu, który mógłby zaburzyć wynik pierwszego. Sesje są
+tworzone **raz na układ równań**, nie raz na wyrażenie — z powodu opisanego
+w 5.4.
+
+Co z F3.3, gdy reguły **będą** psuć postać normalną? To pytanie tamtego etapu
+i tam trzeba je rozstrzygnąć uczciwie — albo reguły będą pisane tak, żeby
+zachowywać postać normalną, albo przeplatanie dostanie własny dowód terminacji.
+Zapisuję to jako **znane wejście do F3.3**, żeby nie było odkryciem.
 
 ---
 
@@ -410,13 +566,29 @@ argumentem, żeby to zdanie stało w obu dokumentach, a nie tylko w tamtym.
 ### 6.1 Rozumowanie, które jest poprawne
 
 ```text
-1. AC-normalizacja jest równoważnością ALGEBRAICZNĄ
-       przestawienie i przenawiasowanie sumy/iloczynu nie zmienia wartości
-       redukcja stałych nie zmienia wartości
+1. AC-normalizacja zachowuje ZNACZENIE ALGEBRAICZNE
+       przestawienie i przenawiasowanie sumy/iloczynu     -- dokładnie
+       Subtract(a,b) -> Add(a, Negate(b))                 -- dokładnie, też bitowo
+       konwencja parzystości znaku                        -- dokładnie
+       redukcja stałych                                   -- z zaokrągleniem double
 2. zatem dla każdego mianownika d:   d  ==  canonicalize(d)  jako funkcje
 3. zatem                              zeroSet(d) == zeroSet(canonicalize(d))
 4. zatem dziedzina całego wyrażenia jest zachowana
 ```
+
+Czwarty wiersz kroku 1 jest doprecyzowaniem z review i trzeba go trzymać
+osobno. `c1 + c2` w liczbach rzeczywistych i `double(c1) + double(c2)` to **nie
+zawsze ta sama liczba**, więc redukcja stałych nie jest równoważnością
+matematyczną w ścisłym sensie. Kontrakt brzmi więc:
+
+> **Przekształcenia strukturalne zachowują znaczenie algebraiczne dokładnie;
+> redukcja stałych podlega istniejącej semantyce skończonych `double`
+> z `ExpressionFactory` i może wprowadzić zwykłe zaokrąglenie
+> zmiennoprzecinkowe.**
+
+To nie jest nowe ryzyko — fabryka zwija stałe od Fazy 1 i cały projekt na tym
+stoi — ale skoro §7 mierzy dryf ze zmiany kolejności, ten sam dokument nie może
+dwie sekcje wcześniej twierdzić, że redukcja stałych jest dokładna.
 
 Krok 2 jest przesłanką i to on niesie cały ciężar — dokładnie tak, jak (E) niesie
 go w F3.1. Różnica na korzyść tego etapu: tam (E) było kontraktem **autora
@@ -490,45 +662,56 @@ bez którego trzy późniejsze etapy nie mają na czym stanąć.
 
 ## 8. Co zostaje z listy roadmapy — i gdzie to trafia
 
-v1 zostawiała dwie reguły silnikowi i **jedna z nich tam nie może być**:
-
 ```text
 ODPADA całkiem — fabryka robi to przy budowie, reguła nie ma czego dopasować:
     x + 0,  x - 0,  x * 1,  x / 1,  zwijanie stałych
 
 DO KANONIZATORA — poprawne, ale NIE zmniejszają miary:
     Subtract(a, b)        ->  Add(a, Negate(b))          3 -> 4   ROŚNIE
-    Negate(Multiply(a,b)) ->  Multiply(Negate(a), b)     4 -> 4   BEZ ZMIANY
+    Negate(Multiply(a,b)) ->  konwencja parzystości      4 -> 4   BEZ ZMIANY
 
-REGUŁA SILNIKA F3.1 — jedyna, która spełnia kontrakt miary:
+DO KANONIZATORA — mimo że miarę ZMNIEJSZA:
     -(-x) -> x                                           3 -> 1   MALEJE
+
+REGUŁY SILNIKA F3.1 dostarczone przez ten etap:   ŻADNE
 ```
 
-Drugi wiersz jest poprawką z review i **przeoczeniem, które mnie zastanawia**:
-v1 policzyła miarę dla `x - y → x + (-y)`, zauważyła wzrost, poświęciła temu
-osobną sekcję z trzema wariantami — i **w tym samym dokumencie**, dwie sekcje
-wcześniej, zostawiła `-(a*b) → (-a)*b` w tablicy reguł, nie licząc jej wcale.
+Dwa środkowe wiersze to poprawka z v2, trzeci — z v3, i to on wymaga
+wyjaśnienia, bo `-(-x)` **spełnia** kontrakt miary i mógłby być regułą.
+
+Powodem jest 4: kanonizator sam produkuje `-(-x)` przy normalizacji odejmowania,
+więc zostawienie tej reguły silnikowi znaczyłoby, że wynik kanonizacji nie jest
+punktem stałym względem reguł — albo że trzeba przeplatać oba mechanizmy bez
+dowodu terminacji. Jako część konwencji parzystości (3.3) `-(-x)` znika **za
+darmo**, bo dwa minusy to parzystość parzysta.
+
+Kryterium podziału jest więc **dwuczłonowe** i v2 miała je za wąskie:
 
 ```text
-measure(-(a*b))    = Negate + Multiply + a + b = 4
-measure((-a)*b)    = Multiply + Negate + a + b = 4
+reguła silnika F3.1 wymaga:   spadku miary
+                        ORAZ:   żeby kanonizator nie odtwarzał jej wzorca
 ```
 
-Kontrakt wymaga **ścisłego** spadku, więc `assert` z `RewriteEngine.cpp`
-zatrzymałby build diagnostyczny przy pierwszym trafieniu. Dobra wiadomość: ten
-`assert` istnieje właśnie po to i zadziałałby, zanim ktokolwiek zdążyłby to
-zobaczyć w działaniu.
+### 8.1 Konsekwencja, którą trzeba powiedzieć wprost
 
-Wniosek ogólniejszy, wart zapisania: **kryterium podziału nie jest „czy to
-upraszcza", tylko „czy to zmniejsza miarę"**. Wszystko, co przekształca do
-równoważnej postaci **bez skracania drzewa**, należy do kanonizatora — bo
-kanonizator jest jednym przebiegiem po drzewie i nie potrzebuje miary do
-terminacji (5.4).
+**F3.2 nie dostarcza żadnej reguły produkcyjnej dla silnika z F3.1.** Silnik
+zbudowany w poprzednim etapie zostaje bez wołającego jeszcze jeden etap.
 
-Przy każdej z tych transformacji dokument implementacyjny ma podać **zmierzoną
-liczbę trafień na materiale repo**. Dziś wynosi ona zero dla wszystkich, w tym
-dla `Subtract` — `sub=0` w obu układach równań — i tak ma być napisane, zamiast
-sugerować, że etap coś upraszcza.
+Nie jest to powód do niepokoju, ale **jest** powód, żeby to zapisać zamiast
+znaleźć jakąś regułę na siłę. F3.1 było fundamentem — mechanizmem bezpiecznego
+przepisywania — i jego pierwsze poważne zastosowanie to **F3.3**: tożsamości
+trygonometryczne są dokładnie tym rodzajem przekształcenia, które zmniejsza
+drzewo, wymaga (E) i nie da się zapisać jako normalizacja kształtu.
+
+Zapisuję to również dlatego, że **wzmacnia argument z 13**: skoro F3.2 nie daje
+użytkownika silnikowi, tym bardziej powinien dać użytkownika kanonizatorowi —
+inaczej dwa etapy z rzędu kończą się mechanizmem bez wołającego.
+
+Przy każdej transformacji dokument implementacyjny ma podać **zmierzoną liczbę
+trafień na materiale repo**. Dziś wynosi ona zero dla wszystkich, w tym dla
+`Subtract` — `sub=0` w obu układach równań — i tak ma być napisane, zamiast
+sugerować, że etap coś upraszcza. Etap **porządkuje**, i to jest jego cała
+wartość.
 
 ---
 
@@ -604,9 +787,15 @@ AC-normalizacja
   FlattensNestedAssociativeChains        ((a+b)+c) i (a+(b+c)) -> ta sama postać
   SortsSumsAndProducts
   ReducesConstantsExplicitly             3 + x + 4 -> 7 + x, niezależnie od kształtu
+  ReducesConstantsInCanonicalOrder       1e16 + x + (-1e16) + y + 1  i przestawione
+                                         -> TA SAMA stała  (3.2, kontrprzykład z review)
+  KeepsUnreducibleConstantsInOrder       gdy fabryka odmówi zwinięcia (overflow)
   DropsNeutralConstant                   0 + x -> x  po redukcji, nie przez fabrykę
   RebuildsInBalancedShape                jednoznaczny kształt (5.5), nie tylko kolejność
-  NormalizesSubtractionAndSign           a - b i a + (-b) -> ta sama postać
+  NormalizesSignByParity                 -(a*b), (-a)*b, a*(-b) -> JEDEN DAG (3.3)
+  CancelsEvenSignParity                  (-a)*(-b) -> a*b, bez osobnej reguły
+  EliminatesSubtractionEntirely          wyjście nie zawiera węzła Subtract (3.4)
+  RemovesDoubleNegation                  -(-x) -> x  w KANONIZATORZE, nie regułą
   IsIdempotent                           normalize(normalize(E)) sameNode normalize(E)
 
 sesja  (5.4)
@@ -618,9 +807,15 @@ dziedzina  (6)
   PreservesDefinednessAcrossCanonicalization   1/(q+r), punkt q=1, r=-1
   KeepsOriginalDenominatorIfItBecomesZero      guard z F3.1 2.7
 
+EquationSimplifier  (13)
+  NormalizesEveryEquationOfASystem        lhs i rhs wszystkich równań
+  PreservesUnknownsAndSources             metadane nietknięte: kind, source, unknowns
+  SharesOneSessionAcrossTheSystem         wspólne poddrzewo FK zostaje JEDNYM węzłem
+                                          -- to jest test, którego syntetyczny nie zastąpi
+
 numeryka i integracja
   AgreesNumericallyWithinToleranceOnFk    12 równań, losowe konfiguracje, próg 1e-12
-  NormalizesRealEquationSystem            end-to-end przez EquationSimplifier, oba roboty
+  NormalizesRealEquationSystem            end-to-end, oba roboty
 ```
 
 Dwa testy zasługują na komentarz, bo powstały wprost z review:
@@ -632,6 +827,16 @@ porządki dają „jakąś postać normalną" i różnica jest niewidoczna.
 `RebuildsInBalancedShape` pilnuje 5.5. Test sprawdzający tylko kolejność
 przeszedłby dla trzech różnych drzew, czyli dla czegoś, co **nie jest** postacią
 normalną.
+
+`ReducesConstantsInCanonicalOrder` jest wprost kontrprzykładem z review, zapisanym
+jako test: dwa AC-równoważne wejścia różniące się **wyłącznie kolejnością stałych**
+muszą dać tę samą postać. Bez niego błąd z 3.2 przechodzi niezauważony, bo
+na materiale repo stałych w sumach prawie nie ma.
+
+`SharesOneSessionAcrossTheSystem` jest jedynym testem, który wymaga
+`EquationSimplifier` — i głównym powodem, dla którego powstaje już teraz (13).
+Współdzielenie **między równaniami** da się sprawdzić tylko na prawdziwym
+układzie; syntetyczne drzewo dowodzi mechanizmu, nie integracji.
 
 Liczba testowana maszynowo w proposalu implementacyjnym — z powodu opisanego
 w F3.1 6.7, gdzie deklarowany gate dwa razy okazał się przewidywaniem.
@@ -648,6 +853,11 @@ w F3.1 6.7, gdzie deklarowany gate dwa razy okazał się przewidywaniem.
 | Kanonizacja rozbija współdzielenie DAG-a | **realne** | `CanonicalizationSession` z memo po tożsamości węzła (5.4), własny test |
 | Dwa różne porządki opisane jako jeden | **realne, złapane w review** | Odcisk wycofany; jeden porządek strukturalny (5.3), test `OrdersByNameNotByHash` |
 | „Postać normalna" bez zdefiniowanego kształtu drzewa | **realne, złapane w review** | Zbalansowane drzewo, deterministycznie (5.5) |
+| Redukcja stałych w kolejności wejściowej daje różne postacie | **realne, zmierzone, złapane w review** | Stałe sortowane **przed** redukcją, składane zbalansowanie (3.2); własny test na kontrprzykładzie |
+| Obietnica „wszystkie stałe → jedna" nie do dotrzymania | **realne, zmierzone** | Fabryka odmawia zwinięcia przy przepełnieniu; kontrakt ogranicza obietnicę wprost (3.2) |
+| Normalizacja znaku nie daje jednej postaci | **realne, złapane w review** | Konwencja parzystości: znak wychodzi na zewnątrz iloczynu, sortowanie bez znaków (3.3) |
+| Transformacja po sortowaniu rozbija własny wynik | **realne, złapane w review** | `Subtract` i znak obsługiwane **przy zbieraniu**, nie po odbudowie (3.3, 3.4) |
+| Kanonizacja odtwarza redex usunięty przez regułę | **realne** | `-(-x)` w kanonizatorze; zero reguł produkcyjnych w tym etapie (4, 8.1) |
 | Porządek zależny od adresów albo od `std::hash` | **realne, klasyczne** | Zakaz wprost (5.1, 5.3); test `DoesNotDependOnConstructionOrder` |
 | Dryf zmiennoprzecinkowy | realne, zmierzone | 1,07e-14 wobec tolerancji 1e-12 (7); kształt zbalansowany raczej pomaga (5.5) |
 | `structurallyEqual` wzięte za równość algebraiczną | **realne, po tym etapie kuszące** | Nazwa „AC-normalna" i jawne ograniczenie w komentarzu klasy (3.1) |
@@ -661,23 +871,51 @@ Przyjąć **zakres z 3** zamiast listy z roadmapy, z podziałem transformacji z 
 i warstwami z 9. Zapisać w roadmapie, że F3.2 zmienił treść — razem z powodem
 i z liczbami, żeby za pięć etapów nikt nie szukał brakujących reguł.
 
-Pytanie z v1 — warstwa wyrażeń czy warstwa równań — jest **rozstrzygnięte**:
-oba, mechanizm w `symbolic/`, orkiestracja w `EquationSimplifier`, nazwa etapu
-w roadmapie bez zmian (9).
+Oba pytania z poprzednich wersji są **rozstrzygnięte**:
 
-Zostało jedno pytanie, tym razem drobniejsze, ale lepiej podjąć je przed kodem:
+**Warstwa** — mechanizm w `symbolic/`, orkiestracja w `EquationSimplifier`, nazwa
+etapu w roadmapie bez zmian (9).
 
-> **Czy `EquationSimplifier` powstaje już w F3.2, czy dopiero w F3.3?**
+**Czy `EquationSimplifier` powstaje już teraz** — **tak**, i argument z 8.1
+przeważył: skoro F3.2 nie dostarcza silnikowi ani jednej reguły, to bez cienkiego
+orkiestratora **dwa etapy z rzędu** kończą się mechanizmem bez wołającego.
+Kształt — minimalny:
 
-W F3.2 byłby to dziesięć linijek — pętla po równaniach i jedna sesja. Argument
-za teraz: end-to-end test na prawdziwym układzie równań potrzebuje wołającego,
-a bez niego F3.2 kończy się jak F3.1 — mechanizmem bez użytkownika, drugi raz
-z rzędu. Argument za później: dopóki nie ma trygonometrii, kanonizacja niczego
-konsumentowi nie daje poza inną kolejnością składników.
+```cpp
+class EquationSimplifier
+{
+public:
+    explicit EquationSimplifier(ExpressionFactory factory);
 
-Skłaniam się do **teraz**, właśnie ze względu na test end-to-end — ale to
-zwiększa zakres etapu o nową klasę w innej warstwie i wolę tego nie przesądzać
-sam.
+    // Every equation of the system through ONE session, so the FK subtrees the
+    // twelve equations share stay one node instead of twelve copies.
+    //
+    // Metadata is carried through untouched: unknowns, task kind, and each
+    // equation's source. This class normalises expressions; it does not decide
+    // anything about the system.
+    [[nodiscard]] IkEquationSystem normalize(const IkEquationSystem& system);
+};
+```
+
+Co to daje poza estetyką:
+
+```text
+prawdziwy użytkownik mechanizmu, nie tylko testy jednostkowe
+test współdzielenia MIĘDZY równaniami -- syntetyczne drzewo tego nie zastąpi
+F3.3 dostaje gotowy punkt integracji zamiast projektować orkiestrację przy okazji
+etap domknięty pionowo: od wyrażenia do układu równań
+```
+
+**Nie** wpinam go w fasadę ani w `ConstraintBuilder` — zmiana tego, co zwraca
+`IkEquationBuilder`, jest zmianą kontraktu modułu, który ma konsumować
+MotionBridge, a dopóki nie ma trygonometrii, kanonizacja daje konsumentowi
+wyłącznie inną kolejność składników.
+
+Jedna rzecz zapisana jako **znane wejście do F3.3**, żeby nie była odkryciem:
+gdy pojawią się reguły trygonometryczne, trzeba będzie rozstrzygnąć, czy są
+pisane tak, żeby **zachowywać** postać AC-normalną, czy przeplatanie kanonizacji
+z przepisywaniem dostanie własny dowód terminacji (4). To pytanie tamtego etapu,
+ale rodzi się tutaj.
 
 Po zatwierdzeniu — proposal implementacyjny z pełnym kodem i testami zliczonymi
-maszynowo.
+maszynowo, po uprzedniej kompilacji, z powodu opisanego w F3.1 6.7.

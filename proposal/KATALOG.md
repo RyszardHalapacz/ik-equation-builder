@@ -33,7 +33,7 @@ Faza 2 zamknięta 2026-08-21, F3.1 zamknięte 2026-08-22.
 
 | Dokument | Temat | Stan | Linii |
 |---|---|---|---|
-| [`F3.2-canonical-form/proposal-canonical-form-architecture.md`](F3.2-canonical-form/proposal-canonical-form-architecture.md) | Postać AC-normalna wyrażeń, sesja kanonizująca, warstwy; **proponuje zmianę zakresu etapu** wobec roadmapy, na podstawie pomiaru | **DO REVIEW (v2)** | 684 |
+| [`F3.2-canonical-form/proposal-canonical-form-architecture.md`](F3.2-canonical-form/proposal-canonical-form-architecture.md) | Postać AC-normalna wyrażeń, sesja kanonizująca, konwencja znaku, cienki EquationSimplifier; **proponuje zmianę zakresu etapu** | **DO REVIEW (v3)** | 921 |
 
 ## Faza 3, F3.1 — silnik przepisywania (zamknięta)
 
