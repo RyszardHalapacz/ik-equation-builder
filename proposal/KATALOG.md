@@ -33,7 +33,7 @@ Faza 2 zamknięta 2026-08-21.
 
 | Dokument | Temat | Stan | Linii |
 |---|---|---|---|
-| [`F3.1-rewrite-engine/proposal-rewrite-engine-semantics-architecture.md`](F3.1-rewrite-engine/proposal-rewrite-engine-semantics-architecture.md) | Bezpieczeństwo dziedziny jako warunek sprawdzalny maszynowo; reguła proponuje, silnik dopuszcza | **DO REVIEW (v1)** | 543 |
+| [`F3.1-rewrite-engine/proposal-rewrite-engine-semantics-architecture.md`](F3.1-rewrite-engine/proposal-rewrite-engine-semantics-architecture.md) | Granice gwarancji silnika, lokalny warunek dziedziny, representability guard | **DO REVIEW (v2)** | 704 |
 
 ## Analizy poprzedzające proposale
 

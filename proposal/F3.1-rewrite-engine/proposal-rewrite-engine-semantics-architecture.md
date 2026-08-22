@@ -1,6 +1,32 @@
 # Proposal: semantyka rewrite engine (F3.1), architektura
 
-**Etap:** F3.1 · **v1 — do review** · 2026-08-22 · część 1 z 2
+**Etap:** F3.1 · **v2 — do review** · 2026-08-22 · część 1 z 2
+
+> **v2, po review.** Rdzeń utrzymany — `divisorsOf`, przejście innermost, malejąca
+> miara i podział „reguła proponuje, silnik dopuszcza" zostają. Cztery blockery,
+> wszystkie przyjęte, i wszystkie sprowadzają się do jednego: **v1 obiecywała
+> więcej, niż silnik potrafi sprawdzić.**
+>
+> 1. **„Sprawdzalnie bezpieczne" było za mocne.** Silnik testuje warunek na
+>    dzielnikach, nie równoważność algebraiczną — reguła `x + 0 -> 42` przeszłaby
+>    ten test. Granice gwarancji rozpisane wprost (2.2, 3.2).
+> 2. **§2.4 przeczyło §8 i publicznemu `preservesDomain`.** Dla `a/-(-q) -> a/q`
+>    dzielniki różnią się strukturalnie, więc globalne porównanie **odrzuciłoby**
+>    poprawne przepisanie. Warunek jest **wyłącznie lokalny** i nazywa się teraz
+>    `hasSameDomainGuards`; globalna własność wynika indukcyjnie, nie z porównania
+>    (2.3, 2.4). Test dziedziny w 8 przepisany na **behawioralny**.
+> 3. **Uproszczenie mianownika może złamać kontrakt fabryki.** `a/(q-q)` z regułą
+>    `q - q -> 0` prowadzi do `divide(a, 0)`, a tam stoi
+>    `assert(!isZero(rhs) && "division by literal zero")` — w Release UB, w
+>    `build-werror` abort. Dochodzi **representability guard** (2.7).
+> 4. **Surowy `ExpressionNode*` jako klucz memoizacji.** Pośrednie wyrażenia
+>    umierają, a adres bywa użyty ponownie. Projekt rozwiązał to już w
+>    `ExpressionEvaluator`, kluczując cache przez `Expression` — F3.1 robi tak
+>    samo (5.2).
+>
+> Poza tym: poprawiona derywacja limitu kroków (11.2), wycofana obietnica „jeden
+> wiersz" przy `sqrt`/`log` (2.1), wycofany rzekomy szew dla reguł porządkujących
+> (7.3) i rozstrzygnięte, czy silnik jest sesją (5.3).
 
 Pierwszy dokument Fazy 3. Poprzednik: [`../done/F2.7-facade-integration/proposal-phase2-facade-integration.md`](../done/F2.7-facade-integration/proposal-phase2-facade-integration.md)
 — Faza 2 zamknięta 2026-08-21, 422/422 w obu konfiguracjach.
@@ -28,47 +54,47 @@ etapem przed `EquationSimplifier`.
 
 ---
 
-## 0. Stan wyjściowy — co warstwa symboliczna już gwarantuje
+## 0. Stan wyjściowy
 
-Trzy rzeczy z Fazy 1, na których cały ten etap stoi:
+Cztery rzeczy z Fazy 1, na których stoi cały ten etap:
 
 ```text
-Expression        niemutowalny uchwyt na współdzielony węzeł; kopia to
-                  wskaźnik, nigdy drzewo. Graf jest acykliczny z konstrukcji.
-ExpressionFactory zamknięta nad kontraktem: stałe skończone, nazwy symboli
-                  niepuste, brak dzielenia przez literalne zero (R5)
-structurallyEqual porównanie kształtu i wartości liści, z krótkim spięciem
-                  na sameNode
+Expression        niemutowalny uchwyt na współdzielony węzeł; kopia to wskaźnik,
+                  nigdy drzewo. Graf acykliczny z konstrukcji.
+ExpressionFactory zamknięta nad kontraktem: stałe skończone, nazwy niepuste,
+                  assert(!isZero(rhs)) w divide()  <-- wraca w 2.7
+ExpressionEvaluator  cache kluczowany przez Expression z ExpressionIdentityHash,
+                  NIE przez surowy wskaźnik      <-- wraca w 5.2
+FK kr640          281 unikalnych węzłów, 21 882 z krotnościami  <-- wraca w 5.1 i 11.2
 ```
 
-Czwarta, mierzona: FK dla `kr640` to **281 unikalnych węzłów** i **21 882**
-liczonych z krotnościami. Ta liczba wraca w 5 i przesądza jedną decyzję.
-
-Piąta, ważniejsza niż wygląda — dzisiejsza fabryka **odmawia** zwijania `x * 0`:
+Piąta rzecz, ważniejsza niż wygląda — fabryka **odmawia** zwijania `x * 0`:
 
 ```cpp
 // No x * 0 -> 0 here: see the class comment.
 ```
 
-Powód był słuszny i zostaje słuszny: w momencie budowania fabryka nie ma jak
-orzec, czy `x` jest wszędzie określone. F3.1 daje narzędzie, które **ma** jak
-(2.5).
+Powód był słuszny i zostaje: w chwili budowania fabryka nie ma jak orzec, czy `x`
+jest wszędzie określone. F3.1 daje narzędzie, które **ma** jak (2.6).
 
 ---
 
 ## 1. Cel i zakres
 
-**Cel:** mechanizm, w którym pojedyncze przekształcenie wyrażenia jest
-**sprawdzalnie bezpieczne**, a nie tylko napisane przez kogoś ostrożnego.
+**Cel:** mechanizm, w którym przekształcenie wyrażenia nie może po cichu zmienić
+**dziedziny** ani zapętlić się w nieskończoność — a wszystko, czego mechanizm nie
+gwarantuje, jest nazwane wprost.
 
 **W zakresie:**
 
 ```text
 pojęcie reguły i jej wyniku
-maszynowy warunek poprawności (bezpieczeństwo dziedziny)
+lokalny warunek zachowania ograniczeń dziedziny, sprawdzany przez silnik
+representability guard: przepisanie nie może stworzyć węzła, którego
+    fabryka nie zbuduje
 iteracja do punktu stałego, limit kroków, gwarancja terminacji
-zachowanie współdzielenia DAG
-raport: zmieniono / nie zmieniono / ile kroków / czy limit
+zachowanie współdzielenia DAG, także między wieloma korzeniami
+raport: zmieniono / ile kroków / czy limit
 strategia testowania równoważności z uwzględnieniem dziedziny
 ```
 
@@ -76,111 +102,152 @@ strategia testowania równoważności z uwzględnieniem dziedziny
 
 ```text
 konkretne reguły algebraiczne          -> F3.2
-trygonometria                          -> F3.3
+normalizacja kolejności argumentów     -> 7.3, POZA tym silnikiem
+trygonometria i tolerancje numeryczne  -> F3.3
 przepisywanie równań i układów         -> 7.4, komponuje się z tego
-rozwiązywanie czegokolwiek             -> F3.6+
-tolerancje numeryczne / szum trygonometryczny  -> 2.6, to inny problem
+dowodzenie równoważności algebraicznej -> 2.2, nie jest zadaniem silnika
 ```
 
 ---
 
-## 2. Bezpieczeństwo dziedziny — sedno etapu
+## 2. Dziedzina
 
-### 2.1 W tym języku wyrażeń dziedzina ma **jedno** źródło
+### 2.1 W tym języku wyrażeń ograniczenia dziedziny mają **jedno** źródło
 
-Dziewięć rodzajów węzłów. Osiem z nich jest **totalnych** na `R`: stała, symbol,
-`+`, `−`, `*`, negacja, `sin`, `cos`. Dziewiąty nie:
+Dziewięć rodzajów węzłów. Osiem jest **totalnych** na `R`: stała, symbol, `+`,
+`−`, `*`, negacja, `sin`, `cos`. Dziewiąty nie:
 
 ```text
 Divide(a, b)   nieokreślone tam, gdzie b = 0
 ```
 
-Stąd definicja, która jest jednocześnie przepisem na algorytm:
+Stąd, dla **obecnego** języka:
 
 ```text
 dom(E) = { q : każdy węzeł Divide w E ma w q niezerowy mianownik }
 ```
 
-To nie jest uproszczenie na potrzeby tego etapu — to pełna prawda o tym języku.
-Gdyby kiedyś doszedł `sqrt`, `log` albo `asin`, definicja rośnie o wiersz, a
-reszta tego dokumentu zostaje bez zmian (10).
+**Ograniczenie tego modelu, poprawione w v2.** v1 twierdziła, że po dodaniu
+`sqrt`, `log` czy `asin` „definicja rośnie o wiersz, a reszta zostaje". To
+nieprawda: `sqrt(x)` wnosi warunek `x ≥ 0`, `log(x)` — `x > 0`, czyli warunki,
+których **nie da się wyrazić zbiorem mianowników**. Cały mechanizm `divisorsOf`
+jest kompletny **dokładnie dla dzisiejszych dziewięciu typów węzłów**; nowy
+operator częściowy wymaga uogólnienia modelu na *domain guards* — coś w rodzaju
+listy predykatów, a nie listy wyrażeń. F3.1 tego **nie** buduje i nie udaje, że
+zbuduje: `divisorsOf` jest jawnym `std::visit`, więc dołożenie dziesiątego typu
+zatrzyma build i zmusi do decyzji.
 
-### 2.2 Kontrakt: dziedzina zachowana w **obie** strony
+### 2.2 Co silnik gwarantuje, a czego **nie**
 
-Naiwne sformułowanie brzmi „nie wolno zawężać dziedziny". Jest za słabe.
-Przepisanie `A → B` musi spełniać:
+To jest sekcja, której v1 nie miała, i brak którejtej sprawiał, że dokument
+obiecywał za dużo.
+
+Poprawne przepisanie `A → B` spełnia dwa warunki:
 
 ```text
-dom(A) = dom(B)          ORAZ          A(q) = B(q) dla wszystkich q z dom(A)
+(D)  dom(A) = dom(B)
+(E)  A(q) = B(q) dla wszystkich q z dom(A)
 ```
 
-Obie strony równości dziedzin są potrzebne i każda z innego powodu:
+Silnik sprawdza maszynowo **tylko okrojoną wersję (D)** — warunek składniowy z
+2.3 — plus terminację. Warunku **(E) nie sprawdza i nie może**: rozstrzyganie
+równoważności wyrażeń symbolicznych to zadanie, którego ten projekt nie ma i
+mieć nie będzie.
 
 ```text
-dom(B) ⊂ dom(A)   -> gubimy rozwiązania: konfiguracja, w której cel był
-                     osiągalny, przestaje być opisana
-dom(B) ⊃ dom(A)   -> WYMYŚLAMY rozwiązania: solver zwróci q, w którym
-                     pierwotne ograniczenie nie miało sensu
+gwarantuje silnik           reguła nie zmieni składniowych ograniczeń dziedziny
+                            przepisanie nie stworzy węzła nie do zbudowania (2.7)
+                            proces się zatrzyma (4.2)
+
+gwarantuje AUTOR reguły     równoważność algebraiczna (E)
+                            egzekwowana testami TEJ reguły, w F3.2
 ```
 
-Drugi przypadek jest gorszy i to on jest w promptcie. `(1/q) * 0 → 0` daje
-solverowi prawo odpowiedzieć `q = 0` na pytanie, które przy `q = 0` nie było
-zadane. Wynik wygląda poprawnie, przechodzi każdą kontrolę numeryczną **poza
-punktem zero** i jest fałszem.
+Konkretnie: reguła `x + 0 → 42` przechodzi warunek dziedziny (żadnych
+dzielników po obu stronach), zmniejsza miarę i **zostanie zastosowana**. Jest
+matematycznie fałszywa i żaden mechanizm z tego etapu tego nie wykryje. Wykryją
+to testy reguły — i dlatego 8 mówi o testowaniu *reguł*, a nie tylko silnika.
 
-### 2.3 Warunek sprawdzalny maszynowo: zbiór dzielników
+Zwrot „sprawdzalnie bezpieczne" z v1 zostaje **wycofany**. Właściwe zdanie brzmi:
+*silnik odbiera autorowi reguły możliwość popsucia dziedziny, nie możliwość
+pomylenia się w algebrze.*
 
-Dziedziny nie da się porównać wprost — trzeba by rozstrzygać zbiory zer wyrażeń.
-Ale z 2.1 wynika warunek **konserwatywny i tani**:
+To i tak jest dużo. Błąd dziedziny jest cichy, przechodzi testy numeryczne poza
+biegunem i objawia się dopiero jako rozwiązanie IK w konfiguracji, w której
+ograniczenie nie miało sensu. Błąd algebraiczny wywala pierwszy test wartości.
+
+### 2.3 Warunek składniowy — **lokalny**
 
 ```text
 divisorsOf(E)  =  zbiór wyrażeń stojących w mianownikach wszystkich węzłów
                   Divide w E (bez powtórzeń, porównywane structurallyEqual)
 
-przepisanie A -> B jest DOPUSZCZONE gdy
-    divisorsOf(A)  ==  divisorsOf(B)
+hasSameDomainGuards(A, B)  <=>  divisorsOf(A) == divisorsOf(B)
 ```
 
-Kierunek błędu jest tu jednostronny i to jest cała jego wartość: **warunek może
-odrzucić przepisanie bezpieczne, nigdy nie przepuści niebezpiecznego.** Odrzuci
-np. `x/x → 1` (dzielniki `{x}` kontra `{}`) — i słusznie, bo to przepisanie
-naprawdę rozszerza dziedzinę o zero.
+Nazwa zmieniona z `preservesDomain` **celowo**: stara sugerowała, że funkcja
+orzeka o dziedzinie, a orzeka o **składniowych strażnikach** dziedziny — i tylko
+lokalnie.
 
-Odrzuci też przypadki, które są bezpieczne, a wyglądają inaczej strukturalnie:
-`a/(x+y)` kontra `a/(y+x)` to dwa różne dzielniki dla `structurallyEqual`. To
-jest znana i zaakceptowana konserwatywność — po kanonizacji z F3.2 takich par
-będzie mniej, a do tego czasu kosztem jest przepisanie **niewykonane**, nie
-przepisanie błędne.
+Warunek jest stosowany **wyłącznie w jednym miejscu**: gdy reguła trafi, silnik
+porównuje wyrażenie wejściowe reguły z jej wynikiem. Nigdy nie jest stosowany do
+całych drzew przed i po przepisaniu — 2.4 tłumaczy, dlaczego to byłoby błędem.
 
-### 2.4 Kompozycyjność: dlaczego wolno przepisywać **wewnątrz** mianownika
+Kierunek błędu jest jednostronny i to jest cała wartość warunku: **może odrzucić
+przepisanie bezpieczne, nigdy nie przepuści niebezpiecznego.** Odrzuci np.
+`x/x → 1` (dzielniki `{x}` kontra `{}`), i słusznie — to przepisanie naprawdę
+rozszerza dziedzinę o zero.
 
-Zarzut, który nasuwa się natychmiast: skoro dzielniki muszą się zgadzać
-strukturalnie, to silnik nigdy nie wejdzie do mianownika, bo każda zmiana tam
-zmienia zbiór dzielników.
+### 2.4 Globalna własność wynika **indukcyjnie**, nie z porównania
 
-Odpowiedź jest kompozycyjna, i to ona sprawia, że mechanizm w ogóle działa.
-Przepisanie `d → d'` **wewnątrz** `a/d` nie jest sprawdzane warunkiem z 2.3 na
-poziomie `a/d`, tylko na poziomie samego `d`. A jeśli `d → d'` przeszło własny
-warunek, to znaczy, że:
+v1 miała tu błąd, który review nazwało wprost. Weźmy bezpieczną regułę
+`-(-q) → q` zastosowaną wewnątrz `a / -(-q)`:
 
 ```text
-dom(d) = dom(d')   oraz   d(q) = d'(q) na tej dziedzinie
+przed:  divisorsOf(a / -(-q))  =  { -(-q) }
+po:     divisorsOf(a / q)      =  { q }
 ```
 
-a stąd **zbiory zer `d` i `d'` są identyczne**, więc:
+Strukturalnie różne. Gdyby warunek z 2.3 zastosować **globalnie**, poprawne
+przepisanie zostałoby odrzucone — a v1 kazała dokładnie to robić w kroku 6 testu
+`EquivalentOnSampledDomain`. Sprzeczność między §2.4 a §8 była realna.
+
+Poprawnie jest tak: warunek działa lokalnie, a własność globalna to **twierdzenie
+indukcyjne po strukturze**, przy założeniu, że autorzy reguł dotrzymują (E):
 
 ```text
-dom(a/d) = dom(a/d')
+baza:   reguła trafiająca w węzeł E daje E', przy czym
+        hasSameDomainGuards(E, E')  oraz  E ≡ E' na dom(E)     [(E) od autora]
+        => dom(E) = dom(E')
+
+krok:   niech d -> d' przez powyższe. Skoro d ≡ d' na wspólnej dziedzinie,
+        ich ZBIORY ZER są identyczne, więc
+        dom(a/d) = dom(a/d')
 ```
 
-Innymi słowy: warunek lokalny wymusza globalną własność, bo bezpieczeństwo
-dziedziny jest przechodnie przez zagnieżdżanie. Ten akapit jest jedynym
-„dowodem" w tym proposalu i całe uzasadnienie rekurencji z 4 opiera się na nim.
+Czyli: dziedzina całego drzewa jest zachowana **dlatego**, że każde pojedyncze
+przepisanie ją zachowuje — a nie dlatego, że ktoś porównał listy dzielników na
+końcu. Indukcja opiera się na (E), które pochodzi od autora reguły (2.2), i to
+jest dokładnie miejsce, w którym gwarancja silnika przechodzi w kontrakt reguły.
 
-### 2.5 Konsekwencja, która coś **daje**: `x * 0 → 0` bywa bezpieczne
+### 2.5 Konsekwencja dla testów
 
-Fabryka odmawia tego zwinięcia zawsze, bo w chwili budowania patrzy lokalnie.
-Silnik patrzy na całe poddrzewo, więc może orzec:
+Skoro globalne porównanie dzielników jest błędne, test dziedziny musi być
+**behawioralny**, nie składniowy. `ExpressionEvaluator` daje na to gotowe
+narzędzie:
+
+```cpp
+enum class EvaluationErrorCode { MissingSymbol, NonFiniteSymbolValue,
+                                 DivisionByZero, NonFiniteResult };
+```
+
+Dla wylosowanego `q`: obie postacie muszą **zgadzać się co do tego, czy są
+określone**, a gdy są — co do wartości. Szczegóły w 8.
+
+### 2.6 Konsekwencja, która coś daje: `x * 0 → 0` bywa dopuszczalne
+
+Fabryka odmawia zawsze, bo patrzy lokalnie w chwili budowania. Silnik widzi całe
+poddrzewo:
 
 ```text
 x * 0 -> 0    DOPUSZCZONE gdy divisorsOf(x) jest puste
@@ -188,33 +255,75 @@ x * 0 -> 0    DOPUSZCZONE gdy divisorsOf(x) jest puste
 ```
 
 `q1 * 0 → 0` — wolno. `(1/q) * 0 → 0` — nie wolno. Ta sama reguła, dwie różne
-odpowiedzi, obie wyprowadzone, nie zgadnięte.
+odpowiedzi, obie wyprowadzone. F3.1 nie obchodzi ostrożności z Fazy 1, tylko
+**zamienia zakaz globalny na warunek lokalny**. Zakaz w fabryce zostaje — fabryka
+nadal nie ma czym orzekać.
 
-To jest konkretny zysk z tego etapu i warto go nazwać: F3.1 nie „obchodzi"
-ostrożności z Fazy 1, tylko **zamienia zakaz globalny na warunek lokalny**.
-Zakaz w fabryce zostaje bez zmian — fabryka nadal nie ma czym orzekać.
+### 2.7 Representability guard: uproszczony mianownik może być **nie do zbudowania**
 
-### 2.6 Czego ten warunek **nie** dotyczy
+Blocker z review, i najbardziej konkretny z czterech, bo wynika wprost z kodu.
+Dziś `q - q` zostaje węzłem `Subtract`, więc **legalnie** istnieje wyrażenie:
 
-Szum trygonometryczny (`sin(π) = 1.22e-16`) nie jest problemem dziedziny, tylko
-liczbowym, i F3.1 go **nie rozwiązuje**. Przepisanie `x + 1.22e-16 → x` jest
-niedopuszczalne nie dlatego, że rusza dziedzinę, ale dlatego, że **nie jest
-równością**. Tolerancja algebraiczna to decyzja z F3.2/F3.3 i zostaje tam.
+```text
+a / (q - q)
+```
+
+W F3.2 naturalna reguła `q - q → 0` jest lokalnie poprawna algebraicznie i ma
+pusty zbiór dzielników po obu stronach, więc warunek z 2.3 ją **przepuści**.
+Silnik, odbudowując rodzica, wywoła:
+
+```cpp
+factory.divide(a, /* 0 */)
+```
+
+a tam stoi:
+
+```cpp
+assert(!isZero(rhs) && "division by literal zero");
+```
+
+W `build-werror` (asercje żywe) to abort. W Release asercja znika i powstaje
+`Divide(a, 0)` — węzeł, którego cała reszta projektu ma prawo uważać za
+niemożliwy. Oba wyniki są nie do przyjęcia.
+
+**Reguła silnika:** przy odbudowie węzła `Divide` przepisany mianownik jest
+przyjmowany tylko wtedy, gdy **nie jest literalnym zerem**; w przeciwnym razie ta
+pozycja zachowuje mianownik oryginalny.
+
+```text
+Divide(a, d)  i  d -> d'
+    isZero(d')  ->  zachowaj d, przepisanie w tej POZYCJI odrzucone
+    inaczej     ->  Divide(a', d')
+```
+
+Trzy rzeczy warto powiedzieć o tej regule, bo każda jest nieoczywista:
+
+**Nie jest to błąd.** `a/(q-q)` jest wyrażeniem, którego dziedzina jest pusta —
+caller zbudował coś bez sensu, ale F3.1 nie jest od diagnozowania tego. Zwrócenie
+wyrażenia niezmienionego jest uczciwe: nie umiemy go uprościć, nie psujemy go.
+
+**Odrzucenie jest zależne od kontekstu**, a memoizacja — nie. Przepisanie
+`q - q → 0` pozostaje ważne wszędzie indziej, więc wpis w memo zostaje. Guard
+działa dopiero przy **składaniu rodzica**, wybierając między dwoma już
+policzonymi wyrażeniami. Dzięki temu współdzielenie nie cierpi (5.1), a jedyny
+koszt to jedno porównanie `isZero` na każdy węzeł `Divide`.
+
+**Nie zastępuje warunku z 2.3, tylko go uzupełnia.** Tamten pilnuje dziedziny,
+ten — **reprezentowalności**: czy wynik da się w ogóle zbudować fabryką, która
+ma własne kontrakty. To dwa różne pytania i potrzebne są oba.
 
 ---
 
 ## 3. Reguła
 
+### 3.1 Kształt
+
 ```cpp
 // A rewrite rule: given an expression, either produce a replacement or decline.
 //
-// nullopt means "does not apply", NOT "applies and changes nothing". A rule
-// that returns its input unchanged would spin the fixed-point loop forever, so
-// the engine treats an unchanged result as a defect (4.3).
-//
-// A rule NEVER checks the domain condition itself. That check belongs to the
-// engine and is applied to every rule's output without exception -- the point of
-// F3.1 is that safety is a property of the mechanism, not of each author's care.
+// nullopt means "does not apply", NOT "applies and changes nothing". A rule that
+// returned its input unchanged would spin the fixed-point loop, so the engine
+// treats an unchanged result as a defect (4.3).
 struct RewriteRule
 {
     std::string_view name;                                 // for diagnostics
@@ -222,41 +331,52 @@ struct RewriteRule
 };
 ```
 
-**Reguła jest danymi, nie klasą.** Trzy powody: zestaw reguł staje się `span`em
-przekazywanym do silnika, testy mogą uruchomić **jedną** regułę bez reszty, a
-nazwa w raporcie mówi, co zadziałało — bez tego debugowanie serii przepisań to
-zgadywanie.
+Reguła jest **danymi, nie klasą**: zestaw reguł staje się `span`em, testy mogą
+uruchomić jedną regułę bez reszty, a nazwa w komunikacie asercji mówi, co
+zadziałało.
 
-**Reguła nie sprawdza dziedziny.** To jest najważniejsze zdanie tej sekcji.
-Gdyby sprawdzała, bezpieczeństwo byłoby własnością *dyscypliny autora reguł*, a
-projekt ma już precedens, który mówi, jak to się kończy i jak się to naprawia:
-R5 zamknęło `ExpressionFactory` nad kontraktem skończoności zamiast liczyć na to,
-że każdy wołający pamięta.
+### 3.2 Podział odpowiedzialności — dokładnie
+
+```text
+REGUŁA odpowiada za:    (E) -- że B jest algebraicznie równe A na dom(A)
+                        malejącą miarę (4.3)
+                        własne testy wartości, w F3.2
+
+SILNIK odpowiada za:    warunek składniowy dziedziny (2.3)
+                        representability guard (2.7)
+                        terminację (4.2)
+                        zachowanie współdzielenia (5)
+```
+
+Reguła **nigdy** nie sprawdza dziedziny sama. Gdyby sprawdzała, bezpieczeństwo
+byłoby własnością dyscypliny autora — a projekt ma precedens mówiący, jak to się
+kończy i jak się to naprawia: R5 zamknęło `ExpressionFactory` nad kontraktem
+skończoności zamiast liczyć na pamięć wołających.
+
+Symetrycznie: silnik **nie** sprawdza (E), bo nie umie. Ta asymetria jest treścią
+2.2 i jedyną rzeczą, którą trzeba o tym etapie zapamiętać.
 
 ---
 
 ## 4. Silnik
 
-### 4.1 Kształt
+### 4.1 Kształt przejścia
 
 ```text
-rewrite(expression, rules, limit)
-    1. przepisz rekurencyjnie dzieci        (z memoizacją, 5)
-    2. spróbuj reguł na węźle bieżącym, po kolei
-    3. każde trafienie sprawdź warunkiem z 2.3
-    4. jeśli coś się zmieniło, wróć do 1 dla tego węzła
-    5. zatrzymaj się na punkcie stałym albo na limicie
+rewrite(expression)
+    1. przepisz rekurencyjnie dzieci        (memoizacja, 5)
+    2. złóż węzeł z przepisanych dzieci     (representability guard, 2.7)
+    3. spróbuj reguł na węźle bieżącym, po kolei
+    4. każde trafienie sprawdź warunkiem z 2.3; odrzucone -> następna reguła
+    5. jeśli coś zadziałało, wróć do 1 dla wyniku
+    6. stop na punkcie stałym albo na limicie
 ```
 
-Kolejność „najpierw dzieci" (innermost) jest wyborem, nie przypadkiem: reguła
-działająca na węźle bieżącym widzi wtedy poddrzewa już uproszczone, więc wzorce
-z F3.2 mogą być pisane pod postać kanoniczną, a nie pod wszystkie warianty
-wejścia.
+Kolejność **innermost** jest wyborem: reguła na węźle bieżącym widzi poddrzewa
+już uproszczone, więc wzorce z F3.2 pisze się pod postać po uproszczeniu, a nie
+pod wszystkie warianty wejścia.
 
-### 4.2 Terminacja — trzy niezależne zabezpieczenia
-
-Roadmapa wymienia „limit kroków" i „unikanie pętli rewrite" jako dwie pozycje.
-To są trzy różne mechanizmy i warto je rozdzielić, bo chronią przed czym innym:
+### 4.2 Terminacja — trzy niezależne mechanizmy
 
 ```text
 a) kontrakt reguły     reguła MUSI zmniejszać miarę (4.3)
@@ -264,18 +384,15 @@ b) limit kroków        twardy budżet, niezależny od (a)
 c) raport o limicie    wynik mówi, że nie osiągnięto punktu stałego
 ```
 
-`(a)` jest właściwym zabezpieczeniem: przy malejącej mierze pętla `A → B → A`
-jest niemożliwa, bo wymagałaby, żeby miara zmalała dwa razy i wróciła.
-`(b)` istnieje mimo `(a)`, bo `(a)` jest kontraktem, a kontrakty bywają łamane
-przez regułę napisaną jutro; budżet zamienia nieskończoną pętlę w **zdiagnozowany
-błąd**. `(c)` istnieje, bo cicho zwrócone „prawie uproszczone" wyrażenie jest
-gorsze niż jawne „nie zbiegło" — konsument z F3.2 musi wiedzieć, że wynik nie
-jest kanoniczny.
+`(a)` jest właściwym zabezpieczeniem: przy ściśle malejącej mierze pętla
+`A → B → A` jest niemożliwa. `(b)` istnieje **mimo** `(a)`, bo `(a)` jest
+kontraktem, a kontrakty łamie reguła napisana jutro; budżet zamienia
+nieskończoną pętlę w **zdiagnozowany** koniec. `(c)` istnieje, bo ciche „prawie
+uproszczone" jest gorsze niż jawne „nie zbiegło".
 
-Alternatywa dla `(a)` — pamiętanie odwiedzonych postaci i wykrywanie cyklu —
-jest **odrzucona**: wymaga haszowania struktury każdego pośredniego wyrażenia,
-kosztuje pamięć proporcjonalną do liczby kroków i wykrywa problem dopiero, gdy
-już wystąpi. Miara wyklucza go z góry.
+Alternatywa — pamiętanie odwiedzonych postaci i wykrywanie cyklu — **odrzucona**:
+wymaga haszowania struktury każdego pośredniego wyrażenia, kosztuje pamięć
+proporcjonalną do liczby kroków i wykrywa problem dopiero, gdy wystąpi.
 
 ### 4.3 Miara
 
@@ -283,52 +400,81 @@ już wystąpi. Miara wyklucza go z góry.
 measure(E) = liczba węzłów liczona Z KROTNOŚCIAMI
 ```
 
-Z krotnościami, nie unikalnych — bo miara unikalnych węzłów potrafi **wzrosnąć**
-przy przepisaniu, które zmniejsza wyrażenie (rozbicie współdzielenia), i wtedy
-kontrakt reguły byłby nie do spełnienia dla poprawnych reguł.
+Z krotnościami, nie unikalnych: miara unikalnych potrafi **wzrosnąć** przy
+przepisaniu zmniejszającym wyrażenie (rozbicie współdzielenia), więc kontrakt
+byłby nie do spełnienia dla poprawnych reguł.
 
-Kontrakt: `measure(B) < measure(A)`. Reguły czysto porządkujące (zamiana
-argumentów przemiennych, kanonizacja kolejności) **nie spełniają** go i to jest
-świadome — w F3.2 wchodzą jako osobny przebieg z własną, leksykograficzną miarą,
-albo jako etap normalizacji przed przepisywaniem. F3.1 nie udaje, że rozwiąże to
-z góry dla reguł, których jeszcze nie widział; zapisuje natomiast, że **silnik
-musi tę różnicę widzieć**, i zostawia na to miejsce w API (7.3).
-
-Sprawdzenie miary jest `assert`em, nie kontrolą runtime: złamanie kontraktu to
-błąd programisty, a limit kroków i tak zamienia go w skończone zakończenie.
-Precedens i uzasadnienie tego kształtu — `assert` bez wyłuskania — pochodzą z
-F2.5Q.
+Kontrakt: `measure(B) < measure(A)`. Sprawdzany `assert`em z nazwą reguły w
+komunikacie — złamanie to błąd programisty, a limit i tak zamienia go w
+skończone zakończenie. Precedens takiego `assert`a bez wyłuskania: F2.5Q.
 
 ---
 
-## 5. Zachowanie DAG — nie do negocjacji
+## 5. DAG
 
-Naiwna rekurencja przepisująca odwiedza **każde wystąpienie** poddrzewa. Dla FK
-`kr640` to różnica między 281 a 21 882 odwiedzinami, czyli **77×**, i to przy
-najmniejszym z dwóch robotów w repo.
+### 5.1 Memoizacja jest wymogiem, nie optymalizacją
 
-Silnik memoizuje po **tożsamości węzła**:
+Naiwna rekurencja odwiedza **każde wystąpienie** poddrzewa: dla FK `kr640` to
+281 kontra 21 882, czyli **77×** — przy mniejszym z dwóch robotów w repo.
 
-```cpp
-std::unordered_map<const ExpressionNode*, Expression> rewritten;
-```
-
-Dokładnie ten sam mechanizm, którym `ExpressionEvaluator` liczy wartości, i z
-tego samego powodu. Skutki są dwa i oba są wymagane:
+Skutki memoizacji są dwa i oba są wymagane:
 
 ```text
-złożoność   liniowa w liczbie UNIKALNYCH węzłów, nie w rozmiarze rozwinięcia
-struktura   współdzielenie przeżywa przepisanie -- wynik jest DAG-iem,
-            nie drzewem
+złożoność   liniowa w liczbie UNIKALNYCH węzłów
+struktura   współdzielenie przeżywa przepisanie -- wynik jest DAG-iem, nie drzewem
 ```
 
-Drugi skutek jest ważniejszy dla F3.2: gdyby wynik był drzewem, każde kolejne
-przejście symplifikatora startowałoby od materiału 77 razy większego, a to
-kaskaduje przez cały pozostały etap Fazy 3.
+Drugi jest ważniejszy dla F3.2: gdyby wynik był drzewem, każde kolejne przejście
+symplifikatora startowałoby od materiału 77 razy większego.
 
-Klucz jest surowym wskaźnikiem i to jest bezpieczne dokładnie tak długo, jak
-żyje wejściowe wyrażenie — a żyje, bo `Expression` trzyma `shared_ptr`, a mapa
-istnieje wyłącznie w obrębie jednego wywołania.
+### 5.2 Klucz: `Expression`, **nie** surowy wskaźnik
+
+v1 proponowała `unordered_map<const ExpressionNode*, Expression>` i argumentowała,
+że wejściowe wyrażenie utrzymuje węzły przy życiu. To prawda **tylko dla węzłów
+oryginalnego DAG-a**. Po udanym przepisaniu (4.1, krok 5) silnik schodzi ponownie
+w wyrażenie **świeżo zbudowane**; jego węzły żyją tak długo, jak trzyma je lokalna
+zmienna, a po zwolnieniu allocator może oddać ten sam adres innemu węzłowi.
+Wpis w memo wskazywałby wtedy na coś zupełnie innego, i to bez żadnego objawu.
+
+Projekt rozwiązał to już raz, w `ExpressionEvaluator`:
+
+```cpp
+using Memo = std::unordered_map<Expression, double,
+                                ExpressionIdentityHash, ExpressionIdentityEqual>;
+```
+
+Klucz jest `Expression`, więc **sam utrzymuje węzeł przy życiu**; hash liczy się z
+adresu, a równość to `sameNode`. F3.1 używa dokładnie tego samego wzorca, z
+`Expression` po obu stronach mapy. Koszt: jeden `shared_ptr` na wpis. Zysk:
+klasa błędów, która nie istnieje.
+
+### 5.3 Silnik jest **sesją**, nie wolną funkcją
+
+Rozstrzygnięcie, o które prosiło review, i lepiej podjąć je teraz niż w F3.2.
+
+`ExpressionEvaluator` jest sesją, bo szesnaście komórek macierzy to wiele korzeni
+**jednego** współdzielonego DAG-a i cache działa między nimi. F3.2 ma dokładnie
+ten sam kształt: przepisze `lhs` i `rhs` dwunastu równań jednego układu, a te
+strony współdzielą poddrzewa FK. Wolna funkcja z memo per wywołanie przebudowałaby
+wspólne poddrzewo **24 razy** i rozbiła współdzielenie **między** równaniami.
+
+```cpp
+class RewriteSession        // rules + factory + limit + memo
+{
+public:
+    RewriteSession(std::span<const RewriteRule> rules, ExpressionFactory factory,
+                   std::size_t stepLimit = kDefaultRewriteStepLimit);
+
+    [[nodiscard]] RewriteResult rewrite(const Expression& expression);
+};
+```
+
+Dziedziczy przy tym ostrzeżenie z evaluatora, wpisane w komentarz klasy: **memo
+rośnie monotonicznie**, a jedna sesja to jeden zestaw reguł. Sesja jest tania —
+kilka pól — więc dla innego zestawu tworzy się nową.
+
+Wolna funkcja jednorazowa zostaje jako wygoda dla testów i wywołań pojedynczych,
+zaimplementowana przez sesję.
 
 ---
 
@@ -338,159 +484,163 @@ istnieje wyłącznie w obrębie jednego wywołania.
 struct RewriteResult
 {
     Expression expression;      // punkt stały albo stan po wyczerpaniu limitu
-    bool changed{};             // czy cokolwiek zadziałało
-    std::size_t steps{};        // ile przepisań wykonano
-    bool reachedLimit{};        // czy zatrzymał nas budżet, a nie punkt stały
+    bool changed{};
+    std::size_t steps{};
+    bool reachedLimit{};
 };
 ```
 
-`changed` jest w promptcie wprost i ma konkretnego konsumenta: `EquationSimplifier`
-z F3.2 będzie puszczał kilka przebiegów różnymi zestawami reguł i musi wiedzieć,
-kiedy przestać.
+`changed` ma konkretnego konsumenta: F3.2 puszcza kilka przebiegów różnymi
+zestawami reguł i musi wiedzieć, kiedy przestać.
 
-`reachedLimit` **nie jest** błędem i dlatego nie jest `expected`. Wyrażenie po
-wyczerpaniu limitu jest w pełni poprawne — równoważne wejściu i o tej samej
-dziedzinie — tylko nie kanoniczne. Zwracanie go jako błędu zmusiłoby caller'a do
+`reachedLimit` **nie jest błędem**, więc nie jest `expected`. Wyrażenie po
+wyczerpaniu limitu jest poprawne — o tej samej dziedzinie i (przy dotrzymanym (E))
+równoważne — tylko nie kanoniczne. Zwracanie go jako błędu zmuszałoby caller'a do
 wyrzucenia poprawnego wyniku.
 
-Nie ma tu natomiast **listy zastosowanych reguł**, choć kusi. Powód: byłaby to
-struktura rosnąca ze `steps`, potrzebna wyłącznie do diagnostyki, a diagnostykę
-da się mieć taniej — nazwa reguły trafia do komunikatu asercji przy złamaniu
-miary (4.3). Jeśli F3.2 pokaże, że ślad jest naprawdę potrzebny, dołoży go z
-konkretnym uzasadnieniem.
+Nie ma listy zastosowanych reguł: rosłaby ze `steps`, a diagnostykę da się mieć
+taniej — nazwa reguły trafia do komunikatu asercji przy złamaniu miary.
 
 ---
 
 ## 7. API
 
-### 7.1 Nagłówki
+### 7.1 Pliki
 
 ```text
-symbolic/RewriteRule.hpp     RewriteRule, RewriteResult
-symbolic/RewriteEngine.hpp   rewrite(), divisorsOf(), preservesDomain()
-symbolic/RewriteEngine.cpp   silnik
+symbolic/RewriteRule.hpp     RewriteRule, RewriteResult, kDefaultRewriteStepLimit
+symbolic/RewriteEngine.hpp   divisorsOf, hasSameDomainGuards, RewriteSession, rewrite
+symbolic/RewriteEngine.cpp   sesja, memoizacja, guardy, kontrola miary
 ```
 
-W `symbolic/`, nie w `builders/`: to jest narzędzie warstwy wyrażeń, a nie
-budowniczy niczego. `EquationSimplifier` z F3.2 stanie piętro wyżej i będzie z
-tego korzystał.
+W `symbolic/`, nie w `builders/`: to narzędzie warstwy wyrażeń.
 
 ### 7.2 Funkcje
 
 ```cpp
-// The domain condition from 2.3, exposed because F3.2 will want to assert it in
-// its own tests and because a rule author must be able to read it.
+// The syntactic domain guards of an expression: the divisor of every Divide
+// node, without duplicates. Complete for the nine node kinds that exist today --
+// a new partial operator (sqrt, log, asin) would need a richer model, not one
+// more entry here.
 [[nodiscard]] std::vector<Expression> divisorsOf(const Expression& expression);
 
-[[nodiscard]] bool preservesDomain(const Expression& before, const Expression& after);
-
-// Rewrites to a fixed point, or until the step budget runs out.
-//
-// Every rule application is checked with preservesDomain() and DISCARDED if it
-// fails: a rule that would change the domain simply does not fire, and the
-// engine moves on to the next one. Not an error -- rules are allowed to be
-// written for the general case and refused in the specific one. That is exactly
-// what happens to x * 0 -> 0 when x contains a division.
-[[nodiscard]] RewriteResult rewrite(const Expression& expression,
-                                    std::span<const RewriteRule> rules,
-                                    const ExpressionFactory& factory,
-                                    std::size_t stepLimit = kDefaultRewriteStepLimit);
+// Compares those guards. Deliberately NOT called preservesDomain: it decides a
+// syntactic question, and only LOCALLY -- at the point a rule fires, between the
+// rule's input and its output. Applying it to whole trees before and after a
+// rewrite is wrong and would reject correct rewrites; the whole-tree property
+// follows by induction instead.
+[[nodiscard]] bool hasSameDomainGuards(const Expression& before, const Expression& after);
 ```
 
-### 7.3 Miejsce zostawione dla F3.2
+### 7.3 Reguły porządkujące — **poza tym silnikiem**
 
-Reguły porządkujące (4.3) nie zmniejszają miary. Zamiast wpychać je teraz w
-model, którego jeszcze nie znamy, F3.1 zostawia **jawny szew**: `rewrite` bierze
-`span` reguł, więc F3.2 może wywołać go dwa razy z dwoma zestawami i sama
-zdecydować o kolejności. Gdyby okazało się, że potrzebny jest jeden przebieg z
-dwiema miarami — to zmiana w silniku, którą F3.2 uzasadni na konkretach.
+v1 twierdziła, że `span` reguł jest „szwem" dla reguł porządkujących. To była
+deklaracja przyszłej zmiany, nie szew: drugi przebieg używa **tej samej** miary,
+więc `x + y → y + x` nadal jej nie przejdzie, bo miary nie zmienia.
+
+Rozstrzygnięcie: **normalizacja kolejności nie jest przepisywaniem w rozumieniu
+tego silnika.** To osobny przebieg kanonizujący, który F3.2 zaimplementuje
+własnym mechanizmem — z własnym porządkiem dobrze ufundowanym — i wywoła *przed*
+albo *po* `RewriteSession`, nie *przez* nią.
+
+Gdyby F3.2 pokazało, że jeden silnik z parametryzowaną miarą jest lepszy, to
+zmiana w `RewriteSession` uzasadniona konkretami. F3.1 nie udaje, że ma na to
+gotowe API.
 
 ### 7.4 Równania i układy
 
-F3.1 **nie** dotyka `Equation` ani `IkEquationSystem`. Kompozycja jest
-jednolinijkowa i należy do F3.2:
+F3.1 **nie** dotyka `Equation` ani `IkEquationSystem`. Kompozycja należy do F3.2:
 
 ```text
-przepisz lhs, przepisz rhs, zachowaj source
+przepisz lhs, przepisz rhs, zachowaj source -- JEDNĄ sesją dla całego układu (5.3)
 ```
 
-i jest bezpieczna, bo `Equation` to `lhs = rhs` przechowywane tak, jak podane —
+Bezpieczne, bo `Equation` to `lhs = rhs` przechowywane tak, jak podane —
 przepisanie każdej strony osobno nie rusza granicy między stroną robota a stroną
-zadania, na której stoi cały model z F2.3.
+zadania, na której stoi model z F2.3.
 
 ---
 
 ## 8. Testy
 
 ```text
-dziedzina -- rdzeń etapu
-  CollectsDivisorsFromNestedExpression      dzielniki z zagnieżdżeń, bez powtórzeń
-  RejectsRewriteThatWidensDomain            (1/q)*0 -> 0 ODRZUCONE
-  AllowsSameRewriteWhenNoDivisionPresent    q1*0 -> 0 DOPUSZCZONE
-  RejectsRewriteThatNarrowsDomain           reguła wprowadzająca nowy dzielnik
-  RejectsCancellationOfSelfDivision         x/x -> 1 odrzucone
-  AllowsRewriteInsideDenominator            kompozycyjność z 2.4
+strażnicy dziedziny -- warunek lokalny
+  CollectsDivisorsFromNestedExpression       bez powtórzeń, z zagnieżdżeń
+  RejectsRewriteThatWidensDomain             (1/q)*0 -> 0 ODRZUCONE
+  AllowsSameRewriteWhenNoDivisionPresent     q1*0 -> 0 DOPUSZCZONE
+  RejectsCancellationOfSelfDivision          x/x -> 1 odrzucone
+  RewritesInsideDenominator                  a/-(-q) -> a/q PRZECHODZI (2.4)
+
+representability guard
+  KeepsOriginalDenominatorWhenRewriteYieldsZero    a/(q-q) nietknięte
+  StillRewritesSameSubtreeElsewhere                q-q -> 0 dziala poza mianownikiem
 
 silnik
   ReportsChangedWhenARuleFires
   ReportsUnchangedOnFixedPoint
-  StopsAtStepLimitAndSaysSo                 reachedLimit == true, wynik poprawny
-  AppliesRulesInnermostFirst                obserwowalne przez regułę licznikową
-  DiscardsUnsafeRuleAndContinues            reguła odrzucona nie blokuje kolejnych
+  StopsAtStepLimitAndSaysSo                  reachedLimit, wynik poprawny
+  AppliesRulesInnermostFirst
+  DiscardsUnsafeRuleAndContinues             odrzucona nie blokuje kolejnych
 
 DAG
-  PreservesSharingAcrossRewrite             licznik unikalnych węzłów po
-  RewritesSharedSubtreeOnce                 reguła liczy wywołania: 1, nie 77
+  PreservesSharingAcrossRewrite
+  RewritesSharedSubtreeOnce                  licznik wywołań: 1, nie 77
+  SharesMemoAcrossRootsInOneSession          drugi korzeń nie liczy od nowa (5.3)
+  SurvivesRewriteOfTemporaryExpression       klucz Expression, nie wskaźnik (5.2)
 
-równoważność numeryczna Z DZIEDZINĄ
-  EquivalentOnSampledDomain                 patrz niżej
-  RewrittenKr640FkMatchesOriginal           end-to-end na prawdziwym FK
+równoważność Z DZIEDZINĄ
+  AgreesOnDefinednessAndValue                patrz niżej
+  RewrittenKr640FkMatchesOriginal            end-to-end na prawdziwym FK
 ```
 
-**`EquivalentOnSampledDomain`** jest testem, dla którego ten etap istnieje, i
-jego kształt jest nietypowy, więc opis wprost:
+**`AgreesOnDefinednessAndValue`** zastępuje `EquivalentOnSampledDomain` z v1 i
+jest zbudowany inaczej, bo tamten zawierał błąd z 2.4:
 
 ```text
 1. weź wyrażenie z dzieleniem, np. a/(q1 - 0.5)
-2. przepisz zestawem reguł
-3. wylosuj N konfiguracji ze STAŁYM ziarnem
-4. dla każdej: jeśli którykolwiek dzielnik zeruje się blisko zera -> POMIŃ punkt
-5. dla pozostałych: evaluate(przed) == evaluate(po) w granicach 1e-12
-6. osobno: divisorsOf(przed) == divisorsOf(po)
+2. przepisz
+3. wylosuj N konfiguracji ze STAŁYM ziarnem, w tym punkty BLISKO bieguna
+4. dla każdej policz evaluate(przed) i evaluate(po)
+5. wymagaj ZGODNOŚCI CO DO OKREŚLONOŚCI:
+       obie zwracają wartość            -> wartości równe w granicach 1e-12
+       obie zwracają DivisionByZero     -> zgoda
+       jedna i druga inaczej            -> BŁĄD, dziedzina się zmieniła
 ```
 
-Krok 4 jest tym, co odróżnia ten test od zwykłego „porównaj wartości": bez niego
-test albo losowo trafiałby w biegun i wybuchał, albo — gorzej — **przechodziłby
-mimo rozszerzenia dziedziny**, bo poza zerem obie postacie są równe. Sama
-równoważność numeryczna **nie potrafi** wykryć błędu, przed którym chroni ten
-etap; dlatego krok 6 jest osobny i obowiązkowy.
+Krok 5 jest sednem. v1 kazała pomijać punkty przy biegunie i **osobno** porównywać
+`divisorsOf` przed i po — czyli robić dokładnie to, czego 2.4 zabrania, bo
+`a/-(-q)` i `a/q` mają różne dzielniki, a tę samą dziedzinę. Test behawioralny
+mierzy **dziedzinę**, a nie jej składniowy zapis, więc przechodzi tam, gdzie
+tamten dawał fałszywy alarm, i wywala się przy `(1/q)*0 → 0`, gdzie jedna postać
+jest w zerze określona, a druga nie.
 
-**`RewritesSharedSubtreeOnce`** liczy wywołania reguły na współdzielonym
-poddrzewie. Bez memoizacji z 5 liczba jest równa krotności wystąpień; z nią jest
-równa jedynce. To jedyny test, który pilnuje własności wydajnościowej — i pilnuje
-jej przez zachowanie, nie przez pomiar czasu.
+Sama równość wartości poza biegunem **nie potrafi** wykryć błędu, przed którym
+chroni ten etap — i to jest powód, dla którego krok 3 celowo losuje punkty blisko
+zera mianownika.
 
 ---
 
 ## 9. Plan zmian w plikach
 
 ```text
-NOWE   symbolic/RewriteRule.hpp        RewriteRule, RewriteResult, limit domyślny
-       symbolic/RewriteEngine.hpp      divisorsOf, preservesDomain, rewrite
-       symbolic/RewriteEngine.cpp      silnik, memoizacja, kontrola miary
-       tests/test_rewrite_engine.cpp   ~15 testów
+NOWE   symbolic/RewriteRule.hpp        RewriteRule, RewriteResult, limit
+       symbolic/RewriteEngine.hpp      divisorsOf, hasSameDomainGuards,
+                                       RewriteSession, rewrite()
+       symbolic/RewriteEngine.cpp      sesja, memo, guardy, miara
+       tests/test_rewrite_engine.cpp   ~18 testów
 
-ZMIENIONE  CMakeLists.txt              +1 źródło
-           tests/CMakeLists.txt        +1 plik testowy
+ZMIENIONE  CMakeLists.txt, tests/CMakeLists.txt   +1 wiersz każdy
 
 BEZ ZMIAN  Expression, ExpressionFactory, ExpressionEvaluator, SymbolicMatrix,
            cały model, ConstraintBuilder, fasada, loader
 ```
 
-Ostatni wiersz jest sprawdzianem: F3.1 **dokłada warstwę**, nie modyfikuje
-istniejącej. Gdyby okazało się, że silnik potrzebuje zmiany w `Expression` albo
-w fabryce, byłby to sygnał, że któreś założenie z 2 jest nie do utrzymania — i
-ważniejszy niż sam etap.
+Ostatni wiersz jest sprawdzianem: F3.1 **dokłada warstwę**. Gdyby silnik
+potrzebował zmiany w `Expression` albo w fabryce, byłby to sygnał, że któreś
+założenie z 2 jest nie do utrzymania — ważniejszy niż sam etap.
+
+Szczególnie: **`divide` nie jest luzowane.** Representability guard z 2.7 istnieje
+właśnie po to, żeby nie trzeba było ruszać kontraktu fabryki.
 
 ---
 
@@ -498,46 +648,57 @@ ważniejszy niż sam etap.
 
 | Ryzyko | Waga | Reakcja |
 |---|---|---|
-| Reguła zmienia dziedzinę | **realne, to jest powód istnienia etapu** | Warunek sprawdzany przez **silnik** przy każdym trafieniu, nie przez autora reguły (3) |
-| Warunek strukturalny odrzuca bezpieczne przepisania | **realne, świadome** | Kierunek błędu jest jednostronny (2.3); kosztem jest przepisanie niewykonane, nie błędne |
-| Pętla rewrite | realne | Miara malejąca jako kontrakt + limit jako siatka + raport (4.2) |
-| Rozbicie współdzielenia | **realne, policzone** | Memoizacja po tożsamości węzła; 281 kontra 21 882 dla `kr640` (5) |
-| Test równoważności przepuszcza rozszerzenie dziedziny | **realne i nieoczywiste** | Osobne sprawdzenie `divisorsOf`, krok 6 w 8 — bo poza biegunem obie postacie są równe |
-| Nowy rodzaj węzła zmienia definicję dziedziny | niskie | 2.1: definicja rośnie o wiersz; `divisorsOf` jest jawnym `std::visit`, więc build stanie |
-| Reguły porządkujące nie mieszczą się w mierze | świadome | Jawny szew: `span` reguł i dwa przebiegi po stronie F3.2 (7.3) |
+| Reguła zmienia dziedzinę | **realne, powód istnienia etapu** | Warunek sprawdzany przez silnik przy każdym trafieniu, nie przez autora (3.2) |
+| Dokument obiecuje więcej, niż silnik sprawdza | **realne, złapane w review v1** | 2.2 rozdziela gwarancje silnika od kontraktu reguły; „sprawdzalnie bezpieczne" wycofane |
+| Globalne porównanie dzielników odrzuca poprawne przepisania | **realne, złapane w review v1** | Warunek wyłącznie lokalny (2.3), własność globalna indukcyjnie (2.4), test behawioralny (8) |
+| Uproszczony mianownik nie do zbudowania | **realne, złapane w review v1** | Representability guard (2.7); `assert` w `divide()` zostaje nietknięty |
+| Klucz memo przeżywa swój węzeł | **realne, złapane w review v1** | Klucz `Expression`, wzorzec z `ExpressionEvaluator` (5.2), własny test |
+| Warunek strukturalny odrzuca bezpieczne przepisania | świadome | Kierunek błędu jednostronny (2.3) |
+| Rozbicie współdzielenia między równaniami | realne | Sesja z jednym memo dla wielu korzeni (5.3) |
+| Nowy operator częściowy łamie model dziedziny | **realne, nie zamykane** | 2.1 mówi wprost: `divisorsOf` jest kompletne dla dziewięciu typów; dziesiąty wymaga uogólnienia, a `std::visit` zatrzyma build |
+| Reguły porządkujące nie mieszczą się w mierze | świadome | 7.3: to osobny mechanizm, poza tym silnikiem |
 
 ---
 
 ## 11. Otwarte pytania do review
 
-**11.1 Czy `preservesDomain` ma porównywać zbiory, czy multizbiory dzielników?**
-Rekomendacja: **zbiory**. `a/x + b/x` ma jeden dzielnik występujący dwa razy, a
-dla dziedziny liczy się tylko to, że `x ≠ 0`. Multizbiór odrzucałby przepisania
-łączące takie składniki bez żadnego zysku dla bezpieczeństwa.
+**11.1 Zbiory czy multizbiory dzielników?** Rekomendacja: **zbiory**. `a/x + b/x`
+ma jeden dzielnik występujący dwa razy, a dla dziedziny liczy się tylko `x ≠ 0`.
+Multizbiór odrzucałby łączenie takich składników bez zysku dla bezpieczeństwa.
 
-**11.2 Domyślny limit kroków.** Proponuję `kDefaultRewriteStepLimit = 10 000` —
-rząd wielkości powyżej liczby unikalnych węzłów największego FK w repo (281),
-więc żadne realne wyrażenie go nie dotknie, a pętla zatrzyma się w milisekundach.
-Liczba jest **arbitralna i taka zostaje**: to siatka bezpieczeństwa, nie próg
-numeryczny, i nie należy jej „mierzyć", żeby nie sugerować, że coś znaczy.
+**11.2 Domyślny limit kroków.** v1 podawała `10 000` i uzasadniała to
+porównaniem z **281 unikalnymi węzłami** — a miara z 4.3 liczy **z krotnościami**,
+czyli 21 882 dla tego samego FK. Uzasadnienie było więc oparte na niewłaściwej
+liczbie.
 
-**11.3 Czy `rewrite` ma przyjmować `ExpressionFactory` argumentem?** Rekomendacja:
-tak. Fabryka jest bezstanowa, ale to ona niesie kontrakty (skończoność, brak
-dzielenia przez zero), więc reguła budująca nowe węzły musi ją dostać, a nie
-tworzyć własną. Precedens: `JointTransformBuilder` i `ForwardKinematicsBuilder`
-biorą ją tak samo.
+Poprawnie: każdy krok **ściśle** zmniejsza miarę, więc liczba kroków jest z góry
+ograniczona przez `measure(wejścia)`. Dla FK `kr640` to 21 882. Limit ma być
+siatką na złamany kontrakt, a nie progiem zatrzymującym normalną pracę, więc musi
+leżeć **powyżej** tej wartości:
+
+```text
+kDefaultRewriteStepLimit = 100 000
+```
+
+Rząd wielkości powyżej miary największego znanego wejścia. Liczba pozostaje
+arbitralna i taka ma zostać — to siatka bezpieczeństwa, nie próg numeryczny.
+
+**11.3 Czy sesja ma przyjmować `ExpressionFactory` przez wartość?** Rekomendacja:
+tak, jak robią to `JointTransformBuilder` i `ForwardKinematicsBuilder`. Fabryka
+jest dziś bezstanowa; gdyby kiedyś zyskała stan (hash-consing), zmiana własności
+będzie osobną decyzją, zapisaną już w `STATUS.md` jako znany brak.
 
 ---
 
 ## 12. Rekomendacja
 
-Przyjąć definicję dziedziny z 2.1, kontrakt dwustronny z 2.2, warunek zbioru
-dzielników z 2.3 wraz z argumentem kompozycyjnym z 2.4, oraz podział
-odpowiedzialności z 3: **reguła proponuje, silnik dopuszcza**.
+Przyjąć: definicję z 2.1 wraz z jej jawnym ograniczeniem, rozdział gwarancji z
+2.2, **lokalny** warunek z 2.3 z indukcją z 2.4, representability guard z 2.7,
+sesję z 5.3 i klucz memo z 5.2.
 
 Po zatwierdzeniu — proposal implementacyjny z pełnym kodem trzech nowych plików
-i około piętnastoma testami, gate `437/437` (422 + 15).
+i około osiemnastoma testami, gate `440/440` (422 + 18).
 
-Po F3.1 wchodzi **F3.2** — pierwsze prawdziwe reguły: kanonizacja algebraiczna,
-czyli `x + 0`, `x * 1`, zwijanie stałych i porządek argumentów. Dopiero tam
-okaże się, czy szew z 7.3 był potrzebny.
+Po F3.1 wchodzi **F3.2** — pierwsze prawdziwe reguły: `x + 0`, `x * 1`, zwijanie
+stałych, `q - q → 0`. To tam okaże się, czy guard z 2.7 był potrzebny — i to
+tam, po raz pierwszy, ktoś będzie musiał dotrzymać (E).
