@@ -1,6 +1,25 @@
 # Proposal: silnik przepisywania — F3.1, implementacja
 
-**Etap:** F3.1 · **v2 — do review** · 2026-08-22 · część 2 z 2
+**Etap:** F3.1 · **v3 — do review** · 2026-08-22 · część 2 z 2
+
+> **v3, po drugim review.** Jeden blocker mechaniczny, jedna rekomendacja
+> i jedno doprecyzowanie — wszystkie przyjęte. Do tego **kod z tego dokumentu
+> został skompilowany i uruchomiony**, co znalazło drugi błąd, o którym review
+> nie mogło wiedzieć, bo dotyczy testów:
+>
+> 1. **`ExpressionMap` bez kwalifikacji `detail::`** w `measureOf` i
+>    `ruleContractHolds` — zostawione przy przenoszeniu aliasu w v2. Kod z v2
+>    **nie kompilował się** (4).
+> 2. **Cache miary przeniesiony z sesji do `Call`** — `measureOf` pyta o każdą
+>    kandydaturę, w tym odrzucone przez warunek dziedziny, więc cache sesyjny
+>    trzymał jednorazowe DAG-i przy życiu bez pożytku (4).
+> 3. **`reachedLimit` obiecywało za dużo**: dziedzinę gwarantuje silnik,
+>    równoważność tylko **przy dotrzymanym (E)** (1.1).
+> 4. **Trzy testy łamały `-Werror=dangling-else`** — makra GoogleTest rozwijają
+>    się do `if/else`, więc `if (cond) EXPECT_...` bez klamer nie przechodzi
+>    `build-werror`. Znalezione kompilacją, nie czytaniem (6.7).
+>
+> **Wynik uruchomienia: 28/28 PASSED**, w obu konfiguracjach (6.7).
 
 > **v2, po review.** Jeden blocker, trzy wzmocnienia i dwa drobiazgi:
 >
@@ -173,8 +192,9 @@ inline constexpr std::size_t kDefaultRewriteStepLimit = 1'000'000;
 // Consumers driving repeated passes must test `changed`, never `steps > 0`.
 //
 // reachedLimit is NOT an error, which is why this is not an expected<>: the
-// expression is valid, has the same domain, and is equivalent -- it is merely
-// not canonical.
+// expression is valid and has the same domain -- the engine enforces that part
+// itself -- and it is equivalent to the input ASSUMING EVERY RULE HELD ITS (E)
+// CONTRACT, which the engine cannot verify. It is merely not canonical.
 struct RewriteResult
 {
     Expression expression;
@@ -377,6 +397,20 @@ private:
     {
         Memo memo;
         Guards guards;
+
+        // Node measures for the rule-contract assert. Per CALL, not per session:
+        // measureOf() is asked about every candidate replacement, INCLUDING the
+        // ones the domain check then rejects, and a session-lifetime cache would
+        // keep those throwaway DAGs alive through their keys for no benefit. The
+        // memo and the guards earn their session lifetime; a diagnostic counter
+        // does not.
+        //
+        // Present in both configurations rather than behind #ifndef NDEBUG: a
+        // default-constructed unordered_map allocates nothing, and a member that
+        // changes the layout between Release and diagnostic builds costs more in
+        // surprise than it saves in bytes.
+        detail::ExpressionMap<std::size_t> measures;
+
         std::size_t steps{};
         bool reachedLimit{};
     };
@@ -394,12 +428,6 @@ private:
 
     Memo memo_;      // proven fixed points only
     Guards guards_;  // domain guards, committed with the memo
-
-    // Node measures, used ONLY by the rule-contract assert. Stays empty in a
-    // build with NDEBUG defined -- which the Release configuration does -- and
-    // that is the honest statement of the measure contract's enforcement: it is
-    // checked where asserts are live and nowhere else.
-    detail::ExpressionMap<std::size_t> measures_;
 };
 
 } // namespace kinemaforge::ik
@@ -655,7 +683,7 @@ namespace {
 // does not turn it into a count of unique nodes: the parent adds a shared
 // child's total once per slot it occupies, which is exactly what "with
 // multiplicity" means.
-std::size_t measureOf(const Expression& expression, ExpressionMap<std::size_t>& cache)
+std::size_t measureOf(const Expression& expression, detail::ExpressionMap<std::size_t>& cache)
 {
     if (const auto found = cache.find(expression); found != cache.end())
         return found->second;
@@ -695,7 +723,7 @@ std::size_t measureOf(const Expression& expression, ExpressionMap<std::size_t>& 
 [[maybe_unused]] bool ruleContractHolds(const RewriteRule& rule,
                                         const Expression& input,
                                         const Expression& replacement,
-                                        ExpressionMap<std::size_t>& measures)
+                                        detail::ExpressionMap<std::size_t>& measures)
 {
     if (sameNode(replacement, input))
     {
@@ -726,9 +754,18 @@ std::size_t measureOf(const Expression& expression, ExpressionMap<std::size_t>& 
 ```
 
 `measureOf` i `ruleContractHolds` żyją pod `#ifndef NDEBUG`, bo `assert()` i tak
-usuwa wywołanie, a bez tego zostałyby zdefiniowane i nieużywane. `measures_`
-zostaje polem bezwarunkowo — pusta mapa w Release jest tańsza niż warunkowe
-pole, które zmienia układ klasy między konfiguracjami.
+usuwa wywołanie, a bez tego zostałyby zdefiniowane i nieużywane.
+
+Cache miary siedzi natomiast **w `Call`**, nie w sesji — poprawka z review i
+słuszna. `measureOf` jest pytane o **każdą kandydaturę na zamiennik**, w tym te,
+które warunek dziedziny za chwilę odrzuci; cache sesyjny trzymałby te
+jednorazowe DAG-i przy życiu przez klucze `Expression`, bez żadnego pożytku.
+Memo i strażnicy zasługują na życie sesji, licznik diagnostyczny nie.
+
+Pole zostaje bezwarunkowe (bez `#ifndef NDEBUG` wokół samego pola): domyślnie
+skonstruowana `unordered_map` nic nie alokuje, a składowa zmieniająca układ typu
+między Release a buildem diagnostycznym kosztuje więcej zaskoczenia, niż
+oszczędza bajtów.
 
 ---
 
@@ -917,7 +954,7 @@ std::optional<Expression> RewriteSession::firstAdmissibleRule(const Expression& 
         if (!replacement)
             continue;
 
-        assert(ruleContractHolds(rule, expression, *replacement, measures_) &&
+        assert(ruleContractHolds(rule, expression, *replacement, call.measures) &&
                "rewrite rule broke its contract");
 
         // The domain condition, and it is LOCAL: between this rule's input and
@@ -1594,8 +1631,13 @@ TEST(RewriteEngineTest, AgreesOnDefinednessAndValue)
         const auto rewrittenValue = after.evaluate(result.expression);
 
         ASSERT_EQ(originalValue.has_value(), rewrittenValue.has_value()) << point;
+
+        // Braces are REQUIRED, not style: EXPECT_NEAR expands to an if/else, so
+        // an unbraced body trips -Werror=dangling-else.
         if (originalValue.has_value())
+        {
             EXPECT_NEAR(*originalValue, *rewrittenValue, 1e-12) << point;
+        }
     }
 
     // ...and the point set has teeth: at the pole the REJECTED replacement
@@ -1635,8 +1677,13 @@ TEST(RewriteEngineTest, AgreesOnDefinednessAcrossAnAcceptedRewrite)
         const auto rewrittenValue = after.evaluate(result.expression);
 
         ASSERT_EQ(originalValue.has_value(), rewrittenValue.has_value()) << point;
+
+        // Braces are REQUIRED, not style: EXPECT_NEAR expands to an if/else, so
+        // an unbraced body trips -Werror=dangling-else.
         if (originalValue.has_value())
+        {
             EXPECT_NEAR(*originalValue, *rewrittenValue, 1e-12) << point;
+        }
     }
 }
 
@@ -1676,12 +1723,51 @@ TEST(RewriteEngineTest, RewritesRealForwardKinematicsAndKeepsItsNodes)
             // Everywhere else the engine must hand back the very node it was
             // given, not a rebuilt copy of it.
             if (!ik::isConstant(cell))
+            {
                 EXPECT_TRUE(sameNode(result.expression, cell)) << row << ',' << column;
+            }
         }
 }
 ```
 
-### 6.7 Jedna uwaga z review, która się nie potwierdziła
+### 6.7 Kod z tego dokumentu został skompilowany i uruchomiony
+
+Wersje v1 i v2 były sprawdzane **czytaniem** — przejścia silnika prześledzone na
+papierze dla każdego testu. To okazało się niewystarczające dwa razy z rzędu,
+więc przed v3 wyciągnąłem kod z tego dokumentu i zbudowałem go przeciwko
+prawdziwej warstwie `Expression` / `ExpressionFactory`:
+
+```text
+g++ -std=c++23 -Wall -Wextra -Wswitch -Werror                 -> 28/28 PASSED
+g++ -std=c++23 -O2 -DNDEBUG -Wall -Wextra -Wswitch -Werror    -> 28/28 PASSED
+```
+
+Znalezione przy tym **dwa** błędy, których żaden przegląd nie złapał:
+
+```text
+error: 'ExpressionMap' has not been declared          (blocker z review, 4)
+error: suggest explicit braces to avoid ambiguous 'else' [-Werror=dangling-else]
+       tests.cpp:592, 633, 673
+```
+
+Drugi jest ciekawszy, bo dotyczy **testów**, a review kompilowało tylko trzy
+pliki silnika. Makra GoogleTest rozwijają się do konstrukcji `if/else`, więc:
+
+```text
+if (originalValue.has_value())
+    EXPECT_NEAR(*originalValue, *rewrittenValue, 1e-12) << point;   // -Werror
+```
+
+nie przechodzi `build-werror`. Trzy takie miejsca, wszystkie w testach
+porównujących wartość tylko tam, gdzie obie strony są określone. Klamry są tam
+teraz obowiązkowe i komentarz mówi dlaczego — żeby nikt ich nie „posprzątał".
+
+Wniosek na przyszłość, wart zapisania: **gate deklarowany w proposalu jest
+przewidywaniem, dopóki ktoś nie uruchomi kompilatora.** Deklarowałem
+`448/448` w v1 i `450/450` w v2, a żaden z tych kodów nie zbudowałby się
+w konfiguracji `-Werror`.
+
+### 6.8 Jedna uwaga z review, która się nie potwierdziła
 
 Review przewidywało, że nieużywana zmienna `first` w
 `SharesMemoAcrossRootsInOneSession` wywali `build-werror` na
@@ -1706,7 +1792,7 @@ nieistniejące ostrzeżenie. Zapisuję to jednak wprost, bo przy następnym taki
 przewidywaniu warto pamiętać, że ta konkretna diagnostyka nie dotyczy typów
 klasowych.
 
-### 6.8 Uczciwie o dwóch testach
+### 6.9 Uczciwie o dwóch testach
 
 `SurvivesRewriteOfTemporaryExpression` **nie potrafi zawieść deterministycznie**
 przy kluczu na surowym wskaźniku — zależy od tego, czy allocator odda ten sam
@@ -1802,6 +1888,7 @@ sprawdzane **wyłącznie** tam.
 | Duplikat funktorów tożsamości wobec `ExpressionEvaluator` | Świadomy: wspólny nagłówek to zmiana pliku spoza zakresu etapu; zapisane w `STATUS.md` jako znany brak (2.2) |
 | Nowy typ węzła przechodzi przez analizator dziedziny w milczeniu | Visitor wyliczający, `static_assert` w gałęzi domyślnej; jedyne miejsce, gdzie pomyłka nie daje ani błędu kompilacji, ani złego wyniku, tylko cichą utratę bezpieczeństwa (3.1) |
 | Reguła decyduje na podstawie `sameNode` zamiast struktury | Kontrakt determinizmu mówi o **znaczeniu** wejścia; `sameNode` tylko jako fast-path (1.3) |
+| Makro GoogleTest w niebronionym `if` łamie `-Werror=dangling-else` | **realne, złapane kompilacją** — trzy miejsca; klamry obowiązkowe, z komentarzem (6.7) |
 | Test FK zawodzi na komórkach stałych | `negate(constant)` zwija się przy budowie, więc opakowanie nie istnieje; asercja tożsamości ograniczona do komórek niestałych, z komentarzem (6.6) |
 
 ---

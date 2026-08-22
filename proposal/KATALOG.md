@@ -34,7 +34,7 @@ Faza 2 zamknięta 2026-08-21.
 | Dokument | Temat | Stan | Linii |
 |---|---|---|---|
 | [`F3.1-rewrite-engine/proposal-rewrite-engine-semantics-architecture.md`](F3.1-rewrite-engine/proposal-rewrite-engine-semantics-architecture.md) | Granice gwarancji silnika, warunek dziedziny, punkt stały, kontrakty autora reguły | **ZATWIERDZONY (v6)** | 1366 |
-| [`F3.1-rewrite-engine/proposal-rewrite-engine-semantics-implementation.md`](F3.1-rewrite-engine/proposal-rewrite-engine-semantics-implementation.md) | Pełny kod trzech plików, wyliczający analizator dziedziny, 28 testów, gate 450 | **DO REVIEW (v2)** | 1817 |
+| [`F3.1-rewrite-engine/proposal-rewrite-engine-semantics-implementation.md`](F3.1-rewrite-engine/proposal-rewrite-engine-semantics-implementation.md) | Pełny kod trzech plików, wyliczający analizator dziedziny, 28 testów skompilowanych i uruchomionych | **DO REVIEW (v3)** | 1904 |
 
 ## Analizy poprzedzające proposale
 
