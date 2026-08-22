@@ -1,6 +1,23 @@
 # Proposal: postać kanoniczna — F3.2, architektura
 
-**Etap:** F3.2 · **v6 — CZEKA NA REVIEW** · 2026-08-22 · część 1 z 2
+**Etap:** F3.2 · **v7 — CZEKA NA REVIEW** · 2026-08-22 · część 1 z 2
+
+> **v7, po szóstym review.** Trzy blockery — wszystkie w zwijaniu stałych i w
+> domknięciu znaku — oraz **odpowiedź na pytanie architektoniczne**, które
+> recenzent postawił jako ważniejsze od nich:
+>
+> 1. **`isnormal(p) && fma(...) == 0` nadal dawało fałszywy pozytyw.** Zmierzone:
+>    `nextafter(2^-511)^2` ma wynik normalny i zerową resztę, a iloczyn jest
+>    zaokrąglony — błąd `2^-1126` sam wpada w underflow. Kryterium jest teraz
+>    **bitowe**, na mantysach (3.2.1).
+> 2. **Reducer był deterministyczny, ale nie idempotentny.** Zmierzone dla
+>    `2^52, 2^52+1, 2^52+3`: pierwszy przebieg zostawia dwie stałe, drugi łączy
+>    je w jedną. Reducer ma teraz własny punkt stały (3.2.2).
+> 3. **`(-1) * (a+b)` łamało własny postcondition** — dawało `Negate` nad sumą.
+>    Końcowe nałożenie znaku idzie przez `canonicalNegate` (3.3).
+> 4. **Czy zwijanie stałych jest warte tej złożoności?** Odpowiedź: **jest
+>    konieczne**, i to nie dla oszczędności węzłów — bez niego dwa AC-równoważne
+>    wejścia dają dwie różne postacie normalne (3.2.4).
 
 > **v6, po piątym review.** Dwa blockery, oba w mechanizmie wprowadzonym w v5 —
 > czyli w tym, który miał uratować gwarancję dokładności:
@@ -32,9 +49,9 @@
 > 4. Zakres normalizacji znaku **rozszerzony na `Divide`** i powiedziany wprost,
 >    żeby `F3.5` nie zostało z „znak jednoznaczny, ale nie przy dzieleniu" (3.3).
 
-> **Stan tego dokumentu:** wersja **v6**, oddana do review, **werdyktu jeszcze
+> **Stan tego dokumentu:** wersja **v7**, oddana do review, **werdyktu jeszcze
 > nie ma**. Nic z F3.2 nie jest zaimplementowane i nie powinno być — kod w repo
-> kończy się na F3.1. Następny krok to **decyzja recenzenta o v6**, nie pisanie
+> kończy się na F3.1. Następny krok to **decyzja recenzenta o v7**, nie pisanie
 > kodu. Po APPROVED: proposal implementacyjny → review → kod → oba buildy
 > zielone → aktualizacja dokumentów → `proposal/done/`.
 
@@ -345,29 +362,48 @@ double addError(double a, double b)
 }
 ```
 
-**Mnożenie: `fma` sama nie wystarczy** — blocker z review, który zmierzyłem,
-zanim go zapisałem:
+**Mnożenie: `fma` nie wystarczy, i to na dwa sposoby.** Pierwszy złapało review
+przy v5, drugi przy v6 — obydwa zmierzyłem, zanim je zapisałem.
 
 ```text
-a = denorm_min = 4,9406564584124654e-324      (2^-1074)
-b = 0,5
+(1)  underflow do zera             a = denorm_min, b = 0,5
+     p = 0,  fma = 0               „dokładne"    -- NIEPRAWDA
+     isnormal(p) = fałsz            <-- złapane przez strażnika z v6
 
-p = a * b        = 0                  bo 2^-1075 nie jest reprezentowalne
-fma(a, b, -p)    = 0                  „dokładne"  <-- NIEPRAWDA
-matematycznie      a*b = 2^-1075 != 0             <-- underflow
-
-isnormal(p) = fałsz
+(2)  underflow SAMEJ RESZTY        a = b = nextafter(2^-511, +inf)
+     p normalny, fma = 0           „dokładne"    -- NIEPRAWDA
+     isnormal(p) = PRAWDA           <-- strażnik z v6 tego NIE łapie
 ```
 
-`fma` liczy `a*b + c` z jednym zaokrągleniem, więc reszta jest wiarygodna tylko
-wtedy, gdy sam iloczyn **nie wpadł w underflow**. Test musi więc mieć strażnika
-na zakres:
+Przypadek (2) jest tym, przez który `fma` nie nadaje się na **dowód**. Dla
+`a = (1 + 2^-52) · 2^-511`:
+
+```text
+a·a = (1 + 2^-51 + 2^-104) · 2^-1022
+błąd zaokrąglenia = 2^-1126
+najmniejsza liczba subnormalna = 2^-1074
+=> reszta też wpada w underflow i wychodzi z fma jako 0
+```
+
+Czyli reszta z `fma` jest wiarygodna tylko wtedy, gdy **ona sama** jest
+reprezentowalna — a tego nie widać po `p`.
+
+**Kryterium bitowe, na mantysach.** Wychodzimy z reprezentacji `binary64`
+zamiast z reszty:
 
 ```cpp
-// Sound, and deliberately CONSERVATIVE: it declines some products that are in
-// fact exact (those whose result is subnormal) rather than ever calling a
-// rounded product exact. Getting this backwards would silently break the
-// guarantee in 6.3, and a missed fold costs nothing but a slightly longer tree.
+// Exact iff the product of the two 53-bit significands fits back into 53
+// significant bits, and the result stays in the normal range.
+//
+// frexp gives |f| in [0.5, 1), so ldexp(|f|, 53) is exactly a 53-bit integer
+// with its top bit set. The product of two such integers has 105 or 106 bits,
+// so it is representable iff at least 53 of its low bits are zero -- and the
+// trailing zeros of a product are the SUM of the operands' trailing zeros, so
+// no 128-bit arithmetic is needed to count them.
+//
+// Conservative by one bit: when the product happens to be 105 bits long, 52
+// trailing zeros would already do. Refusing that case costs one node and keeps
+// the test free of a bit-length computation.
 bool multipliesExactly(double a, double b)
 {
     const double p = a * b;
@@ -376,33 +412,44 @@ bool multipliesExactly(double a, double b)
         return a == 0.0 || b == 0.0;      // otherwise the product underflowed
 
     if (!std::isnormal(p))
-        return false;                      // subnormal result: fma residual is
-                                           // no longer a reliable witness
+        return false;                      // subnormal result: not worth proving
 
-    return std::fma(a, b, -p) == 0.0;
+    int exponentA = 0;
+    int exponentB = 0;
+    const double fractionA = std::frexp(a, &exponentA);
+    const double fractionB = std::frexp(b, &exponentB);
+
+    const auto significandA =
+        static_cast<std::uint64_t>(static_cast<long long>(std::ldexp(std::fabs(fractionA), 53)));
+    const auto significandB =
+        static_cast<std::uint64_t>(static_cast<long long>(std::ldexp(std::fabs(fractionB), 53)));
+
+    return std::countr_zero(significandA) + std::countr_zero(significandB) >= 53;
 }
 ```
 
-Zmierzone na przykładach z tego dokumentu:
+Zmierzone — kolumna „fma" to test z v6, kolumna „bitowe" to powyższy:
 
 ```text
-1 + 1e16              err = 1     ZAOKRĄGLONE  -> nie łączymy
-3 + 4                 err = 0     dokładne     -> łączymy
-0,5 + 0,25            err = 0     dokładne     -> łączymy
-1e200 * 3             err = 0     dokładne     -> łączymy
-denorm_min * 0,5      p = 0, a != 0, b != 0    -> ODRZUCONE przez strażnika
+                          isnormal   fma        bitowe
+nextafter(2^-511)^2         tak      DOKŁADNE   odrzucone    <-- blocker naprawiony
+denorm_min * 0,5            nie      DOKŁADNE   odrzucone
+3 * 4                       tak      DOKŁADNE   DOKŁADNE
+0,5 * 0,25                  tak      DOKŁADNE   DOKŁADNE
+(1 + 2^-52) * 3             tak      zaokr.     odrzucone
+1e200 * 3                   tak      DOKŁADNE   odrzucone    <-- zachowawczo
 ```
 
-Wybrałem wariant konserwatywny zamiast rozkładania `binary64` na mantysę
-i wykładnik, bo review nazwało właściwy kierunek błędu: **lepiej nie zwinąć
-czegoś, co dałoby się zwinąć, niż ogłosić zaokrąglone mnożenie dokładnym.**
-Odrzucane są wyłącznie iloczyny o wyniku subnormalnym — na materiale tego
-projektu nie występują wcale, a gdyby wystąpiły, kosztem jest jeden węzeł więcej
-w drzewie, nie błąd.
+Ostatni wiersz pokazuje cenę: kryterium bitowe odrzuca też iloczyny naprawdę
+dokładne, gdy zabrakło jednego bitu zapasu. **To jest właściwy kierunek błędu** —
+nieodrzucone zwinięcie kosztuje jeden węzeł w drzewie, a błędnie ogłoszona
+dokładność kosztuje gwarancję z 6.3. Na materiale repo nie kosztuje nic: łańcuchy
+iloczynowe mają tam **zero** przypadków z więcej niż jedną stałą (1).
 
-Dzięki temu `3 + x + 4 → 7 + x` działa jak dotąd — czyli w każdym realnym
-przypadku — a patologiczny `1e16 + 1` zostaje nietknięty i **funkcja się nie
-zmienia**.
+**Dodawanie zostaje na 2Sum** i to nie jest niekonsekwencja, tylko własność
+arytmetyki: suma o wyniku subnormalnym jest **dokładna** przy stopniowym
+niedomiarze, więc reszta 2Sum nie ma jak wpaść w underflow. Psuje ją wyłącznie
+przepełnienie, a tam fabryka i tak odmawia zwinięcia.
 
 ### 3.2.2 Harmonogram redukcji — też musi być częścią kontraktu
 
@@ -423,18 +470,42 @@ Oba używają **wyłącznie połączeń dokładnych**, oba zachowują wartość
 algebraiczną, oba startują z tego samego posortowanego wejścia — i dają **różne
 postacie**. Bez ustalonego harmonogramu teza etapu nie zachodzi.
 
-**Rozstrzygnięcie: jedno przejście od lewej z akumulatorem, bez szukania
-partnera.**
+**Rozstrzygnięcie: przejście od lewej z akumulatorem, bez szukania partnera —
+powtarzane aż do punktu stałego.**
 
 ```text
-acc := c[0]
-dla kolejnych c[i]:
-    jeśli połączenie acc z c[i] jest DOKŁADNE:  acc := acc (op) c[i]
-    w przeciwnym razie:                          zapisz acc do reszt;  acc := c[i]
-na koniec: zapisz acc do reszt
+powtarzaj:
+    posortuj stałe porządkiem z 5.2
+    acc := c[0]
+    dla kolejnych c[i]:
+        jeśli połączenie acc z c[i] jest DOKŁADNE:  acc := acc (op) c[i]
+        w przeciwnym razie:                          zapisz acc;  acc := c[i]
+    zapisz acc
+dopóki cokolwiek się połączyło
 ```
 
-Dla przykładu wyżej daje to jednoznacznie wariant A. **Nie szukamy innego
+Zewnętrzna pętla to poprawka z v7 i jest **konieczna**, bo jedno przejście jest
+deterministyczne, ale **nie idempotentne**. Zmierzone:
+
+```text
+wejście:  2^52,  2^52+1,  2^52+3        (wszystkie dokładnie reprezentowalne)
+
+przebieg 1:  2^52 + (2^52+1) = 2^53+1   NIEdokładne  -> flush 2^52
+             (2^52+1) + (2^52+3)        dokładne     -> 2^53+4
+             wynik:  [2^52,  2^53+4]
+
+przebieg 2:  2^52 + (2^53+4)            DOKŁADNE     -> jedna stała
+```
+
+Bez powtarzania `normalize(normalize(E))` różniłoby się od `normalize(E)`, czyli
+poległby `IsIdempotent` — test pilnujący całej tezy etapu.
+
+**Terminacja jest trywialna:** każde udane połączenie zmniejsza liczbę stałych
+o jeden, więc pętla wykona najwyżej `n-1` obrotów. Reducer ma więc własny, mały
+punkt stały, dowodzony bez odwołania do miary z F3.1 i bez mieszania go z
+silnikiem przepisywania.
+
+Dla przykładu z `1, 2, 2^53` daje to jednoznacznie wariant A. **Nie szukamy innego
 partnera** dla stałej, która się nie złączyła — i to jest część kontraktu, nie
 uproszczenie implementacji: „spróbujmy złożyć co się da" jest algorytmem
 zachłannym o wyniku zależnym od kolejności prób, czyli dokładnie tym, czego ten
@@ -481,6 +552,48 @@ Ten sam kształt obowiązuje dla iloczynu, z `multiply`.
 Ostatnie zdanie jest tym, co czyni dowód z 6.3 prawdziwym bez zastrzeżeń —
 a wcześniejsze wersje miały w tym miejscu wyjątek, który unieważniał całą tezę.
 
+### 3.2.4 Czy zwijanie stałych jest w ogóle warte tej złożoności?
+
+Pytanie z review, postawione jako ważniejsze od trzech blockerów — i słusznie,
+bo zwijanie zjada większość tego rozdziału: 2Sum, kryterium bitowe, harmonogram,
+powtarzanie do punktu stałego, ochrona reszt przed fabryką. Pięć mechanizmów po
+to, żeby — według pomiaru z 1 — zwinąć stałe w **jednym łańcuchu sumowym w całym
+korpusie dwóch robotów**.
+
+Sprawdziłem więc wariant „bez zwijania międzyłańcuchowego": fabryka zachowuje
+swoje lokalne zwijanie, kanonizator tylko sortuje rozproszone stałe i nie próbuje
+ich łączyć. **Ten wariant przewraca tezę etapu**, i to na najprostszym możliwym
+przykładzie:
+
+```text
+wejście A:   (3 + 4) + x        fabryka zwija przy budowie  ->  7 + x
+wejście B:    3 + x  + 4        stałe rozdzielone symbolem   ->  Add(Add(3,x),4)
+
+A i B są AC-równoważne.
+
+bez zwijania międzyłańcuchowego:
+    normalize(A) = 7 + x
+    normalize(B) = 3 + (4 + x)          DWIE RÓŻNE POSTACIE NORMALNE
+```
+
+Powodem jest to, że **fabryka i tak zwija**, tylko lokalnie i zależnie od tego, co
+akurat stało obok siebie w chwili budowy. Kanonizator, który nie zwija, nie jest
+więc „bardziej zachowawczy" — jest **niespójny z materiałem, który dostaje**.
+Żeby dwa AC-równoważne wejścia dały jedną postać, kanonizator musi dokończyć
+to, co fabryka zaczęła przypadkowo.
+
+**Odpowiedź: zwijanie jest konieczne** — nie dla oszczędności węzłów, tylko dla
+samej własności postaci normalnej. Złożoność jest ceną tej własności, a nie
+optymalizacją, którą można wyciąć.
+
+Co **można** wyciąć, gdyby ten rozdział okazał się w praktyce kłopotliwy: zwijanie
+**iloczynów**. Łańcuchy iloczynowe mają w korpusie zero przypadków z więcej niż
+jedną stałą (1), a ten sam kontrprzykład dla mnożenia — `2 * x * 3` wobec
+`(2*3) * x` — wymagałby świadomej rezygnacji z postaci normalnej dla iloczynów.
+**Nie rekomenduję tego**, ale odnotowuję, bo to jedyne miejsce, w którym da się
+kupić prostotę za jasno nazwaną cenę, i lepiej mieć to policzone niż odkrywać
+przy implementacji.
+
 ### 3.3 Znak: konwencja przez **parzystość**, nie przez wybór czynnika
 
 Drugi blocker. v2 zostawiała w kanonizatorze transformację
@@ -506,9 +619,39 @@ dla każdego czynnika łańcucha:
 posortuj czynniki JUŻ BEZ znaków
 zredukuj stałe (3.2), odrzuć neutralną 1
 odbuduj iloczyn zbalansowany
-parity parzyste   -> zostaw
-parity nieparzyste -> jeden Negate NA ZEWNĄTRZ
+parity parzyste    -> zostaw
+parity nieparzyste -> canonicalNegate(wynik)     <-- NIE factory.negate
 ```
+
+**Ostatni wiersz jest poprawką z v7** i bez niego konwencja łamie własny
+postcondition z 3.4. Kontrprzykład z review:
+
+```text
+(-1) * (a + b)
+
+   stała -1  ->  parity ^= 1,  czynnik := 1
+   1 jest neutralne  ->  wypada
+   zostaje jeden czynnik:  a + b
+   odbudowa iloczynu z jednym czynnikiem  ->  a + b
+
+   parity nieparzyste  ->  factory.negate(a + b)  =  Negate(Add(...))
+                                                     ^^^ ZAKAZANE przez 3.4
+```
+
+A ponieważ `canonicalize(-(a+b))` daje `(-a) + (-b)`, dostajemy
+`canonicalize(canonicalize(E)) ≠ canonicalize(E)` — znowu złamana idempotencja,
+tym razem inną drogą niż w 3.2.2.
+
+`canonicalNegate` rozwiązuje to **z definicji**, bo nadaje znak zgodnie
+z konwencją zamiast owijać węzeł: sumie wpuszcza znak do składników przez kolektor
+z 3.4, iloczynowi i ilorazowi przełącza parzystość, stałej zmienia wartość,
+`Negate(x)` sprowadza do `x`. To ta sama funkcja, której kolektor używa do
+nadawania biegunowości — więc nie dochodzi nowy mechanizm, tylko przestaje być
+omijany w jednym miejscu.
+
+Ta sama poprawka obowiązuje dla ilorazu: jeśli po odrzuceniu neutralnego
+mianownika `x / 1` wynik zapadnie się do sumy, znak musi wejść przez
+`canonicalNegate`, a nie owinąć ją w `Negate`.
 
 Drugi wiersz jest poprawką z review i bez niego konwencja **nie działa**:
 fabryka buduje `(-2) * x` jako `Multiply(Constant{-2}, x)`, a nie
@@ -1228,10 +1371,14 @@ AC-normalizacja
                                             zestaw reszt.  NIE „jedna stała" (3.2)
   ReducesOnlyExactlyRepresentableSums    3 + x + 4 -> 7 + x   ŁĄCZY
                                          q + 1e16 + 1 + (-1e16)  NIE ŁĄCZY (3.2)
-  RejectsUnderflowedProductAsInexact     denorm_min * 0,5 — fma mówi „0", strażnik
-                                         na zakres normalny odrzuca (3.2.1)
+  RejectsUnderflowedProductAsInexact     denorm_min * 0,5 — fma mówi „0", odrzucone
+  RejectsProductWhoseRoundingErrorUnderflows
+                                         nextafter(2^-511)^2 — wynik NORMALNY,
+                                         fma mówi „0", kryterium bitowe odrzuca (3.2.1)
   ExactReductionHasUniquePairingSchedule stałe 1, 2, 2^53 -> reszty [3, 2^53],
                                          nigdy [1, 2^53+2]  (3.2.2)
+  ReducesConstantsToAFixedPoint          2^52, 2^52+1, 2^52+3 -> JEDNA stała;
+                                         jedno przejście zostawiłoby dwie (3.2.2)
   PreservesZeroSetOfADenominator         ten sam mianownik: 1/(q+1e16+1+(-1e16))
                                          zero pozostaje w q = -1, nie przenosi się na 0
   KeepsUnjoinableConstantsApartInRebuild fabryka nie dostaje dwóch stałych naraz (3.2.3)
@@ -1247,6 +1394,8 @@ AC-normalizacja
   FlattensOperatorRevealedByChildNormalization
                                          a + -(-(b+c))  ->  PŁASKIE [a,b,c] (3.4)
   NormalizesSignThroughDivision          -(a/b), (-a)/b, a/(-b) -> JEDEN DAG (3.3)
+  NormalizesMinusOneTimesSum             (-1)*(a+b), -(a+b), (-a)+(-b)
+                                         -> jedna postać, BEZ Negate nad sumą (3.3)
   RemovesDoubleNegation                  -(-x) -> x  w KANONIZATORZE, nie regułą
   IsIdempotent                           normalize(normalize(E)) sameNode normalize(E)
 
@@ -1320,7 +1469,10 @@ w F3.1 6.7, gdzie deklarowany gate dwa razy okazał się przewidywaniem.
 | Redukcja stałych w kolejności wejściowej daje różne postacie | **realne, zmierzone, złapane w review** | Stałe sortowane **przed** redukcją, składane zbalansowanie (3.2); własny test na kontrprzykładzie |
 | Obietnica „wszystkie stałe → jedna" nie do dotrzymania | **realne, zmierzone** | Fabryka odmawia zwinięcia przy przepełnieniu; kontrakt ogranicza obietnicę wprost (3.2) |
 | Redukcja stałych zmienia `zeroSet` wyrażenia | **realne, zmierzone, złapane w review** | Łączenie **wyłącznie dokładne** (3.2); dowód z 6.3 nie ma już wyjątku |
-| `fma` ogłasza dokładnym iloczyn, który wpadł w underflow | **realne, zmierzone, złapane w review** | Strażnik na zakres normalny przed użyciem reszty; kierunek błędu świadomie konserwatywny (3.2.1) |
+| `fma` ogłasza dokładnym iloczyn, którego błąd sam wpadł w underflow | **realne, zmierzone, złapane w review — dwa razy** | Kryterium **bitowe** na mantysach zamiast reszty; kierunek błędu świadomie konserwatywny (3.2.1) |
+| Reducer deterministyczny, ale nie idempotentny | **realne, zmierzone, złapane w review** | Powtarzanie do punktu stałego, terminacja przez malejącą liczbę stałych (3.2.2) |
+| Końcowy znak owija sumę w `Negate` | **realne, złapane w review** | `canonicalNegate` zamiast `factory.negate` (3.3), własny test |
+| Usunięcie zwijania stałych jako „uproszczenie" | **realne, kuszące** | Przewraca postać normalną: `(3+4)+x` i `3+x+4` dałyby dwa wyniki (3.2.4) |
 | Dwa dopuszczalne parowania stałych dają dwie postacie | **realne, zmierzone, złapane w review** | Harmonogram od lewej z akumulatorem, bez szukania partnera — część kontraktu (3.2.2) |
 | Fabryka zwija stałe, których kanonizator świadomie nie połączył | **realne, nieoczywiste** | Stałe doklejane na zewnątrz zbalansowanego drzewa, nigdy dwie w jednym `add` (3.2.3) |
 | Kanonizacja dziecka odsłania operator AC już po zebraniu łańcucha | **realne, złapane w review** | Kolektor spłaszcza wynik (splice), terminacja oparta na 5.6 (3.4) |
