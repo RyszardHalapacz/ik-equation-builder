@@ -1,6 +1,20 @@
 # Proposal: postać kanoniczna — F3.2, architektura
 
-**Etap:** F3.2 · **v5 — CZEKA NA REVIEW** · 2026-08-22 · część 1 z 2
+**Etap:** F3.2 · **v6 — CZEKA NA REVIEW** · 2026-08-22 · część 1 z 2
+
+> **v6, po piątym review.** Dwa blockery, oba w mechanizmie wprowadzonym w v5 —
+> czyli w tym, który miał uratować gwarancję dokładności:
+>
+> 1. **`fma(a,b,-p) == 0` nie dowodzi dokładności mnożenia.** Zmierzone:
+>    `denorm_min * 0.5` daje `p = 0` i resztę `fma = 0`, choć wynik matematyczny
+>    to `2^-1075` — underflow przechodzi jako „dokładny". Test dostaje strażnika
+>    na zakres normalny (3.2.1).
+> 2. **Brak harmonogramu redukcji — dwa dopuszczalne parowania, dwie postacie.**
+>    Zmierzone dla `1, 2, 2^53`: `[3, 2^53]` albo `[1, 2^53+2]`, oba złożone
+>    wyłącznie z połączeń dokładnych. Harmonogram jest teraz częścią kontraktu
+>    (3.2.2).
+> 3. Poprawiony test, który po v5 obiecywał „jedną stałą", oraz postcondition
+>    z 3.4 po rozszerzeniu konwencji znaku na `Divide`.
 
 > **v5, po czwartym review.** Dwa blockery, oba w **domknięciu transformacji** —
 > struktura klas jest już dobra, brakowało precyzji w tym, co jeden przebieg
@@ -18,9 +32,9 @@
 > 4. Zakres normalizacji znaku **rozszerzony na `Divide`** i powiedziany wprost,
 >    żeby `F3.5` nie zostało z „znak jednoznaczny, ale nie przy dzieleniu" (3.3).
 
-> **Stan tego dokumentu:** wersja **v5**, oddana do review, **werdyktu jeszcze
+> **Stan tego dokumentu:** wersja **v6**, oddana do review, **werdyktu jeszcze
 > nie ma**. Nic z F3.2 nie jest zaimplementowane i nie powinno być — kod w repo
-> kończy się na F3.1. Następny krok to **decyzja recenzenta o v4**, nie pisanie
+> kończy się na F3.1. Następny krok to **decyzja recenzenta o v6**, nie pisanie
 > kodu. Po APPROVED: proposal implementacyjny → review → kod → oba buildy
 > zielone → aktualizacja dokumentów → `proposal/done/`.
 
@@ -233,10 +247,12 @@ canonicalize(E), dla węzła złożonego:
         źródła znaku: Negate ORAZ Constant(c < 0)
   3. rozdziel na STAŁE i pozostałe
   4. posortuj stałe porządkiem z 5.2                          <-- najpierw kolejność
-  5. redukuj sąsiednie stałe TYLKO gdy połączenie jest DOKŁADNE  <-- 3.2, 2Sum / fma
+  5. redukuj stałe OD LEWEJ z akumulatorem, tylko połączenia DOKŁADNE
+        dodawanie: 2Sum;  mnożenie: fma + strażnik zakresu   <-- 3.2.1
+        bez szukania partnera dla nieprzyłączonej stałej      <-- 3.2.2
   6. odrzuć stałą neutralną, jeśli taka wyszła
   7. posortuj pozostałe składniki porządkiem z 5.2
-  8. odbuduj: balanced(niestałe), stałe doklejone NA ZEWNĄTRZ   <-- 5.5, 3.2.1
+  8. odbuduj: balanced(niestałe), stałe doklejone NA ZEWNĄTRZ   <-- 5.5, 3.2.3
         żadne wywołanie add/multiply nie dostaje dwóch stałych
   9. parzystość nieparzysta: JEDEN Negate na zewnątrz         <-- 3.3
  10. jeśli nic się nie zmieniło: zwróć ORYGINALNY Expression  <-- 5.6
@@ -310,34 +326,130 @@ stałe przez `double`" **nie mogą obowiązywać naraz**. Jedna z nich musi ust�
 stałe są ŁĄCZONE TYLKO WTEDY, GDY WYNIK JEST DOKŁADNY
 ```
 
-Kryterium nie jest heurystyką — jest sprawdzalne w kilku działaniach:
+### 3.2.1 Kryterium dokładności — i dlaczego dodawanie jest łatwiejsze niż mnożenie
+
+**Dodawanie: 2Sum, bez zastrzeżeń.**
 
 ```cpp
-// 2Sum: dokladny blad zaokraglenia sumy. err == 0  <=>  a+b bylo dokladne.
+// Exact rounding error of a + b. err == 0  <=>  the sum was exact.
+//
+// Sound for every finite pair, subnormals included: addition whose result is
+// subnormal is exact under gradual underflow, so there is no hidden case here.
+// Overflow is the only breakage and ExpressionFactory declines to fold a
+// non-finite result anyway.
 double addError(double a, double b)
 {
     const double s = a + b;
     const double bb = s - a;
     return (a - (s - bb)) + (b - bb);
 }
+```
 
-// dla iloczynu to samo daje FMA:  err = fma(a, b, -(a*b))
+**Mnożenie: `fma` sama nie wystarczy** — blocker z review, który zmierzyłem,
+zanim go zapisałem:
+
+```text
+a = denorm_min = 4,9406564584124654e-324      (2^-1074)
+b = 0,5
+
+p = a * b        = 0                  bo 2^-1075 nie jest reprezentowalne
+fma(a, b, -p)    = 0                  „dokładne"  <-- NIEPRAWDA
+matematycznie      a*b = 2^-1075 != 0             <-- underflow
+
+isnormal(p) = fałsz
+```
+
+`fma` liczy `a*b + c` z jednym zaokrągleniem, więc reszta jest wiarygodna tylko
+wtedy, gdy sam iloczyn **nie wpadł w underflow**. Test musi więc mieć strażnika
+na zakres:
+
+```cpp
+// Sound, and deliberately CONSERVATIVE: it declines some products that are in
+// fact exact (those whose result is subnormal) rather than ever calling a
+// rounded product exact. Getting this backwards would silently break the
+// guarantee in 6.3, and a missed fold costs nothing but a slightly longer tree.
+bool multipliesExactly(double a, double b)
+{
+    const double p = a * b;
+
+    if (p == 0.0)
+        return a == 0.0 || b == 0.0;      // otherwise the product underflowed
+
+    if (!std::isnormal(p))
+        return false;                      // subnormal result: fma residual is
+                                           // no longer a reliable witness
+
+    return std::fma(a, b, -p) == 0.0;
+}
 ```
 
 Zmierzone na przykładach z tego dokumentu:
 
 ```text
-1 + 1e16       err = 1     ZAOKRĄGLONE  -> nie łączymy
-3 + 4          err = 0     dokładne     -> łączymy
-0.5 + 0.25     err = 0     dokładne     -> łączymy
-1e200 * 3      err = 0     dokładne     -> łączymy
+1 + 1e16              err = 1     ZAOKRĄGLONE  -> nie łączymy
+3 + 4                 err = 0     dokładne     -> łączymy
+0,5 + 0,25            err = 0     dokładne     -> łączymy
+1e200 * 3             err = 0     dokładne     -> łączymy
+denorm_min * 0,5      p = 0, a != 0, b != 0    -> ODRZUCONE przez strażnika
 ```
+
+Wybrałem wariant konserwatywny zamiast rozkładania `binary64` na mantysę
+i wykładnik, bo review nazwało właściwy kierunek błędu: **lepiej nie zwinąć
+czegoś, co dałoby się zwinąć, niż ogłosić zaokrąglone mnożenie dokładnym.**
+Odrzucane są wyłącznie iloczyny o wyniku subnormalnym — na materiale tego
+projektu nie występują wcale, a gdyby wystąpiły, kosztem jest jeden węzeł więcej
+w drzewie, nie błąd.
 
 Dzięki temu `3 + x + 4 → 7 + x` działa jak dotąd — czyli w każdym realnym
 przypadku — a patologiczny `1e16 + 1` zostaje nietknięty i **funkcja się nie
 zmienia**.
 
-### 3.2.1 Pułapka: sama rezygnacja ze zwijania **nie wystarczy**
+### 3.2.2 Harmonogram redukcji — też musi być częścią kontraktu
+
+Drugi blocker z review i ten sam rodzaj przeoczenia, co przy kształcie drzewa
+w 5.5: „redukuj sąsiednie stałe, gdy dokładnie" **nie wyznacza jednego wyniku**,
+bo nie mówi, **które** sąsiednie i w jakiej kolejności. Zmierzone na
+posortowanych `1, 2, 2^53`:
+
+```text
+wariant A:   (1 + 2) = 3        dokładne
+             3 + 2^53           NIEdokładne     ->  reszty  [3, 2^53]
+
+wariant B:   (2 + 2^53)         dokładne, bo ulp przy 2^53 wynosi 2
+             1 + (2^53 + 2)     NIEdokładne     ->  reszty  [1, 2^53+2]
+```
+
+Oba używają **wyłącznie połączeń dokładnych**, oba zachowują wartość
+algebraiczną, oba startują z tego samego posortowanego wejścia — i dają **różne
+postacie**. Bez ustalonego harmonogramu teza etapu nie zachodzi.
+
+**Rozstrzygnięcie: jedno przejście od lewej z akumulatorem, bez szukania
+partnera.**
+
+```text
+acc := c[0]
+dla kolejnych c[i]:
+    jeśli połączenie acc z c[i] jest DOKŁADNE:  acc := acc (op) c[i]
+    w przeciwnym razie:                          zapisz acc do reszt;  acc := c[i]
+na koniec: zapisz acc do reszt
+```
+
+Dla przykładu wyżej daje to jednoznacznie wariant A. **Nie szukamy innego
+partnera** dla stałej, która się nie złączyła — i to jest część kontraktu, nie
+uproszczenie implementacji: „spróbujmy złożyć co się da" jest algorytmem
+zachłannym o wyniku zależnym od kolejności prób, czyli dokładnie tym, czego ten
+etap ma nie mieć.
+
+Wybór „od lewej" zamiast harmonogramu zbalansowanego wymaga jednego zdania
+uzasadnienia, bo 5.5 wybrało zbalansowany kształt **drzewa**: te dwie decyzje
+dotyczą różnych rzeczy. Zbalansowane sumowanie wybrano tam dla **akumulacji
+błędu** — a tutaj błędu **nie ma żadnego**, bo każde połączenie jest albo dokładne,
+albo odrzucone. Zostaje więc kryterium prostoty i dowodliwości, a harmonogram
+zbalansowany z odmówionymi węzłami nie ma naturalnej definicji: nie wiadomo, co
+zrobić z parą, która się nie złączyła, gdy jej rodzic ma już trzy elementy po
+jednej stronie.
+
+### 3.2.3 Pułapka: sama rezygnacja ze zwijania **nie wystarczy**
 
 Rzecz, której nie widać z opisu algorytmu: gdy zostają dwie stałe, których nie
 wolno połączyć, **zrobi to za nas fabryka**. `ExpressionFactory::add(c1, c2)` zwija
@@ -537,9 +649,15 @@ które to zmienią, i lepiej, żeby kontrakt był gotowy niż łatany.
 
 **Postcondition**, mocniejszy niż w v3 i wart wypowiedzenia osobno:
 
-> Wyjście AC-normalne nie zawiera węzła `Subtract`, a `Negate` występuje
-> **wyłącznie** jako znak pojedynczego składnika sumy albo jako jeden węzeł na
-> zewnątrz iloczynu — nigdy bezpośrednio nad sumą.
+> Wyjście AC-normalne **nie zawiera węzła `Subtract`**, a `Negate` występuje
+> wyłącznie jako:
+>
+> - znak pojedynczego składnika sumy,
+> - jeden zewnętrzny znak iloczynu,
+> - jeden zewnętrzny znak ilorazu   *(doszło z rozszerzeniem konwencji na
+>   `Divide`, 3.3)*,
+>
+> i **nigdy bezpośrednio nad sumą**.
 
 `F3.3` i `F3.5` dostają dzięki temu język węższy o jeden rodzaj węzła i o całą
 klasę wariantów znaku. Zamiana `a - b` na `a + (-b)` jest przy tym **dokładna
@@ -1104,13 +1222,19 @@ AC-normalizacja
   FlattensNestedAssociativeChains        ((a+b)+c) i (a+(b+c)) -> ta sama postać
   SortsSumsAndProducts
   ReducesConstantsExplicitly             3 + x + 4 -> 7 + x, niezależnie od kształtu
-  ReducesConstantsInCanonicalOrder       1e16 + x + (-1e16) + y + 1  i przestawione
-                                         -> TA SAMA stała  (3.2, kontrprzykład z review)
+  CanonicalizesInexactConstantsIdentically
+                                         1e16 + x + (-1e16) + y + 1  i przestawione
+                                         -> structurallyEqual, ten sam UPORZĄDKOWANY
+                                            zestaw reszt.  NIE „jedna stała" (3.2)
   ReducesOnlyExactlyRepresentableSums    3 + x + 4 -> 7 + x   ŁĄCZY
                                          q + 1e16 + 1 + (-1e16)  NIE ŁĄCZY (3.2)
+  RejectsUnderflowedProductAsInexact     denorm_min * 0,5 — fma mówi „0", strażnik
+                                         na zakres normalny odrzuca (3.2.1)
+  ExactReductionHasUniquePairingSchedule stałe 1, 2, 2^53 -> reszty [3, 2^53],
+                                         nigdy [1, 2^53+2]  (3.2.2)
   PreservesZeroSetOfADenominator         ten sam mianownik: 1/(q+1e16+1+(-1e16))
                                          zero pozostaje w q = -1, nie przenosi się na 0
-  KeepsUnjoinableConstantsApartInRebuild fabryka nie dostaje dwóch stałych naraz (3.2.1)
+  KeepsUnjoinableConstantsApartInRebuild fabryka nie dostaje dwóch stałych naraz (3.2.3)
   DropsNeutralConstant                   0 + x -> x  po redukcji, nie przez fabrykę
   RebuildsInBalancedShape                jednoznaczny kształt (5.5), nie tylko kolejność
   NormalizesSignByParity                 -(a*b), (-a)*b, a*(-b) -> JEDEN DAG (3.3)
@@ -1158,10 +1282,20 @@ porządki dają „jakąś postać normalną" i różnica jest niewidoczna.
 przeszedłby dla trzech różnych drzew, czyli dla czegoś, co **nie jest** postacią
 normalną.
 
-`ReducesConstantsInCanonicalOrder` jest wprost kontrprzykładem z review, zapisanym
-jako test: dwa AC-równoważne wejścia różniące się **wyłącznie kolejnością stałych**
-muszą dać tę samą postać. Bez niego błąd z 3.2 przechodzi niezauważony, bo
-na materiale repo stałych w sumach prawie nie ma.
+`CanonicalizesInexactConstantsIdentically` to kontrprzykład z review zapisany jako
+test — ale z **poprawioną tezą**, i to jest zmiana z v6. v5 kazała wymagać „tej
+samej stałej", co po przejściu na łączenie wyłącznie dokładne jest już
+**nieprawdą**: `1e16 + 1` się nie złączy, więc poprawny wynik zawiera kilka reszt.
+Wymagamy więc tego, co faktycznie obiecujemy: **jednej postaci** i **tego samego
+uporządkowanego zestawu reszt**.
+
+`ExactReductionHasUniquePairingSchedule` pilnuje 3.2.2 i istnieje po to, żeby
+implementator nie zamienił harmonogramu na „spróbujmy złożyć co się da" — wersja
+zachłanna przeszłaby każdy inny test w tym pliku.
+
+`RejectsUnderflowedProductAsInexact` jest jedynym testem, który łapi błąd
+z 3.2.1, i bez niego wersja z samą `fma` wygląda poprawnie na wszystkich
+pozostałych przypadkach.
 
 `SharesOneSessionAcrossTheSystem` jest jedynym testem, który wymaga
 `EquationSimplifier` — i głównym powodem, dla którego powstaje już teraz (13).
@@ -1185,8 +1319,10 @@ w F3.1 6.7, gdzie deklarowany gate dwa razy okazał się przewidywaniem.
 | „Postać normalna" bez zdefiniowanego kształtu drzewa | **realne, złapane w review** | Zbalansowane drzewo, deterministycznie (5.5) |
 | Redukcja stałych w kolejności wejściowej daje różne postacie | **realne, zmierzone, złapane w review** | Stałe sortowane **przed** redukcją, składane zbalansowanie (3.2); własny test na kontrprzykładzie |
 | Obietnica „wszystkie stałe → jedna" nie do dotrzymania | **realne, zmierzone** | Fabryka odmawia zwinięcia przy przepełnieniu; kontrakt ogranicza obietnicę wprost (3.2) |
-| Redukcja stałych zmienia `zeroSet` wyrażenia | **realne, zmierzone, złapane w review** | Łączenie **wyłącznie dokładne**, sprawdzane 2Sum/`fma` (3.2); dowód z 6.3 nie ma już wyjątku |
-| Fabryka zwija stałe, których kanonizator świadomie nie połączył | **realne, nieoczywiste** | Stałe doklejane na zewnątrz zbalansowanego drzewa, nigdy dwie w jednym `add` (3.2.1) |
+| Redukcja stałych zmienia `zeroSet` wyrażenia | **realne, zmierzone, złapane w review** | Łączenie **wyłącznie dokładne** (3.2); dowód z 6.3 nie ma już wyjątku |
+| `fma` ogłasza dokładnym iloczyn, który wpadł w underflow | **realne, zmierzone, złapane w review** | Strażnik na zakres normalny przed użyciem reszty; kierunek błędu świadomie konserwatywny (3.2.1) |
+| Dwa dopuszczalne parowania stałych dają dwie postacie | **realne, zmierzone, złapane w review** | Harmonogram od lewej z akumulatorem, bez szukania partnera — część kontraktu (3.2.2) |
+| Fabryka zwija stałe, których kanonizator świadomie nie połączył | **realne, nieoczywiste** | Stałe doklejane na zewnątrz zbalansowanego drzewa, nigdy dwie w jednym `add` (3.2.3) |
 | Kanonizacja dziecka odsłania operator AC już po zebraniu łańcucha | **realne, złapane w review** | Kolektor spłaszcza wynik (splice), terminacja oparta na 5.6 (3.4) |
 | `-(a+b)` obok `0-(a+b)` jako dwie postacie | **realne, złapane w review** | Zejście przez `Negate` w kolektorze (3.4), własny test |
 | `F3.5` zakłada globalną jednoznaczność znaku | realne | Zakres konwencji wypisany wprost, z `Divide` w środku i z tym, co zostaje poza (3.3) |
