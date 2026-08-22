@@ -1257,8 +1257,8 @@ done/F2.7-facade-integration/
 --- w toku, w proposal/ ---
 
 F3.1-rewrite-engine/
-    proposal-rewrite-engine-semantics-architecture.md       ◀ v6, do review
-    proposal-rewrite-engine-semantics-implementation.md     po review
+    proposal-rewrite-engine-semantics-architecture.md       ◀ v6, ZATWIERDZONY
+    proposal-rewrite-engine-semantics-implementation.md     ◀ v1, do review
     implementation + tests
 ```
 
