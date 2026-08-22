@@ -1,6 +1,23 @@
 # Proposal: postać kanoniczna — F3.2, architektura
 
-**Etap:** F3.2 · **v3 — do review** · 2026-08-22 · część 1 z 2
+**Etap:** F3.2 · **v4 — do review** · 2026-08-22 · część 1 z 2
+
+> **v4, po trzecim review.** Trzy blockery, wszystkie z próby złamania definicji:
+>
+> 1. **§6 mieszało dziedzinę algebraiczną z określonością w `double`.** Zmierzone:
+>    `1/((1e16 + q) + (-1e16))` przy `q = 1` daje `DivisionByZero`, a po
+>    normalizacji — wartość. Dokument rozdziela teraz **dwa kontrakty** i wybiera
+>    semantykę algebraiczną, z uzasadnieniem mocniejszym, niż się spodziewałem:
+>    przy `q = 3` oryginał liczy się na **4** (6).
+> 2. **Parzystość znaku nie widziała ujemnych stałych.** `(-2)*x` niesie
+>    `Constant{-2}`, nie `Negate(Constant{2})`, więc wychodziło obok `-(2*x)`
+>    jako druga postać (3.3).
+> 3. **`Subtract` nie był domknięty dla zagnieżdzeń.** `a - (b - c)`
+>    i `(a - b) + c` dawały różne postacie. Wprowadzony **kolektor ze znakiem**
+>    (3.4).
+> 4. Dopisany kontrakt implementacyjny: **zachowanie tożsamości węzła także
+>    w świeżej sesji** (5.6), oraz „wszystkie pola niewyrażeniowe zachowane
+>    dokładnie" dla `EquationSimplifier` (13).
 
 > **v3, po drugim review.** Dwa blockery i jedno rozstrzygnięcie — wszystkie
 > dotyczą tego samego: **v2 nazywała „postacią normalną" coś, co nie było
@@ -286,16 +303,42 @@ Reguła v2 sprowadza pierwszy do drugiego i **nie dotyka trzeciego**. Gorzej:
 a transformacja stała **po** sortowaniu, czyli jeden przebieg mógł zostawić
 postać wymagającą kolejnego. `IsIdempotent` z 11 poległby na tym.
 
-**Poprawka: znak wychodzi z iloczynu w całości, przez parzystość** — kroki 3 i 9
-z 3.1:
+**Poprawka: znak wychodzi z iloczynu w całości, przez parzystość** — i liczy się
+z **dwóch** źródeł, nie z jednego:
 
 ```text
-zdejmij Negate ze WSZYSTKICH czynników bezpośrednich, licząc ile ich było
+dla każdego czynnika łańcucha:
+    Negate(x)                 ->  parity ^= 1,  czynnik := x
+    Constant(c), c < 0        ->  parity ^= 1,  czynnik := Constant(-c)
 posortuj czynniki JUŻ BEZ znaków
-odbuduj iloczyn
-parzysta liczba minusów  -> zostaw
-nieparzysta               -> jeden Negate NA ZEWNĄTRZ
+zredukuj stałe (3.2), odrzuć neutralną 1
+odbuduj iloczyn zbalansowany
+parity parzyste   -> zostaw
+parity nieparzyste -> jeden Negate NA ZEWNĄTRZ
 ```
+
+Drugi wiersz jest poprawką z review i bez niego konwencja **nie działa**:
+fabryka buduje `(-2) * x` jako `Multiply(Constant{-2}, x)`, a nie
+`Multiply(Negate(Constant{2}), x)`, więc parzystość liczona wyłącznie po węzłach
+`Negate` w ogóle go nie widzi:
+
+```text
+(-2) * x     ->  bez poprawki zostaje (-2)*x
+2 * (-x)     ->  -(2*x)
+                 dwie postacie jednego wyrażenia — dokładnie to, czego etap ma nie robić
+```
+
+Z poprawką obie dają `-(2*x)`. Przypadek skrajny wychodzi przy okazji i też jest
+wart testu:
+
+```text
+(-1) * x   ->  parity nieparzyste, stała 1 odrzucona jako neutralna  ->  -x
+```
+
+Jedna subtelność do zapisania w kodzie: warunek to `c < 0`, więc **`-0.0` nie
+przełącza parzystości** — `-0.0 < 0.0` jest fałszem w IEEE-754. To jest zachowanie
+pożądane: `-0.0` i `0.0` są tą samą wartością, a `isZero` w tym projekcie i tak
+traktuje je jednakowo.
 
 Wynik:
 
@@ -316,13 +359,47 @@ To samo rozumowanie, co w 3.3, i też z review. v2 wymieniała normalizację
 odejmowania jako krok **po** odbudowie — czyli tworzyła świeży `Add`, który nie
 przeszedł ani spłaszczenia, ani sortowania, ani zbalansowanej odbudowy.
 
-Poprawnie `Subtract` znika **przy zbieraniu składników**, zanim cokolwiek się
-posortuje:
+v3 pisała to jako:
 
 ```text
 canonicalize(Subtract(a, b))
     = canonicalizeAddChain( canonicalize(a), negated(canonicalize(b)) )
 ```
+
+i **to nadal nie domyka zagnieżdżeń**, co review pokazało wprost:
+
+```text
+a - (b - c)      ->   a + (-(b + (-c)))      minus został NA ZEWNĄTRZ sumy
+(a - b) + c      ->   a + (-b) + c           płasko
+
+to samo wyrażenie, dwie różne postacie
+```
+
+**Poprawka: kolektor sumy niesie znak.** Zbieranie składników jest sparametryzowane
+biegunowością i schodzi przez `Subtract` bez budowania czegokolwiek po drodze:
+
+```text
+collectAdd(expr, sign):
+
+    Add(a, b)        ->  collectAdd(a,  sign);  collectAdd(b,  sign)
+    Subtract(a, b)   ->  collectAdd(a,  sign);  collectAdd(b, -sign)
+
+    cokolwiek innego ->  term := canonicalize(expr)
+                         jeśli sign < 0:  term := canonicalNegate(term)
+                         dopisz term do listy
+```
+
+Wtedy oba wyrażenia dochodzą do tej samej płaskiej listy:
+
+```text
+a - (b - c)   ->   +a, -b, +c
+(a - b) + c   ->   +a, -b, +c
+```
+
+`canonicalNegate` to nie `factory.negate` — to nadanie znaku **zgodnie
+z konwencją z 3.3**: stałej zmienia wartość na przeciwną, iloczynowi przełącza
+parzystość, `Negate(x)` sprowadza do `x`. Dzięki temu `-(-x)` znika tu **z
+definicji**, a nie przez osobną regułę — co domyka argument z 4 i 8.
 
 Daje to postcondition, który warto wypowiedzieć osobno, bo jest mocny i tani:
 
@@ -529,6 +606,42 @@ razem.
 
 ---
 
+### 5.6 Tożsamość węzła — wymóg implementacyjny, nie oczekiwanie testu
+
+v3 miała to jako dwa testy (`KeepsNodeIdentityWhenAlreadyNormal`,
+`IsIdempotent`). Review słusznie zauważyło, że to za mało: najprostsza
+implementacja — `flatten → sort → rebuild` — buduje **za każdym razem nowy,
+strukturalnie identyczny DAG**, a memo tego nie ratuje, bo świeża sesja ma puste
+memo.
+
+Wymóg, wprost:
+
+> Jeśli wejście jest już AC-normalne, `canonicalize` zwraca **oryginalny
+> `Expression`** — także w sesji, która widzi je pierwszy raz.
+
+```cpp
+CanonicalizationSession fresh{factory};
+sameNode(fresh.canonicalize(alreadyNormal), alreadyNormal);   // MUSI być true
+```
+
+Implementacja jest tania i nie wymaga śledzenia „czy coś się zmieniło" przez
+wszystkie dziewięć kroków z 3.1:
+
+```cpp
+Expression rebuilt = /* ... pełny przebieg ... */;
+return structurallyEqual(rebuilt, input) ? input : rebuilt;
+```
+
+Porównanie jest tu tanie, bo dzieci wyniku to **te same węzły** co dzieci
+wejścia (memo), a `structurallyEqual` skraca na `sameNode` w pierwszej linijce.
+
+To ta sama zasada, którą F3.1 zapisało w 6.3 i z tego samego powodu: bez niej
+współdzielenie ginie przy pierwszym przebiegu, który niczego nie zmienia — a dla
+kanonizatora to przypadek **typowy**, nie brzegowy, bo drugie wywołanie na tym
+samym układzie równań nie ma już czego porządkować.
+
+---
+
 ## 6. Bezpieczeństwo dziedziny — i błąd, który v1 tu powtórzyła
 
 v1 pisała:
@@ -563,23 +676,88 @@ kanonizator.
 Fakt, że popełniłem to drugi raz, jednym etapem później, jest sam w sobie
 argumentem, żeby to zdanie stało w obu dokumentach, a nie tylko w tamtym.
 
-### 6.1 Rozumowanie, które jest poprawne
+### 6.1 Dwie różne rzeczy nazywane „dziedziną"
+
+v3 dowodziła zachowania dziedziny tak:
 
 ```text
-1. AC-normalizacja zachowuje ZNACZENIE ALGEBRAICZNE
+d == canonicalize(d) jako funkcje  =>  zeroSet równe  =>  dziedzina zachowana
+```
+
+**To jest prawdziwe nad `R` i nieprawdziwe dla `ExpressionEvaluator`**, który
+liczy w `double`. Review złapało to i zmierzyłem:
+
+```text
+d = (1e16 + q) + (-1e16)
+
+q = 1      d w double:  (1e16 + 1) = 1e16,  potem 1e16 - 1e16 = 0
+           1/d  ->  DivisionByZero
+           po normalizacji d = q = 1,  1/d = 1     WARTOŚĆ
+
+q = 0.001  to samo: przed DivisionByZero, po WARTOŚĆ
+```
+
+Kanonizacja **zmieniła więc określoność w evaluatorze**. To ten sam dryf, który
+§7 mierzy jako `1e-14`, tylko w punkcie, gdzie nie objawia się jako mała różnica
+wartości, lecz jako przejście `DivisionByZero ↔ wartość`.
+
+### 6.2 Którą semantykę wybieramy — i dlaczego tę
+
+**Wybór: dziedzina symboliczna jest definiowana w semantyce algebraicznej nad
+`R`**, nie przez zaokrąglenia konkretnej kolejności działań w `double`.
+
+Przy pomiarze wyszło coś, co czyni ten wybór mocniejszym, niż wyglądał — i wart
+jest zapisania, bo odwraca intuicję „normalizacja psuje dziedzinę":
+
+```text
+q = 3      d przed normalizacją liczy się na  4
+           d po normalizacji                   3
+```
+
+ulp przy `1e16` wynosi 2, więc `1e16 + 3` zaokrągla się do `1e16 + 4`.
+W tym kontrprzykładzie **postać AC-normalna jest wierniejsza matematyce niż
+wejście**, a `DivisionByZero` przy `q = 1` jest **artefaktem kolejności
+sumowania**, nie osobliwością wyrażenia. Wybranie określoności evaluatora jako
+kontraktu znaczyłoby zobowiązanie się do **zachowywania artefaktów numerycznych** —
+i, w konsekwencji, do zamrożenia kolejności sumowania w mianownikach, czyli do
+rezygnacji z celu całego etapu.
+
+Dwa kontrakty, rozdzielone jawnie:
+
+```text
+DZIEDZINA SYMBOLICZNA   zachowana DOKŁADNIE przez AC-normalizację, konwencję
+                        znaku i eliminację odejmowania
+                        -- to jest kontrakt tego etapu
+
+EWALUACJA W double      może zmienić wartość (§7: 1,07e-14 na materiale repo)
+                        i w punktach patologicznych także klasyfikację
+                        „mianownik dokładnie zerowy"
+                        -- podlega walidacji numerycznej, NIE jest dowodem
+                        dziedziny symbolicznej
+```
+
+Konsekwencja, którą lepiej zapisać teraz niż odkryć w F3.10: **wykrywanie
+osobliwości nie może opierać się na `DivisionByZero` z evaluatora.** Ten błąd
+mówi „ta kolejność działań dała dokładnie zero w `double`", a nie „mianownik ma
+tu zero". Osobliwości są własnością symboliczną i F3.10 musi je liczyć
+symbolicznie.
+
+### 6.3 Rozumowanie, które jest poprawne
+
+```text
+1. AC-normalizacja zachowuje ZNACZENIE ALGEBRAICZNE nad R
        przestawienie i przenawiasowanie sumy/iloczynu     -- dokładnie
        Subtract(a,b) -> Add(a, Negate(b))                 -- dokładnie, też bitowo
        konwencja parzystości znaku                        -- dokładnie
        redukcja stałych                                   -- z zaokrągleniem double
-2. zatem dla każdego mianownika d:   d  ==  canonicalize(d)  jako funkcje
+2. zatem dla każdego mianownika d:   d  ==  canonicalize(d)  jako funkcje NAD R
 3. zatem                              zeroSet(d) == zeroSet(canonicalize(d))
-4. zatem dziedzina całego wyrażenia jest zachowana
+4. zatem dziedzina SYMBOLICZNA całego wyrażenia jest zachowana
 ```
 
-Czwarty wiersz kroku 1 jest doprecyzowaniem z review i trzeba go trzymać
-osobno. `c1 + c2` w liczbach rzeczywistych i `double(c1) + double(c2)` to **nie
-zawsze ta sama liczba**, więc redukcja stałych nie jest równoważnością
-matematyczną w ścisłym sensie. Kontrakt brzmi więc:
+Czwarty wiersz kroku 1 pozostaje doprecyzowaniem z v3: `c1 + c2` w liczbach
+rzeczywistych i `double(c1) + double(c2)` to **nie zawsze ta sama liczba**, więc
+redukcja stałych nie jest równoważnością matematyczną w ścisłym sensie:
 
 > **Przekształcenia strukturalne zachowują znaczenie algebraiczne dokładnie;
 > redukcja stałych podlega istniejącej semantyce skończonych `double`
@@ -587,16 +765,9 @@ matematyczną w ścisłym sensie. Kontrakt brzmi więc:
 > zmiennoprzecinkowe.**
 
 To nie jest nowe ryzyko — fabryka zwija stałe od Fazy 1 i cały projekt na tym
-stoi — ale skoro §7 mierzy dryf ze zmiany kolejności, ten sam dokument nie może
-dwie sekcje wcześniej twierdzić, że redukcja stałych jest dokładna.
+stoi.
 
-Krok 2 jest przesłanką i to on niesie cały ciężar — dokładnie tak, jak (E) niesie
-go w F3.1. Różnica na korzyść tego etapu: tam (E) było kontraktem **autora
-reguły**, którego silnik nie sprawdza; tutaj równoważność wynika z **jednej
-własności `Add` i `Multiply`**, zapisanej raz i obowiązującej dla wszystkich
-wejść. Nie ma dwudziestu autorów reguł, jest jedna transformacja.
-
-### 6.2 Test: **behawioralny**, nie strukturalny
+### 6.4 Test: behawioralny, ale **na kontrolowanym materiale**
 
 ```text
 PreservesDefinednessAcrossCanonicalization
@@ -610,11 +781,16 @@ PreservesDefinednessAcrossCanonicalization
     wymagaj ZGODNOŚCI CO DO OKREŚLONOŚCI, nie równości dzielników
 ```
 
-Ten sam kształt, co `AgreesOnDefinednessAndValue` z F3.1 — i z tego samego
-powodu: mierzymy **dziedzinę**, a nie jej składniowy zapis. Punkt osobliwy jest
-w liście z nazwiska, bo tylko w nim widać różnicę, gdyby jakaś była.
+Ten sam kształt, co `AgreesOnDefinednessAndValue` z F3.1 — mierzymy **dziedzinę**,
+a nie jej składniowy zapis, a punkt osobliwy jest w liście z nazwiska.
 
-### 6.3 Representability guard obowiązuje też tutaj
+**Czego ten test nie dowodzi, i musi to stać w jego komentarzu:** nie jest
+dowodem zachowania dziedziny w ogólności. Dla materiału dobranego jak w 6.1
+**przeszedłby na czerwono, choć implementacja byłaby poprawna**. Działa jako
+sprawdzian regresji na wyrażeniach o umiarkowanych stałych — czyli na wszystkim,
+co ten projekt buduje — a nie jako twierdzenie.
+
+### 6.5 Representability guard obowiązuje też tutaj
 
 Jeśli kanonizacja mianownika zwinie go do literalnego zera,
 `ExpressionFactory::divide` przewróci `assert`. Dziś nie może się to zdarzyć —
@@ -793,8 +969,11 @@ AC-normalizacja
   DropsNeutralConstant                   0 + x -> x  po redukcji, nie przez fabrykę
   RebuildsInBalancedShape                jednoznaczny kształt (5.5), nie tylko kolejność
   NormalizesSignByParity                 -(a*b), (-a)*b, a*(-b) -> JEDEN DAG (3.3)
+  NormalizesNegativeConstantSign         (-2)*x i 2*(-x) -> -(2*x);  (-1)*x -> -x
+  KeepsNegativeZeroOutOfParity           -0.0 nie przełącza znaku (3.3)
   CancelsEvenSignParity                  (-a)*(-b) -> a*b, bez osobnej reguły
   EliminatesSubtractionEntirely          wyjście nie zawiera węzła Subtract (3.4)
+  NormalizesNestedSubtractionWithPolarity  a-(b-c)  i  (a-b)+c  -> ta sama postać
   RemovesDoubleNegation                  -(-x) -> x  w KANONIZATORZE, nie regułą
   IsIdempotent                           normalize(normalize(E)) sameNode normalize(E)
 
@@ -802,6 +981,7 @@ sesja  (5.4)
   SharesResultAcrossRootsInOneSession     drugi korzeń nie liczy od nowa
   PreservesSharingAcrossNormalization     wspólne poddrzewo zostaje JEDNYM węzłem
   KeepsNodeIdentityWhenAlreadyNormal      sameNode(wejście, wynik)
+  KeepsNodeIdentityInAFreshSession        to samo przy PUSTYM memo (5.6)
 
 dziedzina  (6)
   PreservesDefinednessAcrossCanonicalization   1/(q+r), punkt q=1, r=-1
@@ -809,7 +989,8 @@ dziedzina  (6)
 
 EquationSimplifier  (13)
   NormalizesEveryEquationOfASystem        lhs i rhs wszystkich równań
-  PreservesUnknownsAndSources             metadane nietknięte: kind, source, unknowns
+  PreservesEverythingButTheExpressions    unknowns i ich kolejność, kolejność równań,
+                                          task kind, EquationKind, source — wszystko
   SharesOneSessionAcrossTheSystem         wspólne poddrzewo FK zostaje JEDNYM węzłem
                                           -- to jest test, którego syntetyczny nie zastąpi
 
@@ -848,7 +1029,7 @@ w F3.1 6.7, gdzie deklarowany gate dwa razy okazał się przewidywaniem.
 | Ryzyko | Waga | Reakcja |
 |---|---|---|
 | Etap dostarcza reguły, które nigdy nie trafiają | **realne, zmierzone** | Zakres przesunięty na AC-normalizację; przy każdej pozostałej transformacji liczba trafień podana wprost (8) |
-| Globalne porównanie `divisorsOf` odrzuca poprawną kanonizację | **realne, popełnione w v1 — drugi raz w projekcie** | Warunek behawioralny zamiast strukturalnego (6.2); rozumowanie przez `zeroSet` (6.1) |
+| Globalne porównanie `divisorsOf` odrzuca poprawną kanonizację | **realne, popełnione w v1 — drugi raz w projekcie** | Warunek behawioralny zamiast strukturalnego (6.4); rozumowanie przez `zeroSet` (6.3) |
 | Transformacja bez spadku miary w tablicy reguł | **realne, popełnione w v1** | Kryterium podziału: miara, nie „czy upraszcza" (8); `-(a*b)` i `Subtract` do kanonizatora |
 | Kanonizacja rozbija współdzielenie DAG-a | **realne** | `CanonicalizationSession` z memo po tożsamości węzła (5.4), własny test |
 | Dwa różne porządki opisane jako jeden | **realne, złapane w review** | Odcisk wycofany; jeden porządek strukturalny (5.3), test `OrdersByNameNotByHash` |
@@ -857,11 +1038,15 @@ w F3.1 6.7, gdzie deklarowany gate dwa razy okazał się przewidywaniem.
 | Obietnica „wszystkie stałe → jedna" nie do dotrzymania | **realne, zmierzone** | Fabryka odmawia zwinięcia przy przepełnieniu; kontrakt ogranicza obietnicę wprost (3.2) |
 | Normalizacja znaku nie daje jednej postaci | **realne, złapane w review** | Konwencja parzystości: znak wychodzi na zewnątrz iloczynu, sortowanie bez znaków (3.3) |
 | Transformacja po sortowaniu rozbija własny wynik | **realne, złapane w review** | `Subtract` i znak obsługiwane **przy zbieraniu**, nie po odbudowie (3.3, 3.4) |
+| „Dziedzina" znaczy dwie różne rzeczy naraz | **realne, zmierzone, złapane w review** | Dwa rozdzielone kontrakty: symboliczna nad `R` — dokładnie; określoność w `double` — nie (6.2). Konsekwencja dla F3.10 zapisana |
+| Parzystość znaku nie widzi ujemnych stałych | **realne, złapane w review** | Znak liczony z **dwóch** źródeł: `Negate` i `Constant(c<0)` (3.3), własny test |
+| Zagnieżdżone odejmowanie daje dwie postacie | **realne, złapane w review** | Kolektor sumy ze znakiem, schodzący przez `Subtract` (3.4) |
+| Kanonizator przebudowuje DAG, który już był normalny | **realne** | Wymóg tożsamości węzła także w świeżej sesji (5.6) |
 | Kanonizacja odtwarza redex usunięty przez regułę | **realne** | `-(-x)` w kanonizatorze; zero reguł produkcyjnych w tym etapie (4, 8.1) |
 | Porządek zależny od adresów albo od `std::hash` | **realne, klasyczne** | Zakaz wprost (5.1, 5.3); test `DoesNotDependOnConstructionOrder` |
 | Dryf zmiennoprzecinkowy | realne, zmierzone | 1,07e-14 wobec tolerancji 1e-12 (7); kształt zbalansowany raczej pomaga (5.5) |
 | `structurallyEqual` wzięte za równość algebraiczną | **realne, po tym etapie kuszące** | Nazwa „AC-normalna" i jawne ograniczenie w komentarzu klasy (3.1) |
-| Kanonizacja mianownika daje literalne zero | dziś niemożliwe, po F3.3 realne | Guard z F3.1 2.7 obowiązuje bez zmian (6.3) |
+| Kanonizacja mianownika daje literalne zero | dziś niemożliwe, po F3.3 realne | Guard z F3.1 2.7 obowiązuje bez zmian (6.5) |
 
 ---
 
@@ -890,9 +1075,12 @@ public:
     // Every equation of the system through ONE session, so the FK subtrees the
     // twelve equations share stay one node instead of twelve copies.
     //
-    // Metadata is carried through untouched: unknowns, task kind, and each
-    // equation's source. This class normalises expressions; it does not decide
-    // anything about the system.
+    // ALL NON-EXPRESSION FIELDS ARE PRESERVED EXACTLY. Not a list of the
+    // fields that exist today -- unknowns and their order, equation order,
+    // task kind, each equation's kind and source -- but the rule itself, so a
+    // field added to Equation next year does not quietly fall out of it.
+    //
+    // This class normalises expressions. It decides nothing about the system.
     [[nodiscard]] IkEquationSystem normalize(const IkEquationSystem& system);
 };
 ```

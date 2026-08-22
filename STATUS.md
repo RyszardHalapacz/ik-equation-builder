@@ -878,7 +878,7 @@ Paths below are relative to `proposal/`.
 | `done/F2.7-facade-integration/proposal-phase2-facade-integration-implementation.md` | Facade code + 12 tests | implemented |
 | `done/F3.1-rewrite-engine/proposal-rewrite-engine-semantics-architecture.md` | Rewrite engine semantics: domain guards, fixed point, rule contracts (F3.1) | **approved (v6)** |
 | `done/F3.1-rewrite-engine/proposal-rewrite-engine-semantics-implementation.md` | Rewrite engine: full code, exhaustive domain visitor, 28 tests (F3.1) | **implemented (v4)** |
-| `F3.2-canonical-form/proposal-canonical-form-architecture.md` | AC-normal form: ordered constant reduction, sign parity, no Subtract in output; proposes a change of scope (F3.2) | **in review (v3)** |
+| `F3.2-canonical-form/proposal-canonical-form-architecture.md` | AC-normal form: symbolic vs floating-point domain, sign parity, signed additive collector (F3.2) | **in review (v4)** |
 | `done/F2.3.R-review-remediation/` | Five proposals answering the 2026-08-17 code review | implemented |
 
 ## Next step
