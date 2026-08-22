@@ -31,13 +31,13 @@ aktualizowany na bieżąco, bez wersji.
 
 Faza 2 zamknięta 2026-08-21, F3.1 zamknięte 2026-08-22.
 
-> **Stan: czekamy na review architektury F3.2, wersja v4.**
+> **Stan: czekamy na review architektury F3.2, wersja v5.**
 > Kod F3.2 **nie istnieje** i na tym etapie nie powinien — dokument czeka na
 > werdykt. Dopiero po APPROVED powstaje proposal implementacyjny.
 
 | Dokument | Temat | Stan | Linii |
 |---|---|---|---|
-| [`F3.2-canonical-form/proposal-canonical-form-architecture.md`](F3.2-canonical-form/proposal-canonical-form-architecture.md) | Postać AC-normalna: dziedzina symboliczna vs `double`, parzystość znaku, kolektor ze znakiem; **proponuje zmianę zakresu etapu** | **DO REVIEW (v4)** | 1109 |
+| [`F3.2-canonical-form/proposal-canonical-form-architecture.md`](F3.2-canonical-form/proposal-canonical-form-architecture.md) | Postać AC-normalna: wyłącznie dokładna redukcja stałych, kolektor ze splice, zakres konwencji znaku | **DO REVIEW (v5)** | 1263 |
 
 ## Faza 3, F3.1 — silnik przepisywania (zamknięta)
 

@@ -1,8 +1,24 @@
 # Proposal: postać kanoniczna — F3.2, architektura
 
-**Etap:** F3.2 · **v4 — CZEKA NA REVIEW** · 2026-08-22 · część 1 z 2
+**Etap:** F3.2 · **v5 — CZEKA NA REVIEW** · 2026-08-22 · część 1 z 2
 
-> **Stan tego dokumentu:** wersja **v4**, oddana do review, **werdyktu jeszcze
+> **v5, po czwartym review.** Dwa blockery, oba w **domknięciu transformacji** —
+> struktura klas jest już dobra, brakowało precyzji w tym, co jeden przebieg
+> naprawdę gwarantuje:
+>
+> 1. **Redukcja stałych łamała gwarancję dziedziny symbolicznej.** Zmierzone:
+>    `q + 1e16 + 1 + (-1e16)` ma `zeroSet = {-1}`, a po zwinięciu stałych
+>    `zeroSet = {0}`. Zwijanie jest teraz **wyłącznie dokładne**, sprawdzane
+>    2Sum/`fma`, a kształt odbudowy nie pozwala fabryce zwinąć reszty (3.2).
+> 2. **Kolektor nie spłaszczał operatora odsłoniętego przez kanonizację dziecka.**
+>    `a + -(-(b+c))` dawało `a + (b+c)`, więc `IsIdempotent` by poległ.
+>    Kolektor **splice'uje** (3.4).
+> 3. W ramach tej samej poprawki domknięte `Negate(Add(...))` — `-(a+b)` i
+>    `0-(a+b)` dają jedną postać (3.4).
+> 4. Zakres normalizacji znaku **rozszerzony na `Divide`** i powiedziany wprost,
+>    żeby `F3.5` nie zostało z „znak jednoznaczny, ale nie przy dzieleniu" (3.3).
+
+> **Stan tego dokumentu:** wersja **v5**, oddana do review, **werdyktu jeszcze
 > nie ma**. Nic z F3.2 nie jest zaimplementowane i nie powinno być — kod w repo
 > kończy się na F3.1. Następny krok to **decyzja recenzenta o v4**, nie pisanie
 > kodu. Po APPROVED: proposal implementacyjny → review → kod → oba buildy
@@ -209,16 +225,21 @@ Proponowany zakres F3.2 — **jeden przebieg, który kończy robotę**:
 ```text
 canonicalize(E), dla węzła złożonego:
 
-  1. zbierz składniki/czynniki maksymalnego łańcucha AC
-        Subtract wchodzi TUTAJ, nigdy nie wychodzi           <-- 3.4
-  2. kanonizuj rekurencyjnie każdy składnik
-  3. dla iloczynu: zdejmij minusy, policz PARZYSTOŚĆ        <-- 3.3
-  4. rozdziel na STAŁE i pozostałe
-  5. posortuj stałe porządkiem z 5.2, potem je zredukuj      <-- 3.2, w tej kolejności
+  1. ZBIERZ łańcuch AC kolektorem ze znakiem                  <-- 3.4
+        schodzi przez Add / Subtract / Negate
+        każdy atom kanonizuje rekurencyjnie
+        jeśli kanonizacja atomu ODSŁONI operator AC -> splice
+  2. dla iloczynu i dzielenia: zdejmij znaki, policz PARZYSTOŚĆ  <-- 3.3
+        źródła znaku: Negate ORAZ Constant(c < 0)
+  3. rozdziel na STAŁE i pozostałe
+  4. posortuj stałe porządkiem z 5.2                          <-- najpierw kolejność
+  5. redukuj sąsiednie stałe TYLKO gdy połączenie jest DOKŁADNE  <-- 3.2, 2Sum / fma
   6. odrzuć stałą neutralną, jeśli taka wyszła
   7. posortuj pozostałe składniki porządkiem z 5.2
-  8. odbuduj w zbalansowanym kształcie                       <-- 5.5
-  9. jeśli parzystość nieparzysta: JEDEN Negate na zewnątrz  <-- 3.3
+  8. odbuduj: balanced(niestałe), stałe doklejone NA ZEWNĄTRZ   <-- 5.5, 3.2.1
+        żadne wywołanie add/multiply nie dostaje dwóch stałych
+  9. parzystość nieparzysta: JEDEN Negate na zewnątrz         <-- 3.3
+ 10. jeśli nic się nie zmieniło: zwróć ORYGINALNY Expression  <-- 5.6
 ```
 
 Zestaw reguł dla silnika F3.1: **pusty** — uzasadnienie w 8.
@@ -244,55 +265,109 @@ Musi to stać w komentarzu klasy, bo `F3.5` jest o krok od założenia
 `structurallyEqual == algebraically equal`, a to założenie będzie fałszywe jeszcze
 przez kilka etapów — i będzie fałszywe **cicho**.
 
-### 3.2 Stałe: **najpierw kolejność, potem redukcja**
+### 3.2 Stałe: kolejność, a potem **wyłącznie dokładna** redukcja
 
-Blocker z review i — jak się okazuje — ten sam problem, który §7 opisuje dla
-składników symbolicznych, tylko groźniejszy, bo dotyczy **postaci**, a nie tylko
-wartości.
+Ta sekcja była poprawiana dwa razy i za drugim razem okazało się, że sam pomysł
+był za słaby, nie tylko jego kolejność.
 
-v2 kazała redukować stałe „na płaskiej liście, gdzie jest to trywialne
-i deterministyczne". Trywialne — tak. Deterministyczne — **nie**, jeśli redukcja
-idzie w kolejności przyjścia z wejścia. Dodawanie `double` nie jest łączne, więc
-dwa **AC-równoważne** wejścia dają różne stałe wynikowe:
+**Runda pierwsza (v3):** redukcja w kolejności wejściowej nie jest
+deterministyczna, bo dodawanie `double` nie jest łączne. Zmierzone:
 
 ```text
-E1:  1e16 + x + (-1e16) + y + 1        stałe w kolejności:  1e16, -1e16, 1
-E2:  1e16 + x + 1       + y + (-1e16)  stałe w kolejności:  1e16, 1, -1e16
-
-zmierzone:
-    (1e16 + -1e16) + 1  =  1
-    (1e16 + 1) + -1e16  =  0
+E1:  1e16 + x + (-1e16) + y + 1     ->  (1e16 + -1e16) + 1  =  1
+E2:  1e16 + x + 1       + y + (-1e16) ->  (1e16 + 1) + -1e16  =  0
 ```
 
-Fabryka nie zwinie ich wcześniej — stałe są rozdzielone symbolami, więc żaden
-`add` nie widzi dwóch stałych naraz. Dwa wejścia równoważne względem AC
-dostałyby więc **różne postacie normalne**, co przewraca cały sens etapu.
+Stąd: **stałe sortowane przed redukcją**, składane w ustalonym układzie. To
+zostaje.
 
-**Poprawka: stałe są sortowane porządkiem z 5.2 przed redukcją**, a redukcja idzie
-tym samym zbalansowanym układem, co odbudowa (5.5) — bo skoro kształt ma być
-ustalony dla drzewa wynikowego, nie ma powodu, żeby składanie stałych było
-`left-fold`em. Wtedy oba wejścia widzą `-1e16, 1, 1e16` i składają je identycznie.
-
-**Granica obietnicy.** Nie wolno napisać „wszystkie stałe → jedna stała", bo
-`ExpressionFactory` **odmawia zwinięcia**, gdy wynik nie jest skończony — i to nie
-jest przypadek teoretyczny, zwłaszcza dla mnożenia:
+**Runda druga (v4 → v5): to nie wystarczy, bo redukcja łamie gwarancję z 6.**
+Review pokazało, że ustalona kolejność czyni wynik **powtarzalnym**, ale nadal
+**innym wyrażeniem**:
 
 ```text
-zmierzone:
-    (1e200 * 1e200) * 1e-200  =  inf        fabryka ODMÓWI zwinięcia
-     1e200 * (1e200 * 1e-200) =  1e200      zwija się normalnie
+d = q + 1e16 + 1 + (-1e16)          algebraicznie:  q + 1     zeroSet = {-1}
+
+stałe posortowane:  -1e16, 1, 1e16
+redukcja:           (-1e16) + (1 + 1e16) = (-1e16) + 1e16 = 0      <-- zmierzone
+stała neutralna odrzucona
+
+d' = q                              zeroSet = {0}
 ```
 
-Kontrakt brzmi więc:
+To **nie jest** już różnica w evaluatorze `double`, którą 6.1 dopuszcza. Nowy
+liść `Constant(0)` staje się częścią **drzewa symbolicznego**, które potem
+interpretujemy nad `R` — więc zmieniła się funkcja, a nie tylko jej numeryczne
+przybliżenie. Representability guard tego nie złapie, bo mianownikiem jest `q`,
+a nie literalne zero.
 
-> stałe są redukowane deterministycznie **na tyle, na ile pozwala
-> `ExpressionFactory`**; stałe niezredukowane zostają w deterministycznej
-> kolejności AC-normalnej.
+Gwarancja „dziedzina symboliczna zachowana **dokładnie**" i „zwijamy rozproszone
+stałe przez `double`" **nie mogą obowiązywać naraz**. Jedna z nich musi ustąpić.
 
-Zauważ, że ustalona kolejność stałych **poprawia** też szansę na zwinięcie:
-posortowane rosnąco i składane parami rzadziej trafiają na przepełnienie niż
-przypadkowa kolejność z wejścia. To skutek uboczny, nie gwarancja — ale w dobrą
-stronę.
+**Rozstrzygnięcie: ustępuje zwijanie, nie gwarancja.**
+
+```text
+stałe są ŁĄCZONE TYLKO WTEDY, GDY WYNIK JEST DOKŁADNY
+```
+
+Kryterium nie jest heurystyką — jest sprawdzalne w kilku działaniach:
+
+```cpp
+// 2Sum: dokladny blad zaokraglenia sumy. err == 0  <=>  a+b bylo dokladne.
+double addError(double a, double b)
+{
+    const double s = a + b;
+    const double bb = s - a;
+    return (a - (s - bb)) + (b - bb);
+}
+
+// dla iloczynu to samo daje FMA:  err = fma(a, b, -(a*b))
+```
+
+Zmierzone na przykładach z tego dokumentu:
+
+```text
+1 + 1e16       err = 1     ZAOKRĄGLONE  -> nie łączymy
+3 + 4          err = 0     dokładne     -> łączymy
+0.5 + 0.25     err = 0     dokładne     -> łączymy
+1e200 * 3      err = 0     dokładne     -> łączymy
+```
+
+Dzięki temu `3 + x + 4 → 7 + x` działa jak dotąd — czyli w każdym realnym
+przypadku — a patologiczny `1e16 + 1` zostaje nietknięty i **funkcja się nie
+zmienia**.
+
+### 3.2.1 Pułapka: sama rezygnacja ze zwijania **nie wystarczy**
+
+Rzecz, której nie widać z opisu algorytmu: gdy zostają dwie stałe, których nie
+wolno połączyć, **zrobi to za nas fabryka**. `ExpressionFactory::add(c1, c2)` zwija
+bezwarunkowo (poza nieskończonością), więc wystarczy, że zbalansowana odbudowa
+postawi je obok siebie — a posortowane stałe są obok siebie z definicji.
+
+**Poprawka kształtu**: stałe nie wchodzą do zbalansowanego drzewa, tylko są
+doklejane **na zewnątrz**, pojedynczo:
+
+```text
+wynik =  c1 + ( c2 + ( ... + balanced(składniki niestałe) ) )
+```
+
+Każde wywołanie `add` ma wtedy co najwyżej **jeden** operand będący stałą, więc
+fabryka nie ma czego zwinąć. Kształt pozostaje deterministyczny, a koszt
+głębokości żaden: liczba niepołączalnych stałych to w praktyce **zero albo jedna**
+— na materiale repo zmierzono jeden łańcuch sumowy z dwiema stałymi w całym
+`kr4_r600` (1), i one się łączą dokładnie.
+
+Ten sam kształt obowiązuje dla iloczynu, z `multiply`.
+
+**Granica obietnicy**, teraz spójna z 6:
+
+> Stałe łańcucha są redukowane do jednej **wtedy i tylko wtedy, gdy każde
+> połączenie jest dokładne**. Stałe, których nie można połączyć bez zaokrąglenia,
+> zostają osobnymi składnikami w kolejności AC-normalnej. **Kanonizator nie
+> wprowadza żadnego nowego zaokrąglenia.**
+
+Ostatnie zdanie jest tym, co czyni dowód z 6.3 prawdziwym bez zastrzeżeń —
+a wcześniejsze wersje miały w tym miejscu wyjątek, który unieważniał całą tezę.
 
 ### 3.3 Znak: konwencja przez **parzystość**, nie przez wybór czynnika
 
@@ -346,6 +421,43 @@ przełącza parzystości** — `-0.0 < 0.0` jest fałszem w IEEE-754. To jest za
 pożądane: `-0.0` i `0.0` są tą samą wartością, a `isZero` w tym projekcie i tak
 traktuje je jednakowo.
 
+#### Zakres konwencji znaku — powiedziany wprost
+
+Review słusznie zauważyło, że kontrakt musi mówić, **dokąd** sięga normalizacja
+znaku, inaczej `F3.5` założy globalną jednoznaczność i pomyli się przy pierwszym
+dzieleniu.
+
+```text
+OBJĘTE:   biegunowość Add / Subtract           (3.4)
+          parzystość Multiply, z ujemnymi stałymi
+          parzystość Divide                      <-- rozszerzenie w v5
+```
+
+Review dopuszczało zostawienie `Divide` poza kontraktem, byle to napisać.
+**Włączam je**, bo kosztuje tę samą maszynerię, a alternatywa zostawia
+`F3.5` ze zdaniem „znak jest jednoznaczny, **z wyjątkiem** dzielenia" — czyli
+z wyjątkiem, który trzeba pamiętać:
+
+```text
+-(a/b)   ->  -(a/b)
+(-a)/b   ->  -(a/b)
+a/(-b)   ->  -(a/b)         jeden DAG
+(-a)/(-b) ->  a/b           parzystość parzysta
+```
+
+Bezpieczeństwo: `zeroSet(-b) == zeroSet(b)`, więc dziedzina jest zachowana
+dokładnie (6.3), a negacja jest **dokładna zmiennoprzecinkowo**, więc nie dotyka
+wyjątku z 3.2. Na materiale repo to i tak zero trafień — `div=0` w obu układach
+równań — więc koszt jest żaden, a luka w kontrakcie znika.
+
+```text
+POZA KONTRAKTEM tego etapu, świadomie:
+    rozdzielność znaku przez sumę w mianowniku:  a/(-(b+c))  vs  -(a/(b+c))
+        -- wymagałoby wnoszenia znaku pod Add, czyli rozdzielności (10)
+    znak wewnątrz sin/cos:  sin(-x) = -sin(x)
+        -- to tożsamość trygonometryczna, czyli F3.3
+```
+
 Wynik:
 
 ```text
@@ -359,62 +471,79 @@ Sortowanie **bez znaków** jest tu istotne: gdyby minus został przy czynniku,
 kolejność zależałaby od tego, który czynnik go akurat niósł na wejściu — czyli
 znowu od przypadku konstrukcyjnego.
 
-### 3.4 `Subtract` nie wychodzi z kanonizatora
+### 3.4 Kolektor: ze znakiem **i** ze spłaszczaniem tego, co odsłoni
 
-To samo rozumowanie, co w 3.3, i też z review. v2 wymieniała normalizację
-odejmowania jako krok **po** odbudowie — czyli tworzyła świeży `Add`, który nie
-przeszedł ani spłaszczenia, ani sortowania, ani zbalansowanej odbudowy.
+v3 wprowadziła kolektor ze znakiem dla `Subtract`, v5 domyka go w dwóch
+miejscach, które review nazwało precyzyjnie.
 
-v3 pisała to jako:
-
-```text
-canonicalize(Subtract(a, b))
-    = canonicalizeAddChain( canonicalize(a), negated(canonicalize(b)) )
-```
-
-i **to nadal nie domyka zagnieżdżeń**, co review pokazało wprost:
+**Problem A — kanonizacja dziecka odsłania nowy operator AC.** Kolektor pyta
+o kształt **przed** kanonizacją składnika, więc:
 
 ```text
-a - (b - c)      ->   a + (-(b + (-c)))      minus został NA ZEWNĄTRZ sumy
-(a - b) + c      ->   a + (-b) + c           płasko
+E = a + -(-(b + c))
 
-to samo wyrażenie, dwie różne postacie
+zebrane składniki:   a,  -(-(b+c))         drugi NIE jest Add, więc jest atomem
+kanonizacja atomu:   -(-(b+c))  ->  b + c   ...i to jest Add, ale lista już zamknięta
+
+wynik:  a + (b + c)          zamiast płaskiego  [a, b, c]
 ```
 
-**Poprawka: kolektor sumy niesie znak.** Zbieranie składników jest sparametryzowane
-biegunowością i schodzi przez `Subtract` bez budowania czegokolwiek po drodze:
+Skutek jest dokładnie taki, jak wskazało review: **`normalize(normalize(E))`
+różni się od `normalize(E)`**, więc `IsIdempotent` — test, który ma pilnować
+całej tezy etapu — by poległ.
+
+**Problem B — `Negate(Add(...))`.** Kolektor schodził przez `Subtract`, ale nie
+przez `Negate`, więc:
 
 ```text
-collectAdd(expr, sign):
-
-    Add(a, b)        ->  collectAdd(a,  sign);  collectAdd(b,  sign)
-    Subtract(a, b)   ->  collectAdd(a,  sign);  collectAdd(b, -sign)
-
-    cokolwiek innego ->  term := canonicalize(expr)
-                         jeśli sign < 0:  term := canonicalNegate(term)
-                         dopisz term do listy
+-(a + b)        zostawało atomem
+0 - (a + b)     schodziło przez Subtract  ->  -a, -b
 ```
 
-Wtedy oba wyrażenia dochodzą do tej samej płaskiej listy:
+Znowu dwie postacie jednego wyrażenia.
+
+**Poprawka — jeden kolektor, trzy przypadki zejścia i splice:**
 
 ```text
-a - (b - c)   ->   +a, -b, +c
-(a - b) + c   ->   +a, -b, +c
+collectAdd(expr, sign, out):
+
+    Add(a, b)       ->  collectAdd(a,  sign, out);  collectAdd(b,  sign, out)
+    Subtract(a, b)  ->  collectAdd(a,  sign, out);  collectAdd(b, -sign, out)
+    Negate(x)       ->  collectAdd(x, -sign, out)              <-- problem B
+
+    w przeciwnym razie:
+        term = canonicalize(expr)
+        jeśli korzeń term to Add | Subtract | Negate:
+            collectAdd(term, sign, out)                        <-- problem A: SPLICE
+        w przeciwnym razie:
+            out.push( sign < 0 ? canonicalNegate(term) : term )
 ```
 
-`canonicalNegate` to nie `factory.negate` — to nadanie znaku **zgodnie
-z konwencją z 3.3**: stałej zmienia wartość na przeciwną, iloczynowi przełącza
-parzystość, `Negate(x)` sprowadza do `x`. Dzięki temu `-(-x)` znika tu **z
-definicji**, a nie przez osobną regułę — co domyka argument z 4 i 8.
+Analogicznie dla iloczynu, z `Negate` przechodzącym w parzystość zamiast w znak
+składnika (3.3).
 
-Daje to postcondition, który warto wypowiedzieć osobno, bo jest mocny i tani:
+**Dlaczego splice się kończy**, bo to jedyne miejsce, gdzie można zrobić pętlę:
+splice woła `collectAdd` na wyrażeniu **już kanonicznym**, którego korzeń należy
+do zbioru zejścia — więc trafia w jedną z trzech pierwszych gałęzi i schodzi
+**strukturalnie niżej**. Jego dzieci są kanoniczne, więc `canonicalize` zwraca je
+bez zmian (5.6, tożsamość węzła) i trafiają do `push`. Bez wymogu z 5.6 ta
+rekurencja **nie miałaby dowodu terminacji** — te dwie decyzje trzymają się
+nawzajem.
 
-> **Wyjście AC-normalne nie zawiera żadnego węzła `Subtract`.**
+W dzisiejszym języku wyrażeń splice jest zresztą osiągalny **wyłącznie** przez
+`Negate`, bo żaden inny rodzaj węzła nie kanonizuje się do `Add` — nie ma
+rozdzielności (10). Zostaje mimo to zapisany ogólnie, bo F3.3 doda przekształcenia,
+które to zmienią, i lepiej, żeby kontrakt był gotowy niż łatany.
 
-`F3.3` i `F3.5` dostają dzięki temu język o jeden rodzaj węzła węższy — wzorce
-nie muszą mieć wariantu na odejmowanie. Zamiana jest przy tym **dokładna
-zmiennoprzecinkowo**: `a - b` i `a + (-b)` dają bitowo ten sam wynik, więc nie
-dokłada się do dryfu z 7.
+**Postcondition**, mocniejszy niż w v3 i wart wypowiedzenia osobno:
+
+> Wyjście AC-normalne nie zawiera węzła `Subtract`, a `Negate` występuje
+> **wyłącznie** jako znak pojedynczego składnika sumy albo jako jeden węzeł na
+> zewnątrz iloczynu — nigdy bezpośrednio nad sumą.
+
+`F3.3` i `F3.5` dostają dzięki temu język węższy o jeden rodzaj węzła i o całą
+klasę wariantów znaku. Zamiana `a - b` na `a + (-b)` jest przy tym **dokładna
+bitowo**, więc nie dokłada się do dryfu z 7 ani do wyjątku z 3.2.
 
 ---
 
@@ -761,17 +890,23 @@ symbolicznie.
 4. zatem dziedzina SYMBOLICZNA całego wyrażenia jest zachowana
 ```
 
-Czwarty wiersz kroku 1 pozostaje doprecyzowaniem z v3: `c1 + c2` w liczbach
-rzeczywistych i `double(c1) + double(c2)` to **nie zawsze ta sama liczba**, więc
-redukcja stałych nie jest równoważnością matematyczną w ścisłym sensie:
+Czwarty wiersz kroku 1 był w v3 i v4 **wyjątkiem, który unieważniał całą tezę**:
+skoro redukcja stałych zaokrągla, to `d == canonicalize(d)` nad `R` po prostu nie
+zachodzi, a bez tego kroki 2–4 nie mają przesłanki. Review pokazało to na
+`q + 1e16 + 1 + (-1e16)`, gdzie `zeroSet` przechodzi z `{-1}` na `{0}`.
 
-> **Przekształcenia strukturalne zachowują znaczenie algebraiczne dokładnie;
-> redukcja stałych podlega istniejącej semantyce skończonych `double`
-> z `ExpressionFactory` i może wprowadzić zwykłe zaokrąglenie
-> zmiennoprzecinkowe.**
+W v5 wyjątek **znika**, bo redukcja jest wyłącznie dokładna (3.2):
 
-To nie jest nowe ryzyko — fabryka zwija stałe od Fazy 1 i cały projekt na tym
-stoi.
+> **Kanonizator nie wprowadza żadnego nowego zaokrąglenia.** Przekształcenia
+> strukturalne zachowują znaczenie algebraiczne dokładnie, a stałe łączone są
+> tylko wtedy, gdy połączenie jest dokładne — sprawdzane 2Sum/`fma`, nie
+> zakładane.
+
+Dzięki temu krok 1 jest prawdziwy **bez zastrzeżeń**, a cały dowód 1–4 stoi.
+
+Uwaga, żeby nie było nieporozumienia: fabryka nadal zwija stałe zachłannie przy
+budowie i **to się nie zmienia** — to jest semantyka wejściowego DAG-a, ustalona
+w Fazie 1. Kontrakt mówi o tym, czego **kanonizator** nie dokłada od siebie.
 
 ### 6.4 Test: behawioralny, ale **na kontrolowanym materiale**
 
@@ -971,7 +1106,11 @@ AC-normalizacja
   ReducesConstantsExplicitly             3 + x + 4 -> 7 + x, niezależnie od kształtu
   ReducesConstantsInCanonicalOrder       1e16 + x + (-1e16) + y + 1  i przestawione
                                          -> TA SAMA stała  (3.2, kontrprzykład z review)
-  KeepsUnreducibleConstantsInOrder       gdy fabryka odmówi zwinięcia (overflow)
+  ReducesOnlyExactlyRepresentableSums    3 + x + 4 -> 7 + x   ŁĄCZY
+                                         q + 1e16 + 1 + (-1e16)  NIE ŁĄCZY (3.2)
+  PreservesZeroSetOfADenominator         ten sam mianownik: 1/(q+1e16+1+(-1e16))
+                                         zero pozostaje w q = -1, nie przenosi się na 0
+  KeepsUnjoinableConstantsApartInRebuild fabryka nie dostaje dwóch stałych naraz (3.2.1)
   DropsNeutralConstant                   0 + x -> x  po redukcji, nie przez fabrykę
   RebuildsInBalancedShape                jednoznaczny kształt (5.5), nie tylko kolejność
   NormalizesSignByParity                 -(a*b), (-a)*b, a*(-b) -> JEDEN DAG (3.3)
@@ -980,6 +1119,10 @@ AC-normalizacja
   CancelsEvenSignParity                  (-a)*(-b) -> a*b, bez osobnej reguły
   EliminatesSubtractionEntirely          wyjście nie zawiera węzła Subtract (3.4)
   NormalizesNestedSubtractionWithPolarity  a-(b-c)  i  (a-b)+c  -> ta sama postać
+  NormalizesExplicitNegatedSum           -(a+b),  0-(a+b),  (-a)+(-b) -> ta sama postać
+  FlattensOperatorRevealedByChildNormalization
+                                         a + -(-(b+c))  ->  PŁASKIE [a,b,c] (3.4)
+  NormalizesSignThroughDivision          -(a/b), (-a)/b, a/(-b) -> JEDEN DAG (3.3)
   RemovesDoubleNegation                  -(-x) -> x  w KANONIZATORZE, nie regułą
   IsIdempotent                           normalize(normalize(E)) sameNode normalize(E)
 
@@ -1042,6 +1185,11 @@ w F3.1 6.7, gdzie deklarowany gate dwa razy okazał się przewidywaniem.
 | „Postać normalna" bez zdefiniowanego kształtu drzewa | **realne, złapane w review** | Zbalansowane drzewo, deterministycznie (5.5) |
 | Redukcja stałych w kolejności wejściowej daje różne postacie | **realne, zmierzone, złapane w review** | Stałe sortowane **przed** redukcją, składane zbalansowanie (3.2); własny test na kontrprzykładzie |
 | Obietnica „wszystkie stałe → jedna" nie do dotrzymania | **realne, zmierzone** | Fabryka odmawia zwinięcia przy przepełnieniu; kontrakt ogranicza obietnicę wprost (3.2) |
+| Redukcja stałych zmienia `zeroSet` wyrażenia | **realne, zmierzone, złapane w review** | Łączenie **wyłącznie dokładne**, sprawdzane 2Sum/`fma` (3.2); dowód z 6.3 nie ma już wyjątku |
+| Fabryka zwija stałe, których kanonizator świadomie nie połączył | **realne, nieoczywiste** | Stałe doklejane na zewnątrz zbalansowanego drzewa, nigdy dwie w jednym `add` (3.2.1) |
+| Kanonizacja dziecka odsłania operator AC już po zebraniu łańcucha | **realne, złapane w review** | Kolektor spłaszcza wynik (splice), terminacja oparta na 5.6 (3.4) |
+| `-(a+b)` obok `0-(a+b)` jako dwie postacie | **realne, złapane w review** | Zejście przez `Negate` w kolektorze (3.4), własny test |
+| `F3.5` zakłada globalną jednoznaczność znaku | realne | Zakres konwencji wypisany wprost, z `Divide` w środku i z tym, co zostaje poza (3.3) |
 | Normalizacja znaku nie daje jednej postaci | **realne, złapane w review** | Konwencja parzystości: znak wychodzi na zewnątrz iloczynu, sortowanie bez znaków (3.3) |
 | Transformacja po sortowaniu rozbija własny wynik | **realne, złapane w review** | `Subtract` i znak obsługiwane **przy zbieraniu**, nie po odbudowie (3.3, 3.4) |
 | „Dziedzina" znaczy dwie różne rzeczy naraz | **realne, zmierzone, złapane w review** | Dwa rozdzielone kontrakty: symboliczna nad `R` — dokładnie; określoność w `double` — nie (6.2). Konsekwencja dla F3.10 zapisana |
