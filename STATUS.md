@@ -9,16 +9,19 @@
 
 ## ▶ Where we are right now
 
-> **Stage F3.2 — waiting for review of the architecture proposal, version v8.**
+> **Stage F3.2 — architecture approved; waiting for review of the
+> implementation proposal, version v1.**
 >
 > ```text
-> proposal/F3.2-canonical-form/proposal-canonical-form-architecture.md    v4
+> proposal/F3.2-canonical-form/proposal-canonical-form-architecture.md    v8  approved
+> proposal/F3.2-canonical-form/proposal-canonical-form-implementation.md  v1  in review
 > ```
 >
 > **Nothing about F3.2 is implemented and nothing should be.** No
 > `ExpressionCanonicalizer`, no `CanonicalizationSession`, no
-> `EquationSimplifier` — the proposal is a document, and the code in this repo
-> ends at F3.1. The next action is **the reviewer's verdict on v4**, not typing.
+> `EquationSimplifier` in `src/` — the proposals are documents, and the code in
+> this repo ends at F3.1. The next action is **the reviewer's verdict on the
+> implementation proposal**, not typing.
 >
 > After APPROVED, in this order: implementation proposal → review → code → both
 > builds green → update these documents → move F3.2 to `proposal/done/`.
@@ -902,7 +905,8 @@ Paths below are relative to `proposal/`.
 | `done/F2.7-facade-integration/proposal-phase2-facade-integration-implementation.md` | Facade code + 12 tests | implemented |
 | `done/F3.1-rewrite-engine/proposal-rewrite-engine-semantics-architecture.md` | Rewrite engine semantics: domain guards, fixed point, rule contracts (F3.1) | **approved (v6)** |
 | `done/F3.1-rewrite-engine/proposal-rewrite-engine-semantics-implementation.md` | Rewrite engine: full code, exhaustive domain visitor, 28 tests (F3.1) | **implemented (v4)** |
-| `F3.2-canonical-form/proposal-canonical-form-architecture.md` | AC-normal form: sound-and-complete exactness predicate, idempotent reducer (F3.2) | **in review (v8)** |
+| `F3.2-canonical-form/proposal-canonical-form-architecture.md` | AC-normal form: sound-and-complete exactness predicate, idempotent reducer (F3.2) | **approved (v8)** |
+| `F3.2-canonical-form/proposal-canonical-form-implementation.md` | Canonicaliser and a thin EquationSimplifier, 25 tests (F3.2) | **in review (v1)** |
 | `done/F2.3.R-review-remediation/` | Five proposals answering the 2026-08-17 code review | implemented |
 
 ## Next step

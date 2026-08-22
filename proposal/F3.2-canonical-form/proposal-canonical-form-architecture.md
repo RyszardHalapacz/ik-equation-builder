@@ -1,6 +1,6 @@
 # Proposal: postać kanoniczna — F3.2, architektura
 
-**Etap:** F3.2 · **v8 — CZEKA NA REVIEW** · 2026-08-22 · część 1 z 2
+**Etap:** F3.2 · **v8 — ZATWIERDZONY 2026-08-22** · część 1 z 2
 
 > **v8, po siódmym review.** Jeden blocker i dwie pozostałości tekstowe:
 >
@@ -60,11 +60,10 @@
 > 4. Zakres normalizacji znaku **rozszerzony na `Divide`** i powiedziany wprost,
 >    żeby `F3.5` nie zostało z „znak jednoznaczny, ale nie przy dzieleniu" (3.3).
 
-> **Stan tego dokumentu:** wersja **v8**, oddana do review, **werdyktu jeszcze
-> nie ma**. Nic z F3.2 nie jest zaimplementowane i nie powinno być — kod w repo
-> kończy się na F3.1. Następny krok to **decyzja recenzenta o v8**, nie pisanie
-> kodu. Po APPROVED: proposal implementacyjny → review → kod → oba buildy
-> zielone → aktualizacja dokumentów → `proposal/done/`.
+> **Stan tego dokumentu: ZATWIERDZONY.** Następny krok to proposal
+> implementacyjny. Dwie uwagi nieblokujące z approvala idą tam, nie tutaj:
+> jawny kontrakt platformowy IEEE-754 binary64 wraz z `static_assert`ami
+> i pilnowaniem FTZ/DAZ, oraz oracle-testy predykatu z 3.2.1.
 
 > **v4, po trzecim review.** Trzy blockery, wszystkie z próby złamania definicji:
 >
@@ -282,7 +281,8 @@ canonicalize(E), dla węzła złożonego:
   7. posortuj pozostałe składniki porządkiem z 5.2
   8. odbuduj: balanced(niestałe), stałe doklejone NA ZEWNĄTRZ   <-- 5.5, 3.2.3
         żadne wywołanie add/multiply nie dostaje dwóch stałych
-  9. parzystość nieparzysta: JEDEN Negate na zewnątrz         <-- 3.3
+  9. parzystość nieparzysta: canonicalNegate(wynik)            <-- 3.3
+        NIE „jeden Negate na zewnątrz": dla sumy znak wchodzi w składniki
  10. jeśli nic się nie zmieniło: zwróć ORYGINALNY Expression  <-- 5.6
 ```
 
