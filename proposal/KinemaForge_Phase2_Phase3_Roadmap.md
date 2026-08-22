@@ -1257,7 +1257,7 @@ done/F2.7-facade-integration/
 --- w toku, w proposal/ ---
 
 F3.1-rewrite-engine/
-    proposal-rewrite-engine-semantics-architecture.md       ◀ v3, do review
+    proposal-rewrite-engine-semantics-architecture.md       ◀ v4, do review
     proposal-rewrite-engine-semantics-implementation.md     po review
     implementation + tests
 ```
@@ -1359,6 +1359,11 @@ W v3 dochodzi rozliczenie **sesji dzielonej między korzeniami**: kontrakt pól
 `changed` i `steps` (memo-hit nie jest krokiem), wymóg zachowania tożsamości
 węzła, deterministyczne punkty biegunowe w teście dziedziny oraz drugi cache
 sesji na strażników dziedziny.
+
+W v4 memo sesji staje się **transakcyjne**: przyjmuje wyłącznie udowodnione punkty
+stałe, więc wynik przerwany limitem nie może wyciec do następnego korzenia. Limit
+domyślny podniesiony do `1 000 000` — zmierzone maksimum to `kr4_r600` z 153 703
+węzłami z krotnościami, nie `kr640` z 21 882.
 
 Uwaga z sekcji 4, która staje się teraz aktualna: `F3.3` (trygonometria), `F3.5`
 (pattern detector), `F3.8` (solver pozycji 6R), `F3.9` (solver wrist) i `F3.10`
