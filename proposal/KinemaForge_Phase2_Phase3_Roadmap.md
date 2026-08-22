@@ -1257,7 +1257,7 @@ done/F2.7-facade-integration/
 --- w toku, w proposal/ ---
 
 F3.1-rewrite-engine/
-    proposal-rewrite-engine-semantics-architecture.md       ◀ v4, do review
+    proposal-rewrite-engine-semantics-architecture.md       ◀ v5, do review
     proposal-rewrite-engine-semantics-implementation.md     po review
     implementation + tests
 ```
@@ -1361,9 +1361,14 @@ węzła, deterministyczne punkty biegunowe w teście dziedziny oraz drugi cache
 sesji na strażników dziedziny.
 
 W v4 memo sesji staje się **transakcyjne**: przyjmuje wyłącznie udowodnione punkty
-stałe, więc wynik przerwany limitem nie może wyciec do następnego korzenia. Limit
-domyślny podniesiony do `1 000 000` — zmierzone maksimum to `kr4_r600` z 153 703
-węzłami z krotnościami, nie `kr640` z 21 882.
+stałe, więc wynik przerwany limitem nie może wyciec do następnego korzenia.
+
+W v5 poprawiona jest sama **definicja punktu stałego**: reguła dostaje fabrykę, więc
+może zbudować poddrzewo, którego w wejściu nie było, i po jej zastosowaniu silnik
+wraca do przepisania **dzieci**, a nie do próby reguł na tym samym węźle. Sesja
+posiada też swoje reguły, a limit `1 000 000` jest przedstawiony jako budżet
+defensywny — granica `steps ≤ measure(root)` **nie** jest prawdziwa, bo krok
+odrzucony przez representability guard liczy się, a miary korzenia nie zmniejsza.
 
 Uwaga z sekcji 4, która staje się teraz aktualna: `F3.3` (trygonometria), `F3.5`
 (pattern detector), `F3.8` (solver pozycji 6R), `F3.9` (solver wrist) i `F3.10`

@@ -1,6 +1,21 @@
 # Proposal: semantyka rewrite engine (F3.1), architektura
 
-**Etap:** F3.1 · **v4 — do review** · 2026-08-22 · część 1 z 2
+**Etap:** F3.1 · **v5 — do review** · 2026-08-22 · część 1 z 2
+
+> **v5, po czwartym review.** Jeden blocker, tym razem w **definicji punktu
+> stałego**, plus trzy rekomendacje przyjęte w całości:
+>
+> 1. **Silnik mógł zameldować punkt stały, który nim nie był.** Reguła dostaje
+>    fabrykę, więc wolno jej zbudować poddrzewo, którego w wejściu nie było;
+>    powrót „do kroku 3" go nie normalizował. Po udanej regule silnik wraca do
+>    **przepisania dzieci**, nie do próby reguł (4.1).
+> 2. **Sesja posiada swoje reguły** — `vector<RewriteRule>` z `std::string name`,
+>    `span` zostaje kształtem parametru konstruktora (3.1).
+> 3. **Cache strażników też jest transakcyjny** — nie dla poprawności, tylko żeby
+>    ścieżka ratunkowa sprzątała po sobie zamiast zostawiać milion żywych
+>    tymczasowych DAG-ów (5.5).
+> 4. **Limit przestaje udawać twierdzenie.** Budżet defensywny, nie granica
+>    wyprowadzona z `measure(root)` — bo ta granica nie jest prawdziwa (11.2).
 
 > **v4, po trzecim review.** Jeden blocker i trzy korekty, wszystkie na tym samym
 > styku co poprzednio — sesja żyjąca dłużej niż pojedyncze wywołanie:
@@ -360,14 +375,46 @@ ma własne kontrakty. To dwa różne pytania i potrzebne są oba.
 // treats an unchanged result as a defect (4.3).
 struct RewriteRule
 {
-    std::string_view name;                                 // for diagnostics
+    // An owning std::string, not a string_view. A view would make the rule's
+    // name a reference into storage the session does not control, and the
+    // session outlives the call that built it (5.3). Rules number a dozen at
+    // most and are copied once, at construction.
+    std::string name;                                      // for diagnostics
     std::optional<Expression> (*apply)(const Expression&, const ExpressionFactory&);
 };
 ```
 
-Reguła jest **danymi, nie klasą**: zestaw reguł staje się `span`em, testy mogą
-uruchomić jedną regułę bez reszty, a nazwa w komunikacie asercji mówi, co
+Reguła jest **danymi, nie klasą**: zestaw reguł przekazuje się jako `span`, testy
+mogą uruchomić jedną regułę bez reszty, a nazwa w komunikacie asercji mówi, co
 zadziałało.
+
+**Sesja reguły kopiuje, nie pożycza.** `span` jest kształtem **parametru
+konstruktora**, nie kształtem pola:
+
+```cpp
+RewriteSession(std::span<const RewriteRule> rules, ExpressionFactory factory, ...)
+    : rules_(rules.begin(), rules.end()), factory_(std::move(factory)) { }
+
+std::vector<RewriteRule> rules_;
+```
+
+Bez tego pierwsza naturalna fabryka sesji jest błędem, którego kompilator nie
+złapie:
+
+```cpp
+RewriteSession makeCanonicalSession()
+{
+    std::vector<RewriteRule> rules = canonicalRules();
+    return RewriteSession{rules, ExpressionFactory{}};
+}   // rules umiera; sesja zostaje z wiszącym span'em
+```
+
+Sam `vector<RewriteRule>` by tego nie załatwił, dopóki `name` było
+`string_view` — stąd `std::string` wyżej. Precedens jest w projekcie:
+`ExpressionEvaluator` posiada swoje `SymbolValues`, a `JointTransformBuilder`
+i `ForwardKinematicsBuilder` biorą `ExpressionFactory` przez wartość. API
+niewłasnościowe nie kupuje tu **niczego** — kilkanaście reguł kopiuje się raz,
+przy konstrukcji.
 
 ### 3.2 Podział odpowiedzialności — dokładnie
 
@@ -397,28 +444,63 @@ Symetrycznie: silnik **nie** sprawdza (E), bo nie umie. Ta asymetria jest treśc
 ### 4.1 Kształt przejścia
 
 ```text
-rewrite(expression)
-    1. przepisz rekurencyjnie dzieci        (memoizacja, 5)
-    2. złóż węzeł z przepisanych dzieci     (representability guard, 2.7)
-    3. spróbuj reguł na węźle bieżącym, po kolei
-    4. każde trafienie sprawdź warunkiem z 2.3; odrzucone -> następna reguła
-    5. jeśli coś zadziałało, wróć do 3 dla wyniku -- PĘTLĄ, nie rekurencją
-    6. stop na punkcie stałym albo na limicie
+rewriteNode(expression)
+    current = expression
+    pętla:
+        1. przepisz rekurencyjnie dzieci current      (memoizacja, 5)
+        2. złóż current z przepisanych dzieci        (representability guard, 2.7)
+        3. znajdź pierwszą dopuszczalną regułę na current
+              trafienie sprawdzone warunkiem z 2.3; odrzucone -> następna reguła
+        4. brak dopuszczalnej reguły  -> ZWRÓĆ current      (punkt stały)
+        5. current = wynik reguły; ++steps; WRÓĆ DO 1
 ```
 
-**Krok 5 jest pętlą `while` na bieżącym węźle, nie wywołaniem
-`rewriteNode(wynik)`** — i to jest wymóg implementacyjny, nie preferencja stylu.
-Rekurencja zużywałaby ramkę stosu na każde zastosowanie reguły, więc przy limicie
-rzędu miliona (11.2) proces padłby na przepełnieniu stosu **przed** wyczerpaniem
-limitu. Siatka bezpieczeństwa, która nie łapie, bo coś innego zabija proces
-wcześniej, nie jest siatką bezpieczeństwa. Rekurencja zostaje wyłącznie tam, gdzie
-odpowiada strukturze danych — w kroku 1, po dzieciach, gdzie głębokość jest
-ograniczona wysokością DAG-a, a nie liczbą kroków.
+Dwie rzeczy w tej pętli są rozstrzygnięciami, nie zapisem oczywistości.
 
-Ponowna próba startuje od kroku 3, nie 1: dzieci są już przepisane, a wynik reguły
-składa się z materiału, który przeszedł przez krok 1. Gdyby reguła wprowadziła
-nowe, nieprzepisane poddrzewo, obsłuży je kolejne wywołanie z kroku 1 dla tego
-poddrzewa — memo z 5 sprawia, że to nic nie kosztuje.
+**Krok 5 wraca do 1, nie do 3.** v4 wracała do 3 i twierdziła, że to wystarczy, bo
+„wynik reguły składa się z materiału, który przeszedł przez krok 1". **To było
+nieprawdą.** `RewriteRule::apply` dostaje `ExpressionFactory` — z premedytacją,
+bo bez niej nie zbuduje niczego — więc wolno jej **skonstruować poddrzewo, którego
+w wejściu nie było**. Kontrakt wymaga od niej tylko (E) i malejącej miary.
+
+Kontrprzykład, całkowicie legalny względem 3.2:
+
+```text
+A  = (q + q) + (r - r)
+
+R1:  A -> 2 * -(-q)          (E):  (q+q)+(r-r) = 2q  oraz  2*-(-q) = 2q
+                             miara: 7 -> 5, ściśle malejąca
+                             dziedzina: brak Divide po obu stronach, guardy równe
+
+R2:  -(-x) -> x              zwykła reguła kanonizująca z F3.2
+```
+
+Przy powrocie do kroku 3 silnik próbuje reguł na `Multiply(2, -(-q))`. Żadna nie
+pasuje do `Multiply`, więc silnik kończy i **melduje punkt stały** — podczas gdy
+w środku siedzi `-(-q)`, na które R2 pasuje. Wynik nie jest punktem stałym, a
+`RewriteResult` twierdzi, że jest.
+
+Sprawdzone w kodzie, bo od tego zależy, czy przykład w ogóle istnieje:
+`ExpressionFactory::negate` składa **wyłącznie stałe** (`ExpressionFactory.cpp:77`),
+więc `-(-q)` jest w pełni konstruowalne i nie znika przy budowie.
+
+Powrót do kroku 1 zamyka dziurę: każde świeże poddrzewo wprowadzone przez regułę
+przechodzi **pełną normalizację innermost**, zanim cokolwiek zostanie uznane za
+punkt stały. Dla dzieci już znormalizowanych to kosztuje jedno trafienie w memo.
+
+**Pętla, nie rekurencja.** To zostaje z v4 i współgra z powyższym: kolejne
+zastosowania reguł na tym samym węźle siedzą w `while`, nie w łańcuchu ramek
+stosu. Rekurencja występuje **wyłącznie** w kroku 1, przy schodzeniu po dzieciach,
+gdzie głębokość ogranicza wysokość DAG-a, a nie liczba kroków. Bez tego limit z
+11.2 nie byłby siatką bezpieczeństwa — proces padałby na stosie, zanim limit by
+zadżiałał.
+
+**Dlaczego pętla się kończy.** Każdy obrót wymaga zastosowania reguły na
+`current`, a to ściśle zmniejsza `measure(current)` (4.3). Krok 1 miary nie
+zwiększa — przepisanie dziecka samo jest ciągiem kroków ściśle malejących. Liczba
+obrotów na danym węźle jest więc ograniczona przez `measure` tego węzła. To
+argument **per węzeł** i tylko taki jest tu prawdziwy — dlaczego nie sumuje się do
+ładnej granicy dla całego wywołania, rozliczone w 11.2.
 
 Kolejność **innermost** jest wyborem: reguła na węźle bieżącym widzi poddrzewa
 już uproszczone, więc wzorce z F3.2 pisze się pod postać po uproszczeniu, a nie
@@ -433,9 +515,16 @@ c) raport o limicie    wynik mówi, że nie osiągnięto punktu stałego
 ```
 
 `(a)` jest właściwym zabezpieczeniem: przy ściśle malejącej mierze pętla
-`A → B → A` jest niemożliwa. `(b)` istnieje **mimo** `(a)`, bo `(a)` jest
-kontraktem, a kontrakty łamie reguła napisana jutro; budżet zamienia
-nieskończoną pętlę w **zdiagnozowany** koniec. `(c)` istnieje, bo ciche „prawie
+`A → B → A` jest niemożliwa, a pętla z 4.1 na danym węźle ma skończoną liczbę
+obrotów. `(b)` istnieje **mimo** `(a)`, bo `(a)` jest kontraktem, a kontrakty
+łamie reguła napisana jutro; budżet zamienia nieskończoną pętlę w
+**zdiagnozowany** koniec.
+
+Uwaga, która oszczędzi czytelnikowi złego wniosku: `(a)` daje terminację, ale
+**nie** daje granicy `steps ≤ measure(root)` — krok zaakceptowany głębiej może
+zostać wyrzucony przy składaniu rodzica przez guard z 2.7, więc licznik rośnie,
+a miara korzenia nie maleje. Rozliczone w 11.2, gdzie z tego powodu limit jest
+budżetem, a nie wyprowadzoną liczbą. `(c)` istnieje, bo ciche „prawie
 uproszczone" jest gorsze niż jawne „nie zbiegło".
 
 Alternatywa — pamiętanie odwiedzonych postaci i wykrywanie cyklu — **odrzucona**:
@@ -517,13 +606,21 @@ strony współdzielą poddrzewa FK. Wolna funkcja z memo per wywołanie przebudo
 wspólne poddrzewo **24 razy** i rozbiła współdzielenie **między** równaniami.
 
 ```cpp
-class RewriteSession        // rules + factory + limit + memo (5.5) + guards (5.4)
+class RewriteSession
 {
 public:
+    // Takes a span and COPIES it -- the session owns its rules (3.1).
     RewriteSession(std::span<const RewriteRule> rules, ExpressionFactory factory,
                    std::size_t stepLimit = kDefaultRewriteStepLimit);
 
     [[nodiscard]] RewriteResult rewrite(const Expression& expression);
+
+private:
+    std::vector<RewriteRule> rules_;
+    ExpressionFactory factory_;
+    std::size_t stepLimit_;
+    Memo memo_;         // proven fixed points only (5.5)
+    Guards guards_;     // domain guards per node (5.4)
 };
 ```
 
@@ -534,10 +631,11 @@ kilka pól — więc dla innego zestawu tworzy się nową.
 **Zasięgi, rozdzielone świadomie** (poprawka z v3):
 
 ```text
+reguły        na SESJĘ    -- kopiowane, nie pożyczane (3.1)
 memo sesji    na SESJĘ    -- po to sesja istnieje: współdzielenie między korzeniami
                             ...ale WYŁĄCZNIE punkty stałe, 5.5
-memo lokalne  na WYWOŁANIE -- wpisy nowe, commitowane dopiero na końcu, 5.5
-guard cache   na SESJĘ    -- 5.4
+guard cache   na SESJĘ    -- 5.4, też transakcyjny, 5.5
+memo lokalne  na WYWOŁANIE -- wpisy nowe obu cache'y, commit dopiero na końcu, 5.5
 stepLimit     na WYWOŁANIE
 steps         na WYWOŁANIE
 ```
@@ -672,9 +770,28 @@ Koszt: wywołanie przerwane limitem nie zostawia po sobie cache'u. Zgoda — to
 może podać wynik z powrotem na wejście: jest poprawny, o tej samej dziedzinie,
 tylko nieukończony.
 
-Cache strażników z 5.4 **nie** podlega tej regule i może zostać na sesji bez
-warunków: `guards(E)` jest własnością **samego wyrażenia** `E`, a nie wynikiem
-przepisywania, więc przerwanie w połowie niczego w nim nie psuje.
+**Cache strażników z 5.4 dostaje ten sam reżim** — i to jest zmiana względem v4,
+która zostawiała go na sesji bezwarunkowo.
+
+Powodem **nie** jest poprawność: `guards(E)` jest własnością samego `E`, nie
+wynikiem przepisywania, więc przerwanie w połowie nie czyni żadnego wpisu
+nieprawdziwym. Powodem są **zasoby**. Wyobraźmy sobie dokładnie ten scenariusz, dla
+którego limit istnieje: zepsuta reguła w Release produkuje przez milion kroków nowe
+węzły. Limit ratuje proces, memo przepisań zostaje porzucone — ale `guards_`
+kluczuje po `Expression`, czyli **trzyma te wszystkie tymczasowe DAG-i przy
+życiu**. Sesja przeżywałaby uratowanie z cache'em na milion wpisów po
+wyrażeniach, do których nikt już nigdy nie sięgnie.
+
+Ścieżka bezpieczeństwa ma także **posprzątać**, nie tylko przerwać. Oba cache'e
+mają więc warstwę lokalną i wspólny moment commitu:
+
+```text
+punkt stały     -> commit memo lokalnego I lokalnych strażników
+reachedLimit    -> porzucone OBA
+```
+
+Koszt ponownego policzenia strażników po nieudanym przebiegu jest żadny — dziś
+zbiory są puste (5.4), a jutro liczy się je kompozycyjnie.
 
 ---
 
@@ -803,6 +920,26 @@ W `symbolic/`, nie w `builders/`: to narzędzie warstwy wyrażeń.
 [[nodiscard]] bool hasSameDomainGuards(const Expression& before, const Expression& after);
 ```
 
+**Te dwie są API i narzędziem testów, a nie ścieżką, którą chodzi silnik.** Wołane
+wprost, przechodzą DAG od zera przy każdym wywołaniu — dokładnie ten koszt, który
+5.4 zdejmuje cache'em sesji. Silnik używa wersji sesyjnej:
+
+```cpp
+class RewriteSession
+{
+    // cached; consults guards_, fills it compositionally on a miss (5.4)
+    [[nodiscard]] const std::vector<Expression>& domainGuards(const Expression&);
+    [[nodiscard]] bool hasSameDomainGuards(const Expression& before,
+                                           const Expression& after);
+};
+```
+
+Wolne funkcje są jednorazowymi opakowaniami: sesja jednorazowa, jedno pytanie,
+cache umiera z odpowiedzią. **Algorytm istnieje raz** — dwa niezależne
+analizatory dziedziny to dokładnie ten rodzaj rozjazdu, na którym warunek
+bezpieczeństwa przestaje znaczyć to, co mówi jego test. Szczegół należy do
+proposalu implementacyjnego; tu jest zapisany, żeby nie został przeoczony.
+
 ### 7.3 Reguły porządkujące — **poza tym silnikiem**
 
 v1 twierdziła, że `span` reguł jest „szwem" dla reguł porządkujących. To była
@@ -849,6 +986,7 @@ representability guard
 silnik
   ReportsChangedWhenARuleFires
   ReportsUnchangedOnFixedPoint
+  RewritesFreshDescendantsIntroducedByRule   A -> 2*-(-q) -> 2*q w JEDNYM rewrite (4.1)
   StopsAtStepLimitAndSaysSo                  reachedLimit, wynik poprawny
   ReportsUnchangedWhenGuardRejectsInDenominator   root1 z 6.1: changed=false, steps=1
   ReportsChangedWithoutStepsOnMemoHit             root2 z 6.1: changed=true,  steps=0
@@ -863,6 +1001,7 @@ DAG
   SurvivesRewriteOfTemporaryExpression       klucz Expression, nie wskaźnik (5.2)
   DoesNotReuseIncompleteMemoAfterStepLimit   wpisy przerwanego wywołania porzucone (5.5)
   CommitsMemoOnlyAfterReachingFixedPoint     druga strona tego samego inwariantu
+  OutlivesTheRuleArrayItWasBuiltFrom         sesja z reguł w tymczasowym vectorze (3.1)
 
 równoważność Z DZIEDZINĄ
   AgreesOnDefinednessAndValue                patrz niżej
@@ -929,7 +1068,7 @@ NOWE   symbolic/RewriteRule.hpp        RewriteRule, RewriteResult, limit
        symbolic/RewriteEngine.hpp      divisorsOf, hasSameDomainGuards,
                                        RewriteSession, rewrite()
        symbolic/RewriteEngine.cpp      sesja, memo, guardy, miara
-       tests/test_rewrite_engine.cpp   23 testy
+       tests/test_rewrite_engine.cpp   25 testów
 
 ZMIENIONE  CMakeLists.txt, tests/CMakeLists.txt   +1 wiersz każdy
 
@@ -966,6 +1105,11 @@ właśnie po to, żeby nie trzeba było ruszać kontraktu fabryki.
 | Wynik przerwany limitem wyciekł do memo sesji | **realne, złapane w review v3** | Memo sesji transakcyjne: wyłącznie punkty stałe, commit na końcu wywołania (5.5), własny test |
 | Limit porównany z niewłaściwym maksimum | **realne, złapane w review v1 i v3** | Zmierzone oba roboty; `kr4_r600` = 153 703 jest maksimum, limit `1 000 000` (11.2) |
 | Rekurencyjny retry zabija proces przed limitem | **realne, złapane w review v3** | Krok 5 jest pętlą; rekurencja zostaje tylko po dzieciach (4.1) |
+| Silnik melduje punkt stały, który nim nie jest | **realne, złapane w review v4** | Powrót po regule do przepisania dzieci, nie do próby reguł; kontrprzykład i test w 4.1 |
+| Sesja z wiszącym `span`em reguł | **realne, złapane w review v4** | Sesja kopiuje reguły, `name` jest `std::string` (3.1), własny test |
+| Cache strażników trzyma milion tymczasowych DAG-ów po limicie | **realne, złapane w review v4** | Ten sam reżim transakcyjny co memo (5.5) |
+| Limit przedstawiony jako wyprowadzona granica | **realne, złapane w review v4** | 11.2: budżet defensywny; kontrprzykład na `steps ≤ measure(root)` wprost w dokumencie |
+| Dwa niezależne analizatory dziedziny (wolna funkcja vs cache) | realne | Jedna implementacja, wolne funkcje jako opakowania (7.2) |
 | Koszt porównywania strażników przy wielu dzielnikach | świadome, otwarte | Deklaracja `O(N)` wycofana do „raz na unikalny węzeł"; kanonizacja strażników zapisana jako kierunek (5.4) |
 
 ---
@@ -976,51 +1120,71 @@ właśnie po to, żeby nie trzeba było ruszać kontraktu fabryki.
 ma jeden dzielnik występujący dwa razy, a dla dziedziny liczy się tylko `x ≠ 0`.
 Multizbiór odrzucałby łączenie takich składników bez zysku dla bezpieczeństwa.
 
-**11.2 Domyślny limit kroków.** Ta pozycja była poprawiana dwa razy i za każdym
-razem z tego samego powodu — porównywania limitu z **nie tą liczbą**.
+**11.2 Domyślny limit kroków.** Ta pozycja była poprawiana trzy razy i za każdym
+razem z tego samego powodu — próby **wyprowadzenia** limitu z rozmiaru wejścia:
 
 ```text
 v1   10 000    porownane z 281 UNIKALNYMI wezlami kr640
                ...a miara z 4.3 liczy Z KROTNOSCIAMI
 v3  100 000    porownane z 21 882, czyli z kr640
                ...a kr640 NIE jest najwiekszym robotem w repo
+v4  100 000 -> 1 000 000, porownane z kr4_r600 = 153 703
+               ...a samo rozumowanie "steps <= measure(root)" NIE JEST prawdziwe
 ```
 
-Zmierzone teraz na obu, tym samym przejściem co 5.1:
+Trzecia poprawka jest inna od dwóch pierwszych: tam była zła liczba, tu jest zły
+**dowód**. Przeciwprzykład dostarcza sam ten dokument, w 2.7:
 
 ```text
-kr640.urdf        21 882
-kr4_r600.urdf    153 703      <- to jest największe realne wejście
+a / (q - q)
+
+krok:   reguła q-q -> 0 zaakceptowana na poddrzewie      ++steps
+        measure(q-q) spada 3 -> 1
+
+składanie rodzica:
+        representability guard odrzuca 0 w mianowniku
+        Divide zostaje z ORYGINALNYM mianownikiem
+
+wynik:  steps = 1, a measure(root) NIE ZMALAŁA
 ```
 
-Rozumowanie zostaje bez zmian — każdy krok **ściśle** zmniejsza miarę, więc
-liczba kroków jest z góry ograniczona przez `measure(wejścia)`, a limit ma być
-siatką na złamany kontrakt, nie progiem zatrzymującym normalną pracę. Zmienia się
-liczba, która musi leżeć **powyżej**, bo `100 000 < 153 703`:
+Krok został wykonany i policzony, a redukcja została wyrzucona przy skladaniu
+rodzica. To ta sama sytuacja, którą 6.2 wykorzystuje do pokazania
+`changed = false` przy `steps = 1` — więc albo dowód, albo tamten przykład; obu
+naraz mieć nie można.
+
+**Terminacja to nie to samo co granica na `steps`, i tylko ta pierwsza jest tu
+potrzebna.** Terminacja stoi na argumencie **per węzeł** z 4.1: każdy obrót pętli
+na danym węźle ściśle zmniejsza miarę **tego** węzła. Całkowita liczba kroków w
+wywołaniu sumuje się po węzłach i **nie** jest ograniczona przez `measure(root)`.
+Dałoby się pewnie skonstruować ostrożniejszy potencjał i wyprowadzić jakąś
+granicę — tylko po co, skoro limit i tak nie ma być progiem pracy.
+
+**Rozstrzygnięcie:**
 
 ```text
 kDefaultRewriteStepLimit = 1 000 000
 ```
 
-Rząd wielkości powyżej miary największego zmierzonego wejścia. Kosztu to nie
-zmienia żadnego: limit nie **wykonuje** miliona kroków, tylko na tyle pozwala,
-a normalna praca kończy się na punkcie stałym setki razy wcześniej.
+> Milion jest **defensywnym budżetem operacyjnym**. Nie jest matematyczną granicą
+> wyprowadzoną z rozmiaru wejściowego DAG-a. Terminację zapewnia własny,
+> dobrze ufundowany kontrakt miary każdej reguły (4.3); limit istnieje jako
+> **niezależne** zabezpieczenie na wypadek złamania tego kontraktu.
 
-Liczba pozostaje arbitralna i taka ma zostać — to siatka bezpieczeństwa, nie próg
-numeryczny. Gdyby wiązanie jej z rozmiarem akurat tych dwóch robotów miało
-znów się zdezaktualizować przy trzecim, alternatywa jest jawna: powiedzieć wprost,
-że default nie ma związku z żadnym konkretnym robotem. Wybieram wersję z
-uzasadnieniem, bo daje przyszłemu czytelnikowi sposób sprawdzenia, czy liczba
-jest jeszcze sensowna — pod warunkiem, że porówna ją z **maksimum**, nie z
-pierwszym robotem, który mu wpadł w ręce.
+Zmierzone rozmiary zostają w dokumencie, ale już jako **sanity check**, nie jako
+dowód:
 
-Limit tej wielkości jest też powodem, dla którego krok 5 z 4.1 **musi** być
-pętlą: milion zagnieżdżonych wywołań nie doczekałoby limitu.
+```text
+kr640.urdf        21 882 węzłów z krotnościami
+kr4_r600.urdf    153 703
+```
 
-Warunek konieczny, żeby to rozumowanie w ogóle działało: limit i licznik są
-**per wywołanie `rewrite(root)`**, nie na sesję (5.3). Budżet wspólny dla sesji
-przepisującej dwadzieścia cztery strony równań nie ma związku z miarą
-pojedynczego wyrażenia i nie dałoby się go z niej wyprowadzić.
+Milion daje wobec dzisiejszych wejść duży zapas i to jest całe uzasadnienie tej
+liczby. Kosztu nie zmienia żadnego: limit nie **wykonuje** miliona kroków, tylko
+na tyle pozwala.
+
+Limit tej wielkości jest za to powodem, dla którego pętla z 4.1 **musi** być
+pętlą: milion zagnieżdżonych wywołań nie doczekałby limitu.
 
 **11.3 Czy sesja ma przyjmować `ExpressionFactory` przez wartość?** Rekomendacja:
 tak, jak robią to `JointTransformBuilder` i `ForwardKinematicsBuilder`. Fabryka
@@ -1043,12 +1207,17 @@ prawdziwa.
 
 Z v4 dochodzi czwarte i to ono domyka sesję: **memo sesji jest transakcyjne**
 (5.5), więc każdy jego wpis jest punktem stałym, a wywołanie przerwane limitem
-nie zostawia po sobie niczego. Do tego trzy poprawki liczb i kształtu: limit
-`1 000 000` odniesiony do zmierzonego maksimum `kr4_r600` = 153 703 (11.2),
-pętla zamiast rekurencji w kroku 5 (4.1) i wycofana deklaracja `O(N)` (5.4).
+nie zostawia po sobie niczego. Do tego pętla zamiast rekurencji (4.1) i wycofana
+deklaracja `O(N)` (5.4).
+
+Z v5 — poprawna definicja punktu stałego: po udanej regule silnik wraca do
+**przepisania dzieci**, bo reguła może wprowadzić materiał, którego nikt jeszcze
+nie znormalizował (4.1). Plus własność reguł przez sesję (3.1), transakcyjny
+cache strażników (5.5) i limit przedstawiony jako budżet, nie jako wyprowadzona
+granica (11.2).
 
 Po zatwierdzeniu — proposal implementacyjny z pełnym kodem trzech nowych plików
-i dwudziestoma trzema testami, gate `445/445` (422 + 23).
+i dwudziestoma pięcioma testami, gate `447/447` (422 + 25).
 
 Po F3.1 wchodzi **F3.2** — pierwsze prawdziwe reguły: `x + 0`, `x * 1`, zwijanie
 stałych, `q - q → 0`. To tam okaże się, czy guard z 2.7 był potrzebny — i to
