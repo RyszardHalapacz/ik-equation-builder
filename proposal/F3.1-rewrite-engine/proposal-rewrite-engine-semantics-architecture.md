@@ -1,6 +1,6 @@
 # Proposal: semantyka rewrite engine (F3.1), architektura
 
-**Etap:** F3.1 · **v6 — do review** · 2026-08-22 · część 1 z 2
+**Etap:** F3.1 · **v6 — ZATWIERDZONY 2026-08-22** · część 1 z 2
 
 > **v6, po piątym review.** Jeden blocker kontraktowy i trzy poprawki:
 >
