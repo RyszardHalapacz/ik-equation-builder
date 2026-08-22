@@ -1,6 +1,17 @@
 # Proposal: postać kanoniczna — F3.2, architektura
 
-**Etap:** F3.2 · **v7 — CZEKA NA REVIEW** · 2026-08-22 · część 1 z 2
+**Etap:** F3.2 · **v8 — CZEKA NA REVIEW** · 2026-08-22 · część 1 z 2
+
+> **v8, po siódmym review.** Jeden blocker i dwie pozostałości tekstowe:
+>
+> 1. **Predykat dokładności mnożenia nie może być zachowawczy.** v7 przyjęła
+>    fałszywe negatywy jako „koszt jednego węzła" — a po 3.2.4 wiadomo, że
+>    **psują postać normalną tak samo, jak fałszywe pozytywy psuły dziedzinę**:
+>    `(1e200*3)*x` i `1e200*(3*x)` rozjechałyby się. Predykat jest teraz
+>    **sound i complete**, zweryfikowany wobec arytmetyki wymiernej na 8000
+>    parach (3.2.1).
+> 2. Usunięte wzmianki o „`fma` + strażnik zakresu" i o zaokrągleniu przy
+>    redukcji stałych — pozostałości po v5/v6, już nieprawdziwe.
 
 > **v7, po szóstym review.** Trzy blockery — wszystkie w zwijaniu stałych i w
 > domknięciu znaku — oraz **odpowiedź na pytanie architektoniczne**, które
@@ -49,9 +60,9 @@
 > 4. Zakres normalizacji znaku **rozszerzony na `Divide`** i powiedziany wprost,
 >    żeby `F3.5` nie zostało z „znak jednoznaczny, ale nie przy dzieleniu" (3.3).
 
-> **Stan tego dokumentu:** wersja **v7**, oddana do review, **werdyktu jeszcze
+> **Stan tego dokumentu:** wersja **v8**, oddana do review, **werdyktu jeszcze
 > nie ma**. Nic z F3.2 nie jest zaimplementowane i nie powinno być — kod w repo
-> kończy się na F3.1. Następny krok to **decyzja recenzenta o v7**, nie pisanie
+> kończy się na F3.1. Następny krok to **decyzja recenzenta o v8**, nie pisanie
 > kodu. Po APPROVED: proposal implementacyjny → review → kod → oba buildy
 > zielone → aktualizacja dokumentów → `proposal/done/`.
 
@@ -265,7 +276,7 @@ canonicalize(E), dla węzła złożonego:
   3. rozdziel na STAŁE i pozostałe
   4. posortuj stałe porządkiem z 5.2                          <-- najpierw kolejność
   5. redukuj stałe OD LEWEJ z akumulatorem, tylko połączenia DOKŁADNE
-        dodawanie: 2Sum;  mnożenie: fma + strażnik zakresu   <-- 3.2.1
+        dodawanie: 2Sum;  mnożenie: test na reprezentacji     <-- 3.2.1
         bez szukania partnera dla nieprzyłączonej stałej      <-- 3.2.2
   6. odrzuć stałą neutralną, jeśli taka wyszła
   7. posortuj pozostałe składniki porządkiem z 5.2
@@ -388,68 +399,114 @@ najmniejsza liczba subnormalna = 2^-1074
 Czyli reszta z `fma` jest wiarygodna tylko wtedy, gdy **ona sama** jest
 reprezentowalna — a tego nie widać po `p`.
 
-**Kryterium bitowe, na mantysach.** Wychodzimy z reprezentacji `binary64`
-zamiast z reszty:
+**Kryterium musi być sound *i* complete** — i to jest rozstrzygnięcie z v8,
+które przewraca podejście z v7. v7 przyjęła kryterium świadomie zachowawcze,
+uzasadniając to tym, że „nieodrzucone zwinięcie kosztuje jeden węzeł". Po
+napisaniu 3.2.4 **to zdanie przestało być prawdziwe**, czego nie zauważyłem:
+
+```text
+A = (1e200 * 3) * x       fabryka widzi dwie stałe -> zwija do  3e200 * x
+B = 1e200 * (3 * x)       stałe rozdzielone symbolem
+
+1e200 * 3 JEST dokładnie reprezentowalne.
+
+kryterium zachowawcze z v7 odrzuca tę parę, więc:
+    normalize(A) = 3e200 * x
+    normalize(B) = 1e200 * (3 * x)        DWIE POSTACIE NORMALNE
+```
+
+Przyczyna jest ta sama, co w 3.2.4, tylko od drugiej strony: skoro fabryka zwija
+**zachłannie i dokładnie**, to każdy **fałszywy negatyw** predykatu psuje postać
+normalną dokładnie tak samo, jak fałszywy pozytyw psuł dziedzinę. Kontrakt jest
+więc dwustronny:
+
+> `multipliesExactly(a, b)` jest prawdą **wtedy i tylko wtedy**, gdy matematyczny
+> iloczyn `a·b` jest dokładnie reprezentowalnym skończonym `binary64`.
+
+Drugi przypadek, który to samo psuł, a którego v7 też nie widziała: strażnik
+`!isnormal(p) -> false` odrzucał iloczyny o wyniku **subnormalnym, ale dokładnym**
+— na przykład `2^-1000 · 2^-70 = 2^-1070`.
+
+**Pełna analiza bitowa**, bez `__int128`:
 
 ```cpp
-// Exact iff the product of the two 53-bit significands fits back into 53
-// significant bits, and the result stays in the normal range.
+// True exactly when the mathematical product of a and b is a representable
+// finite binary64 -- sound AND complete, because a false negative breaks the
+// normal form just as a false positive breaks the domain (3.2.4).
 //
-// frexp gives |f| in [0.5, 1), so ldexp(|f|, 53) is exactly a 53-bit integer
-// with its top bit set. The product of two such integers has 105 or 106 bits,
-// so it is representable iff at least 53 of its low bits are zero -- and the
-// trailing zeros of a product are the SUM of the operands' trailing zeros, so
-// no 128-bit arithmetic is needed to count them.
-//
-// Conservative by one bit: when the product happens to be 105 bits long, 52
-// trailing zeros would already do. Refusing that case costs one node and keeps
-// the test free of a bit-length computation.
+// frexp gives |f| in [0.5, 1), so ldexp(|f|, 53) is exactly a 53-bit integer.
+// Their product needs at most 106 bits, assembled here from 32-bit limbs
+// rather than __int128, which keeps the MSVC branch of the build viable.
 bool multipliesExactly(double a, double b)
 {
-    const double p = a * b;
+    const double product = a * b;
 
-    if (p == 0.0)
-        return a == 0.0 || b == 0.0;      // otherwise the product underflowed
-
-    if (!std::isnormal(p))
-        return false;                      // subnormal result: not worth proving
+    if (!std::isfinite(product))
+        return false;                       // overflow; the factory declines anyway
+    if (a == 0.0 || b == 0.0)
+        return true;
 
     int exponentA = 0;
     int exponentB = 0;
-    const double fractionA = std::frexp(a, &exponentA);
-    const double fractionB = std::frexp(b, &exponentB);
+    const double fractionA = std::frexp(std::fabs(a), &exponentA);
+    const double fractionB = std::frexp(std::fabs(b), &exponentB);
 
-    const auto significandA =
-        static_cast<std::uint64_t>(static_cast<long long>(std::ldexp(std::fabs(fractionA), 53)));
-    const auto significandB =
-        static_cast<std::uint64_t>(static_cast<long long>(std::ldexp(std::fabs(fractionB), 53)));
+    const auto significandA = static_cast<std::uint64_t>(std::ldexp(fractionA, 53));
+    const auto significandB = static_cast<std::uint64_t>(std::ldexp(fractionB, 53));
 
-    return std::countr_zero(significandA) + std::countr_zero(significandB) >= 53;
+    // Exact 106-bit product as (high, low).
+    const std::uint64_t lowA = significandA & 0xFFFFFFFFull, highA = significandA >> 32;
+    const std::uint64_t lowB = significandB & 0xFFFFFFFFull, highB = significandB >> 32;
+    const std::uint64_t middle = lowA * highB + highA * lowB;   // < 2^54, cannot overflow
+    std::uint64_t high = highA * highB + (middle >> 32);
+    const std::uint64_t middleLow = middle << 32;
+    std::uint64_t low = lowA * lowB + middleLow;
+    if (low < middleLow)
+        ++high;
+
+    const int trailingZeros = low ? std::countr_zero(low) : 64 + std::countr_zero(high);
+    const int bitWidth      = high ? 64 + std::bit_width(high) : std::bit_width(low);
+
+    const int significantBits = bitWidth - trailingZeros;
+    const int lowestExponent  = exponentA + exponentB - 106 + trailingZeros;
+
+    if (significantBits > 53)                    return false;   // needs more than 53 bits
+    if (lowestExponent < -1074)                  return false;   // bits below the smallest subnormal
+    if (lowestExponent + significantBits - 1 > 1023) return false;
+    return true;
 }
 ```
 
-Zmierzone — kolumna „fma" to test z v6, kolumna „bitowe" to powyższy:
+**Zweryfikowane wobec arytmetyki dokładnej**, bo w tej sekcji pomyliłem się dwa
+razy i nie chciałem polegać na rozumowaniu. Predykat porównany z wyrocznia
+liczoną na ułamkach wymiernych, bez zaokrągleń:
 
 ```text
-                          isnormal   fma        bitowe
-nextafter(2^-511)^2         tak      DOKŁADNE   odrzucone    <-- blocker naprawiony
-denorm_min * 0,5            nie      DOKŁADNE   odrzucone
-3 * 4                       tak      DOKŁADNE   DOKŁADNE
-0,5 * 0,25                  tak      DOKŁADNE   DOKŁADNE
-(1 + 2^-52) * 3             tak      zaokr.     odrzucone
-1e200 * 3                   tak      DOKŁADNE   odrzucone    <-- zachowawczo
+15 przypadków brzegowych z tego dokumentu   ->  15/15 zgodnych
+8000 par losowych, w tym subnormalne i skrajne wykładniki
+      4523 dokładnych według wyroczni       ->  0 rozjazdów
 ```
 
-Ostatni wiersz pokazuje cenę: kryterium bitowe odrzuca też iloczyny naprawdę
-dokładne, gdy zabrakło jednego bitu zapasu. **To jest właściwy kierunek błędu** —
-nieodrzucone zwinięcie kosztuje jeden węzeł w drzewie, a błędnie ogłoszona
-dokładność kosztuje gwarancję z 6.3. Na materiale repo nie kosztuje nic: łańcuchy
-iloczynowe mają tam **zero** przypadków z więcej niż jedną stałą (1).
+Kontrolnie, wiersze, które w v7 były błędne:
 
-**Dodawanie zostaje na 2Sum** i to nie jest niekonsekwencja, tylko własność
-arytmetyki: suma o wyniku subnormalnym jest **dokładna** przy stopniowym
-niedomiarze, więc reszta 2Sum nie ma jak wpaść w underflow. Psuje ją wyłącznie
-przepełnienie, a tam fabryka i tak odmawia zwinięcia.
+```text
+nextafter(2^-511)^2      dokładny? NIE   predykat: NIE      (v7: błędnie TAK)
+denorm_min * 0,5         dokładny? NIE   predykat: NIE
+1e200 * 3                dokładny? TAK   predykat: TAK      (v7: błędnie NIE)
+2^-1000 * 2^-70          dokładny? TAK   predykat: TAK      (v7: błędnie NIE)
+```
+
+**Dodawanie zostaje na 2Sum**, i to nie jest niekonsekwencja: 2Sum jest
+**sound i complete** dla każdej pary skończonych `double` bez przepełnienia —
+zwraca dokładny błąd zaokrąglenia, więc `err == 0` zachodzi dokładnie wtedy, gdy
+suma była dokładna. Nie ma tu odpowiednika problemu z 3.2.1, bo suma o wyniku
+subnormalnym jest **dokładna** przy stopniowym niedomiarze, więc reszta nie ma
+jak wpaść w underflow. Psuje ją wyłącznie przepełnienie, a tam fabryka i tak
+odmawia zwinięcia.
+
+Asymetria między dodawaniem a mnożeniem jest więc w **narzędziu**, nie
+w kontrakcie: oba predykaty muszą być dwustronne, tylko dla sumy wystarczy
+sześć działań, a dla iloczynu trzeba sięgnąć do reprezentacji.
 
 ### 3.2.2 Harmonogram redukcji — też musi być częścią kontraktu
 
@@ -555,7 +612,7 @@ a wcześniejsze wersje miały w tym miejscu wyjątek, który unieważniał cał�
 ### 3.2.4 Czy zwijanie stałych jest w ogóle warte tej złożoności?
 
 Pytanie z review, postawione jako ważniejsze od trzech blockerów — i słusznie,
-bo zwijanie zjada większość tego rozdziału: 2Sum, kryterium bitowe, harmonogram,
+bo zwijanie zjada większość tego rozdziału: 2Sum, test bitowy, harmonogram,
 powtarzanie do punktu stałego, ochrona reszt przed fabryką. Pięć mechanizmów po
 to, żeby — według pomiaru z 1 — zwinąć stałe w **jednym łańcuchu sumowym w całym
 korpusie dwóch robotów**.
@@ -1145,7 +1202,7 @@ symbolicznie.
        przestawienie i przenawiasowanie sumy/iloczynu     -- dokładnie
        Subtract(a,b) -> Add(a, Negate(b))                 -- dokładnie, też bitowo
        konwencja parzystości znaku                        -- dokładnie
-       redukcja stałych                                   -- z zaokrągleniem double
+       redukcja stałych                                   -- WYŁĄCZNIE gdy dokładna
 2. zatem dla każdego mianownika d:   d  ==  canonicalize(d)  jako funkcje NAD R
 3. zatem                              zeroSet(d) == zeroSet(canonicalize(d))
 4. zatem dziedzina SYMBOLICZNA całego wyrażenia jest zachowana
@@ -1160,8 +1217,8 @@ W v5 wyjątek **znika**, bo redukcja jest wyłącznie dokładna (3.2):
 
 > **Kanonizator nie wprowadza żadnego nowego zaokrąglenia.** Przekształcenia
 > strukturalne zachowują znaczenie algebraiczne dokładnie, a stałe łączone są
-> tylko wtedy, gdy połączenie jest dokładne — sprawdzane 2Sum/`fma`, nie
-> zakładane.
+> tylko wtedy, gdy połączenie jest dokładne — **sprawdzane**, nie zakładane:
+> 2Sum dla sumy, test na reprezentacji `binary64` dla iloczynu (3.2.1).
 
 Dzięki temu krok 1 jest prawdziwy **bez zastrzeżeń**, a cały dowód 1–4 stoi.
 
@@ -1374,7 +1431,14 @@ AC-normalizacja
   RejectsUnderflowedProductAsInexact     denorm_min * 0,5 — fma mówi „0", odrzucone
   RejectsProductWhoseRoundingErrorUnderflows
                                          nextafter(2^-511)^2 — wynik NORMALNY,
-                                         fma mówi „0", kryterium bitowe odrzuca (3.2.1)
+                                         fma mówi „0", predykat odrzuca (3.2.1)
+  AcceptsExactProductOutsideTheNormalRange
+                                         2^-1000 * 2^-70 — wynik SUBNORMALNY,
+                                         ale dokładny: musi zostać złączony
+  AcceptsExactProductThatFmaAlsoAccepts   1e200 * 3 — dokładny; odrzucenie go
+                                         rozbiłoby postać normalną (3.2.1)
+  AgreesWithExactArithmeticOnASweep      staly zestaw par, w tym subnormalne;
+                                         wyrocznia liczona bez zaokrągleń
   ExactReductionHasUniquePairingSchedule stałe 1, 2, 2^53 -> reszty [3, 2^53],
                                          nigdy [1, 2^53+2]  (3.2.2)
   ReducesConstantsToAFixedPoint          2^52, 2^52+1, 2^52+3 -> JEDNA stała;
@@ -1444,7 +1508,9 @@ zachłanna przeszłaby każdy inny test w tym pliku.
 
 `RejectsUnderflowedProductAsInexact` jest jedynym testem, który łapi błąd
 z 3.2.1, i bez niego wersja z samą `fma` wygląda poprawnie na wszystkich
-pozostałych przypadkach.
+pozostałych przypadkach. `AgreesWithExactArithmeticOnASweep` jest za to jedynym
+testem, który łapie **fałszywe negatywy** — a te nie objawiają się złym wynikiem,
+tylko drugą postacią normalną dla wejścia, które nikt akurat nie sprawdził.
 
 `SharesOneSessionAcrossTheSystem` jest jedynym testem, który wymaga
 `EquationSimplifier` — i głównym powodem, dla którego powstaje już teraz (13).
@@ -1469,7 +1535,8 @@ w F3.1 6.7, gdzie deklarowany gate dwa razy okazał się przewidywaniem.
 | Redukcja stałych w kolejności wejściowej daje różne postacie | **realne, zmierzone, złapane w review** | Stałe sortowane **przed** redukcją, składane zbalansowanie (3.2); własny test na kontrprzykładzie |
 | Obietnica „wszystkie stałe → jedna" nie do dotrzymania | **realne, zmierzone** | Fabryka odmawia zwinięcia przy przepełnieniu; kontrakt ogranicza obietnicę wprost (3.2) |
 | Redukcja stałych zmienia `zeroSet` wyrażenia | **realne, zmierzone, złapane w review** | Łączenie **wyłącznie dokładne** (3.2); dowód z 6.3 nie ma już wyjątku |
-| `fma` ogłasza dokładnym iloczyn, którego błąd sam wpadł w underflow | **realne, zmierzone, złapane w review — dwa razy** | Kryterium **bitowe** na mantysach zamiast reszty; kierunek błędu świadomie konserwatywny (3.2.1) |
+| `fma` ogłasza dokładnym iloczyn, którego błąd sam wpadł w underflow | **realne, zmierzone, złapane w review — dwa razy** | Predykat liczony z **reprezentacji**, nie z reszty (3.2.1) |
+| Zachowawczy predykat odrzuca dokładny iloczyn i rozbija postać normalną | **realne, złapane w review** | Kontrakt dwustronny: sound **i** complete; zweryfikowany wobec arytmetyki wymiernej na 8000 parach (3.2.1) |
 | Reducer deterministyczny, ale nie idempotentny | **realne, zmierzone, złapane w review** | Powtarzanie do punktu stałego, terminacja przez malejącą liczbę stałych (3.2.2) |
 | Końcowy znak owija sumę w `Negate` | **realne, złapane w review** | `canonicalNegate` zamiast `factory.negate` (3.3), własny test |
 | Usunięcie zwijania stałych jako „uproszczenie" | **realne, kuszące** | Przewraca postać normalną: `(3+4)+x` i `3+x+4` dałyby dwa wyniki (3.2.4) |
