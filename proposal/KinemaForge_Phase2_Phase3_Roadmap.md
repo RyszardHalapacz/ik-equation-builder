@@ -1258,7 +1258,7 @@ done/F2.7-facade-integration/
 
 F3.1-rewrite-engine/
     proposal-rewrite-engine-semantics-architecture.md       ◀ v6, ZATWIERDZONY
-    proposal-rewrite-engine-semantics-implementation.md     ◀ v1, do review
+    proposal-rewrite-engine-semantics-implementation.md     ◀ v2, do review
     implementation + tests
 ```
 

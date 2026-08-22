@@ -1,6 +1,27 @@
 # Proposal: silnik przepisywania — F3.1, implementacja
 
-**Etap:** F3.1 · **v1 — do review** · 2026-08-22 · część 2 z 2
+**Etap:** F3.1 · **v2 — do review** · 2026-08-22 · część 2 z 2
+
+> **v2, po review.** Jeden blocker, trzy wzmocnienia i dwa drobiazgi:
+>
+> 1. **`collectGuards` nie zatrzymywało builda przy nowym typie węzła.**
+>    Generyczne `requires { node.operand; }` potraktowałoby `SqrtNode` jak
+>    operator totalny i policzyło `guards(sqrt(x)) = guards(x)`, gubiąc `x >= 0`.
+>    Visitor jest teraz **wyliczający**, z `static_assert` w galeęzi domyślnej (3).
+> 2. **Test „odrzucona reguła nie blokuje kolejnych" nie testował tego, co
+>    deklaruje** — dowodził rzeczy o traversalu, nie o dwóch regułach na jednym
+>    węźle. Rozdzielone na dwa testy (6.4).
+> 3. **Równoważność behawioralna sprawdzana była tylko dla rewrite'u
+>    odrzuconego.** Dochodzi test dla rewrite'u **przyjętego** (6.6).
+> 4. **Kontrakt determinizmu wzmocniony** do niezależności od przypadkowego
+>    współdzielenia DAG-a (1.3).
+> 5. Cache'owa maszyneria schowana w `namespace detail`, `<utility>` w teście.
+>
+> Liczba testów rośnie z 26 do **28**, gate `450/450`. Architektura wymienia 26 —
+> różnica to dwa testy dodane w tym review, nie zmiana zakresu etapu.
+>
+> **Jedna uwaga z review się nie potwierdziła** i opisuję to w 6.5, bo wpływa na
+> to, czemu wierzyć przy następnym takim przypadku.
 
 > Architektura **v6 zatwierdzona**. Ten dokument nie zmienia żadnego jej
 > rozstrzygnięcia — pokazuje kod, który je realizuje, i rozstrzyga to, co
@@ -23,7 +44,7 @@
 > implementuj, potem zrob aktualizacje danych, potem zrob commita, potem pisz
 > kolejny proposal
 
-Dokument zawiera pełny kod trzech nowych plików, 26 testów i dwie linijki
+Dokument zawiera pełny kod trzech nowych plików, 28 testów i dwie linijki
 w CMake. Nic z istniejącego kodu nie jest modyfikowane.
 
 ---
@@ -34,7 +55,7 @@ w CMake. Nic z istniejącego kodu nie jest modyfikowane.
 NOWE   src/ik_equations/symbolic/RewriteRule.hpp     typy i kontrakty
        src/ik_equations/symbolic/RewriteEngine.hpp   API + sesja
        src/ik_equations/symbolic/RewriteEngine.cpp   analizator, sesja, pętla
-       tests/test_rewrite_engine.cpp                 26 testów
+       tests/test_rewrite_engine.cpp                 28 testów
 
 ZMIENIONE  CMakeLists.txt          +1 wiersz
            tests/CMakeLists.txt    +1 wiersz
@@ -84,17 +105,32 @@ class ExpressionFactory;
 //   measure     the replacement has strictly fewer nodes counted WITH
 //               MULTIPLICITY. This one is asserted in diagnostic builds.
 //
-//   determinism apply() must be deterministic with respect to its arguments:
-//               for the same Expression and the same factory semantics it makes
-//               the same decision and produces a STRUCTURALLY EQUIVALENT
-//               replacement. External mutable state must not affect either.
+//   determinism apply() must be deterministic with respect to the MEANING of
+//               its arguments: for STRUCTURALLY EQUIVALENT inputs it makes the
+//               same decision and produces STRUCTURALLY EQUIVALENT replacements.
+//               External mutable state must not affect either.
 //
-// On the third: "structurally equivalent", not "the same node". This factory
-// does no hash-consing, so building multiply(constant(2), q) twice yields two
-// nodes that are structurallyEqual and not sameNode. A rule is pure when its
-// output means the same thing every time, not when it hands back the same
-// allocation -- requiring the latter would demand something ExpressionFactory
-// does not promise.
+// On the third, two halves, and both matter.
+//
+// "Structurally equivalent replacement", not "the same node": this factory does
+// no hash-consing, so building multiply(constant(2), q) twice yields two nodes
+// that are structurallyEqual and not sameNode. A rule is pure when its output
+// means the same thing every time, not when it hands back the same allocation
+// -- requiring the latter would demand something ExpressionFactory never
+// promised.
+//
+// "Structurally equivalent INPUTS", not "the same input node": Add(x, x) with
+// both operands the same node and Add(x1, x2) with two structurally equal but
+// separately built operands mean the same thing, so a rule must answer the same
+// way for both. Node identity may be used as a FAST PATH -- sameNode(lhs, rhs)
+// short-circuits structurallyEqual -- but never as the decision:
+//
+//     if (sameNode(lhs, rhs)) simplify(); else decline();   // FORBIDDEN
+//
+// A rule shaped like that makes the normal form depend on how the DAG happened
+// to be allocated earlier, which is a difference no caller controls and no test
+// reproduces reliably. F3.2 wants canonical forms, not forms that remember
+// their allocation history.
 //
 // Diagnostic side effects are allowed as long as they cannot reach the result.
 // Counting how often a rule was consulted is fine, and the engine's own tests
@@ -171,6 +207,34 @@ fabryki. Kontrakt mówi zatem o **znaczeniu wyniku**, nie o alokacji.
 Silnikowi to nie przeszkadza: memo trafia w wynik, zanim reguła zostanie
 zapytana po raz drugi, więc rozjazd tożsamości nie ma jak się ujawnić.
 
+### 1.3 Druga połowa: to samo dotyczy **wejścia**
+
+Wzmocnienie z review, i słusznie — wersja v1 mówiła „ten sam `Expression`", co
+dla memo po tożsamości węzła wystarcza, ale dla F3.2 już nie. Reguła może
+zobaczyć dwie postacie tego samego znaczenia:
+
+```text
+Add(x, x)       obie gałęzie to TEN SAM węzeł
+Add(x1, x2)     x1 i x2 structurallyEqual, ale NIE sameNode
+```
+
+Nic w projekcie nie gwarantuje, która z nich powstanie — to zależy od tego, czy
+budowniczy akurat współdzielił poddrzewo. Reguła napisana tak:
+
+```cpp
+if (sameNode(lhs, rhs)) simplify(); else decline();      // ZAKAZANE
+```
+
+dałaby postać normalną zależną od **historii alokacji**: to samo wyrażenie
+matematyczne raz uproszczone, raz nie, bez żadnej różnicy widocznej dla
+wołającego. Kontrakt mówi więc o **znaczeniu wejścia**, a `sameNode` wolno użyć
+wyłącznie jako fast-path — zresztą `structurallyEqual` robi to skrócenie sam,
+w pierwszej linijce.
+
+Silnik tego nie egzekwuje i nie ma jak; to trzeci kontrakt autora reguły, obok
+(E) i miary. Warto go mieć **teraz**, zanim F3.2 napisze pierwsze dwadzieścia
+reguł pod słabsze brzmienie.
+
 ---
 
 ## 2. `RewriteEngine.hpp`
@@ -193,6 +257,10 @@ zapytana po raz drugi, więc rozjazd tożsamości nie ma jak się ujawnić.
 
 namespace kinemaforge::ik {
 
+// Cache machinery, not vocabulary: in `detail` because nothing outside this
+// engine has a reason to name it, and `kinemaforge::ik::ExpressionMap` would
+// read as a type the module offers on purpose.
+//
 // Hashing and equality by NODE IDENTITY, with the key owning its node: an entry
 // keeps its node alive, so a cache filled while rewriting a temporary cannot be
 // answered for a different node that later reuses the address.
@@ -201,6 +269,8 @@ namespace kinemaforge::ik {
 // Promoting one shared definition means editing a file this stage otherwise
 // does not touch, so the duplication is recorded in STATUS.md as a known gap
 // rather than fixed in passing.
+namespace detail {
+
 struct ExpressionIdentityHash
 {
     std::size_t operator()(const Expression& expression) const noexcept
@@ -220,6 +290,8 @@ struct ExpressionIdentityEqual
 template <typename Value>
 using ExpressionMap =
     std::unordered_map<Expression, Value, ExpressionIdentityHash, ExpressionIdentityEqual>;
+
+} // namespace detail
 
 // The syntactic domain guards of an expression: the divisor of every Divide
 // node, deduplicated STRUCTURALLY. Complete for the nine node kinds that exist
@@ -293,8 +365,8 @@ public:
     [[nodiscard]] RewriteResult rewrite(const Expression& expression);
 
 private:
-    using Memo = ExpressionMap<Expression>;
-    using Guards = ExpressionMap<std::vector<Expression>>;
+    using Memo = detail::ExpressionMap<Expression>;
+    using Guards = detail::ExpressionMap<std::vector<Expression>>;
 
     // Everything one rewrite() call owns. New cache entries land here and are
     // committed to the session only if the call reaches a fixed point, so a
@@ -327,18 +399,23 @@ private:
     // build with NDEBUG defined -- which the Release configuration does -- and
     // that is the honest statement of the measure contract's enforcement: it is
     // checked where asserts are live and nowhere else.
-    ExpressionMap<std::size_t> measures_;
+    detail::ExpressionMap<std::size_t> measures_;
 };
 
 } // namespace kinemaforge::ik
 ```
 
-### 2.2 Dlaczego funktory tożsamości wychodzą na poziom namespace
+### 2.2 Dlaczego funktory tożsamości wychodzą z klasy — i dlaczego do `detail`
 
 `ExpressionEvaluator` trzyma je prywatnie, bo był jedynym użytkownikiem. Tutaj
 potrzebuje ich **i** sesja (pola), **i** wolne funkcje z `.cpp` (lokalne cache)
 — a dublowanie ich po raz trzeci, tym razem w jednym pliku dwa razy, byłoby
 gorsze niż wypuszczenie nazwy.
+
+Wypuszczam je jednak do `detail`, nie do `kinemaforge::ik`: to mechanizm
+cache'a, a nie typ, który moduł oferuje. `kinemaforge::ik::ExpressionMap`
+czytałoby się jak słownik warstwy symbolicznej i pierwszy konsument wziąłby go
+za zaproszenie.
 
 Nie ruszam przy tym evaluatora. Wspólny nagłówek dla tej pary to refaktoryzacja
 pliku, którego ten etap nie dotyka; **zapisuję ją w `STATUS.md` jako znany
@@ -390,7 +467,13 @@ namespace kinemaforge::ik {
 
 namespace {
 
-using GuardCache = ExpressionMap<std::vector<Expression>>;
+using GuardCache = detail::ExpressionMap<std::vector<Expression>>;
+
+// The default branch of an exhaustive if-constexpr chain needs a condition that
+// is dependent on the template parameter; a plain `static_assert(false)` fires
+// while merely parsing the template.
+template <typename>
+inline constexpr bool alwaysFalse = false;
 
 // Structural, not by identity: `a/x + b/x` built from two separately
 // constructed `x` nodes must yield ONE guard, or the size-plus-inclusion test
@@ -445,25 +528,47 @@ const std::vector<Expression>& collectGuards(const Expression& expression,
 
     std::vector<Expression> guards;
 
+    // EVERY node kind spelled out, on purpose. A generic
+    // `else if constexpr (requires { node.operand; })` would silently absorb a
+    // future SqrtNode and report guards(sqrt(x)) = guards(x), losing x >= 0 --
+    // and it would compile. Here a tenth node kind lands in the default branch
+    // and STOPS THE BUILD with a message naming the decision that has to be
+    // made. This is a safety boundary; explicit duplication is the feature.
     std::visit(
         [&](const auto& node) {
             using Node = std::decay_t<decltype(node)>;
 
-            if constexpr (std::is_same_v<Node, ConstantNode> || std::is_same_v<Node, SymbolNode>)
+            if constexpr (std::is_same_v<Node, ConstantNode> ||
+                          std::is_same_v<Node, SymbolNode>)
             {
                 // No children, no guards.
             }
-            else if constexpr (requires { node.lhs; node.rhs; })
+            else if constexpr (std::is_same_v<Node, AddNode> ||
+                               std::is_same_v<Node, SubtractNode> ||
+                               std::is_same_v<Node, MultiplyNode>)
+            {
+                appendAll(guards, collectGuards(node.lhs, pending, committed));
+                appendAll(guards, collectGuards(node.rhs, pending, committed));
+            }
+            else if constexpr (std::is_same_v<Node, DivideNode>)
             {
                 appendAll(guards, collectGuards(node.lhs, pending, committed));
                 appendAll(guards, collectGuards(node.rhs, pending, committed));
 
-                if constexpr (std::is_same_v<Node, DivideNode>)
-                    appendUnique(guards, node.rhs);
+                // The only place in the language that restricts the domain.
+                appendUnique(guards, node.rhs);
+            }
+            else if constexpr (std::is_same_v<Node, NegateNode> ||
+                               std::is_same_v<Node, SinNode> ||
+                               std::is_same_v<Node, CosNode>)
+            {
+                appendAll(guards, collectGuards(node.operand, pending, committed));
             }
             else
             {
-                appendAll(guards, collectGuards(node.operand, pending, committed));
+                static_assert(alwaysFalse<Node>,
+                              "unhandled Expression node in domain analysis: decide whether "
+                              "it restricts the domain before adding it to the language");
             }
         },
         expression.node().value);
@@ -505,6 +610,31 @@ bool hasSameDomainGuards(const Expression& before, const Expression& after)
     return sameGuards(beforeGuards, afterGuards);
 }
 ```
+
+### 3.1 Dlaczego akurat tu żadnego `requires`
+
+Architektura obiecała, że dziesiąty typ węzła **zatrzyma build** i wymusi
+decyzję o dziedzinie. v1 tej obietnicy nie dotrzymywała i to jest ta poprawka.
+
+```text
+struct SqrtNode { Expression operand; };     // dorzucony kiedyś do wariantu
+
+v1:  requires { node.operand; }  łapie go jako operator TOTALNY
+     guards(sqrt(x)) = guards(x)             kompiluje się, gubi x >= 0
+v2:  gałąź domyślna, static_assert         build staje, z komunikatem
+```
+
+Kontrargument, który sam sobie postawiłem i który **nie broni** v1: przecież
+`rewriteChildren` też by się wywaliło, bo kończy `static_assert`ami na
+`DivideNode` i `CosNode`. Owszem — ale to znaczy tylko tyle, że autor nowego
+węzła **naprawi przebudowę** i pójdzie dalej. Analizator dziedziny przepuści go
+w milczeniu, a to jedyne miejsce, w którym pomyłka nie daje błędu kompilacji ani
+złego wyniku, tylko **cichą utratę bezpieczeństwa**.
+
+`measureOf` z 4 zostaje generyczne i to jest świadoma różnica: miara jest
+własnością **strukturalną**, więc `1 + measure(operand)` jest poprawne dla
+każdego przyszłego węzła jednoargumentowego, cokolwiek by liczył. Dziedzina
+poprawna „z definicji" nie jest.
 
 Uwaga o stabilności referencji nie jest ozdobą: bez niej `collectGuards`
 zwracające `const&` do mapy, do której samo wstawia w rekurencji, byłoby
@@ -845,7 +975,7 @@ i wpięcie w pipeline to F3.2 i dalej.
 
 ---
 
-## 6. Testy — 26
+## 6. Testy — 28
 
 Plik `tests/test_rewrite_engine.cpp`. Reguły testowe są zwykłymi funkcjami,
 bo `RewriteRule::apply` jest wskaźnikiem na funkcję.
@@ -868,6 +998,7 @@ bo `RewriteRule::apply` jest wskaźnikiem na funkcję.
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -979,6 +1110,25 @@ std::optional<Expression> collapsesToPlainSum(const Expression& expression,
 
     const Expression q = factory.symbol("q");
     return factory.add(q, q);
+}
+
+// (a/b) * 0 -> 0/b. Equal to the input ON THE SAME DOMAIN -- both are 0 wherever
+// b != 0 and both are undefined at b == 0 -- and measure 5 -> 3. It exists to be
+// the SECOND rule tried at a node where the first one was rejected.
+std::optional<Expression> zeroFactorIntoNumerator(const Expression& expression,
+                                                  const ExpressionFactory& factory)
+{
+    const auto* node = std::get_if<ik::MultiplyNode>(&expression.node().value);
+    if (node == nullptr || !ik::isZero(node->rhs))
+        return std::nullopt;
+
+    const auto* ratio = std::get_if<ik::DivideNode>(&node->lhs.node().value);
+    if (ratio == nullptr)
+        return std::nullopt;
+
+    // ratio->rhs cannot be a literal zero: the factory would never have built
+    // that Divide in the first place.
+    return factory.divide(factory.constant(0.0), ratio->rhs);
 }
 
 RewriteRule rule(std::string name, std::optional<Expression> (*apply)(const Expression&,
@@ -1099,7 +1249,7 @@ TEST(RewriteEngineTest, StillRewritesSameSubtreeElsewhere)
 }
 ```
 
-### 6.4 Silnik — 10
+### 6.4 Silnik — 11
 
 ```cpp
 TEST(RewriteEngineTest, ReportsChangedWhenARuleFires)
@@ -1218,9 +1368,28 @@ TEST(RewriteEngineTest, AppliesRulesInnermostFirst)
     EXPECT_EQ(result.steps, 1u);
 }
 
-// A rule rejected by the domain condition neither aborts the pass nor stops the
-// engine from rewriting elsewhere in the same tree.
-TEST(RewriteEngineTest, DiscardsUnsafeRuleAndContinues)
+// The rejected rule is tried FIRST at this node; the second rule must still get
+// its turn AT THE SAME NODE. This is the claim the architecture makes, and the
+// traversal test below does not prove it.
+TEST(RewriteEngineTest, ContinuesWithNextRuleAfterDomainRejection)
+{
+    const Expression q = kFactory.symbol("q");
+    const Expression unsafe = kFactory.multiply(kFactory.divide(kFactory.constant(1.0), q),
+                                                kFactory.constant(0.0));
+
+    RewriteSession session = sessionOf({rule("x*0", multiplyByZero),
+                                        rule("(a/b)*0 -> 0/b", zeroFactorIntoNumerator)});
+    const RewriteResult result = session.rewrite(unsafe);
+
+    EXPECT_TRUE(result.changed);
+    EXPECT_EQ(result.steps, 1u);
+    EXPECT_TRUE(structurallyEqual(result.expression,
+                                  kFactory.divide(kFactory.constant(0.0), q)));
+}
+
+// A rule rejected at one node does not abort the pass: the engine keeps
+// rewriting elsewhere in the same tree.
+TEST(RewriteEngineTest, RejectedRuleDoesNotStopTheTraversal)
 {
     const Expression q = kFactory.symbol("q");
     const Expression r = kFactory.symbol("r");
@@ -1301,6 +1470,9 @@ TEST(RewriteEngineTest, SharesMemoAcrossRootsInOneSession)
     RewriteSession session = sessionOf({rule("x-x", selfSubtraction)});
 
     const RewriteResult first = session.rewrite(kFactory.add(shared, kFactory.symbol("a")));
+    ASSERT_FALSE(first.reachedLimit);
+    ASSERT_TRUE(first.changed);
+    ASSERT_EQ(first.steps, 1u);
     ASSERT_EQ(g_subtractionConsultations, 1u);
 
     const RewriteResult second = session.rewrite(kFactory.multiply(shared, kFactory.symbol("b")));
@@ -1393,7 +1565,7 @@ TEST(RewriteEngineTest, OutlivesTheRuleArrayItWasBuiltFrom)
 }
 ```
 
-### 6.6 Równoważność z dziedziną — 2
+### 6.6 Równoważność z dziedziną — 3
 
 ```cpp
 // Definedness, not just value -- and with the pole IN the point set by name.
@@ -1433,6 +1605,39 @@ TEST(RewriteEngineTest, AgreesOnDefinednessAndValue)
     ik::ExpressionEvaluator atPoleFolded{{{"q1", 0.5}, {"a", 2.0}}};
     EXPECT_FALSE(atPole.evaluate(original).has_value());
     EXPECT_TRUE(atPoleFolded.evaluate(kFactory.constant(0.0)).has_value());
+}
+
+// The other half: an ACCEPTED rewrite must preserve definedness too. Guards go
+// from { -(-q) } to { q } -- different sets, same domain -- which is exactly the
+// case a global comparison of divisors would have rejected.
+TEST(RewriteEngineTest, AgreesOnDefinednessAcrossAnAcceptedRewrite)
+{
+    const Expression a = kFactory.symbol("a");
+    const Expression q = kFactory.symbol("q");
+    const Expression awkward = kFactory.divide(a, kFactory.negate(kFactory.negate(q)));
+
+    RewriteSession session = sessionOf({rule("-(-x)", doubleNegation)});
+    const RewriteResult result = session.rewrite(awkward);
+
+    ASSERT_TRUE(result.changed);
+    ASSERT_TRUE(structurallyEqual(result.expression, kFactory.divide(a, q)));
+
+    // Zero EXACTLY, then either side of it: the pole is where a widened domain
+    // would show, and it is in the list by name rather than by sampling.
+    const std::array<double, 5> points{0.0, -1e-9, 1e-9, -1.0, 1.0};
+
+    for (const double point : points)
+    {
+        ik::ExpressionEvaluator before{{{"q", point}, {"a", 3.0}}};
+        ik::ExpressionEvaluator after{{{"q", point}, {"a", 3.0}}};
+
+        const auto originalValue = before.evaluate(awkward);
+        const auto rewrittenValue = after.evaluate(result.expression);
+
+        ASSERT_EQ(originalValue.has_value(), rewrittenValue.has_value()) << point;
+        if (originalValue.has_value())
+            EXPECT_NEAR(*originalValue, *rewrittenValue, 1e-12) << point;
+    }
 }
 
 // End-to-end on the real 21 882-node DAG: each cell wrapped in a double
@@ -1476,7 +1681,32 @@ TEST(RewriteEngineTest, RewritesRealForwardKinematicsAndKeepsItsNodes)
 }
 ```
 
-### 6.7 Uczciwie o dwóch testach
+### 6.7 Jedna uwaga z review, która się nie potwierdziła
+
+Review przewidywało, że nieużywana zmienna `first` w
+`SharesMemoAcrossRootsInOneSession` wywali `build-werror` na
+`-Werror=unused-but-set-variable`, więc deklarowany gate „w tej postaci nie może
+przejść". Sprawdziłem to, zanim zmieniłem test, bo od tego zależy, czy gate z v1
+był zmyślony:
+
+```text
+g++ -std=c++23 -Wall -Wextra -Wswitch -Werror
+
+const unsigned long n = g + 1;   // skalar        -> error: unused variable 'n'
+const Result first = make();     // typ klasowy   -> BEZ ostrzeżenia
+```
+
+GCC nie ostrzega o nieużywanej zmiennej typu z nietrywialnym konstruktorem
+i destruktorem — a `RewriteResult` trzyma `Expression`, czyli `shared_ptr`.
+`first` nie zatrzymałoby więc builda i gate `448/448` z v1 był osiągalny.
+
+Zmianę i tak wprowadzam, bo proponowana wersja — sprawdzenie `reachedLimit`,
+`changed` i `steps` — czyni test **mocniejszym**, a to jest lepszy powód niż
+nieistniejące ostrzeżenie. Zapisuję to jednak wprost, bo przy następnym takim
+przewidywaniu warto pamiętać, że ta konkretna diagnostyka nie dotyczy typów
+klasowych.
+
+### 6.8 Uczciwie o dwóch testach
 
 `SurvivesRewriteOfTemporaryExpression` **nie potrafi zawieść deterministycznie**
 przy kluczu na surowym wskaźniku — zależy od tego, czy allocator odda ten sam
@@ -1496,11 +1726,27 @@ Zero podwójnych negacji w obu robotach, więc reguła trafia dokładnie dwanaś
 razy — w opakowane korzenie komórek niestałych — i w żadne poddrzewo. Cztery
 komórki stale to wiersz `[0 0 0 1]`.
 
-`DiscardsUnsafeRuleAndContinues` używa **dwóch węzłów**, nie jednego: reguła
-odrzucona przy `Multiply`, druga zadziałała przy `Subtract`. Wersja
-jednowęzłowa wymagałaby dwóch reguł pasujących do tego samego węzła, z których
-jedna jest niebezpieczna, a druga zmniejsza miarę — konstrukcja tak sztuczna, że
-przestałaby cokolwiek mówić o silniku.
+**Dwa testy zamiast jednego — poprawka z review.** v1 miała jeden test o nazwie
+`DiscardsUnsafeRuleAndContinues`, który dowodził czegoś innego, niż obiecywał.
+Odrzucona reguła siedziała przy `Multiply`, przyjęta przy `Subtract`, więc test
+mówił „traversal nie zatrzymuje się po odrzuceniu" — a architektura twierdzi coś
+mocniejszego: **kolejna reguła dostaje swóją kolej na tym samym węźle**.
+
+Napisałem wtedy, że wersja jednowęzłowa byłaby „tak sztuczna, że przestałaby
+cokolwiek mówić o silniku". To było wygodne i nieprawdziwe — wystarczyła druga
+reguła, która **zachowuje** dziedzinę tam, gdzie pierwsza ją rozszerza:
+
+```text
+(1/q) * 0
+
+R1:  x * 0 -> 0        guardy {q} -> {}      ODRZUCONA
+R2:  (a/b)*0 -> 0/b    guardy {q} -> {q}     PRZYJĘTA,  miara 5 -> 3
+```
+
+Obie pasują do tego samego węzła, obie są poprawne algebraicznie tam, gdzie
+wejście jest określone, i różni je dokładnie to, o co chodzi w 2.3. Testy są
+teraz dwa: `ContinuesWithNextRuleAfterDomainRejection` (jeden węzeł, dwie reguły)
+i `RejectedRuleDoesNotStopTheTraversal` (dwa węzły).
 
 Nie ma testu na **iteracyjność** pętli po zastosowaniu reguły. Żeby wersja
 rekurencyjna przewróciła się na stosie, potrzeba dziesiątek tysięcy trafień z
@@ -1529,9 +1775,13 @@ własną regułę testową. Tak samo jak (E) — kontrakt, nie asercja.
 
 ```text
 przed    422 / 422
-nowe     +26
-po       448 / 448
+nowe     +28
+po       450 / 450
 ```
+
+Architektura wymienia 26 testów. Różnica to dwa dodane w tym review —
+`ContinuesWithNextRuleAfterDomainRejection` i
+`AgreesOnDefinednessAcrossAnAcceptedRewrite` — a nie zmiana zakresu etapu.
 
 W **obu** konfiguracjach: `build/` (Release, `NDEBUG`, asserty martwe) oraz
 `build-werror/` (`-Wall -Wextra -Wswitch -Werror`, asserty żywe). Ta druga jest
@@ -1550,13 +1800,15 @@ sprawdzane **wyłącznie** tam.
 | `measureOf` liczone od zera przy każdym trafieniu reguły | Memoizacja po tożsamości węzła; całość i tak tylko pod `assert` |
 | Dedup strażników po tożsamości zamiast strukturalnie | Porównanie „rozmiar + zawieranie" byłoby wtedy niepoprawne; dedup strukturalny, uzasadniony w komentarzu (3) |
 | Duplikat funktorów tożsamości wobec `ExpressionEvaluator` | Świadomy: wspólny nagłówek to zmiana pliku spoza zakresu etapu; zapisane w `STATUS.md` jako znany brak (2.2) |
+| Nowy typ węzła przechodzi przez analizator dziedziny w milczeniu | Visitor wyliczający, `static_assert` w gałęzi domyślnej; jedyne miejsce, gdzie pomyłka nie daje ani błędu kompilacji, ani złego wyniku, tylko cichą utratę bezpieczeństwa (3.1) |
+| Reguła decyduje na podstawie `sameNode` zamiast struktury | Kontrakt determinizmu mówi o **znaczeniu** wejścia; `sameNode` tylko jako fast-path (1.3) |
 | Test FK zawodzi na komórkach stałych | `negate(constant)` zwija się przy budowie, więc opakowanie nie istnieje; asercja tożsamości ograniczona do komórek niestałych, z komentarzem (6.6) |
 
 ---
 
 ## 10. Rekomendacja
 
-Przyjąć w tym brzmieniu, zaimplementować, uruchomić gate `448/448` w obu
+Przyjąć w tym brzmieniu, zaimplementować, uruchomić gate `450/450` w obu
 konfiguracjach, zaktualizować `STATUS.md`, `KATALOG.md` i roadmapę, przenieść
 oba dokumenty F3.1 do `proposal/done/`, zrobić commit.
 
