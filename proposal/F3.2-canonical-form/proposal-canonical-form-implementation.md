@@ -1,6 +1,22 @@
 # Proposal: postać AC-normalna — F3.2, implementacja
 
-**Etap:** F3.2 · **v2 — CZEKA NA REVIEW** · 2026-08-23 · część 2 z 2
+**Etap:** F3.2 · **v3 — CZEKA NA REVIEW** · 2026-08-23 · część 2 z 2
+
+> **v3, po drugim review.** Jeden blocker kontraktowy i jedna niespójność
+> liczbowa:
+>
+> 1. **Wyjątek z v2 osłabiał trzy własności, a deklarował jedną.** v2 pisała
+>    „exception to uniqueness, and only to uniqueness" — nieprawda: zachowanie
+>    oryginalnego poddrzewa łamie też „bez `Subtract` na wyjściu" i „`Negate`
+>    nigdy nad sumą". Co ważniejsze, **druga ścieżka do tego samego** prowadzi
+>    przez representability guard i działa **niezależnie** od `nullopt`.
+>    Wprowadzone pojęcie **bariery reprezentowalności** (4.4).
+> 2. **Liczba testów była policzona na piechotę i źle.** Pod `AC-normalizacja`
+>    stało 21 pozycji, nie 19; suma to 35, nie 33. Po zmianach z v3 jest **36**,
+>    a gate `486/486` — policzone maszynowo (6, 7.1).
+>
+> Do architektury v8 idzie **erratum**, nie nowa wersja: jej postcondition z 3.4
+> jest warunkowe, a dokument tego nie mówił.
 
 > **v2, po review.** Trzy blockery, wszystkie prawdziwe, a pierwszy z nich
 > **gubił dane w Release**:
@@ -67,7 +83,7 @@ NOWE   src/ik_equations/symbolic/ExpressionIdentityMap.hpp     współdzielone f
        src/ik_equations/symbolic/ExpressionCanonicalizer.cpp   przebieg kanonizujący
        src/ik_equations/builders/EquationSimplifier.hpp        cienki orkiestrator
        src/ik_equations/builders/EquationSimplifier.cpp
-       tests/test_expression_canonicalizer.cpp                 35 testów
+       tests/test_expression_canonicalizer.cpp                 36 testów
 
 ZMIENIONE  src/ik_equations/symbolic/RewriteEngine.hpp   funktory do nowego
                                                          nagłówka: -20 / +1
@@ -169,13 +185,24 @@ namespace detail {
 //   * an expression already in normal form is returned as THE SAME NODE, even
 //     by a session that has never seen it.
 //
-// One documented EXCEPTION to uniqueness, and only to uniqueness: a chain built
-// entirely of constants that ExpressionFactory declined to fold -- which it does
-// when the fold would overflow -- is returned UNCHANGED when its constants
-// cannot all be joined exactly. Value and domain are trivially preserved, since
-// nothing is rewritten, but two such chains that differ only in association may
-// keep their two shapes. No expression this project builds reaches that case:
-// it needs constants near the top of the double range (4.2).
+// PRESERVATION BARRIERS. Two situations force an original subtree to be kept
+// verbatim, because its canonical form cannot be written down through
+// ExpressionFactory without breaking a promise that matters more:
+//
+//   1. an all-constant AC chain whose exact residuals cannot be represented
+//      without making the factory round;
+//   2. a denominator whose canonical form is a literal zero, which
+//      ExpressionFactory::divide refuses to accept.
+//
+// INSIDE a preserved subtree NONE of the structural postconditions above hold:
+// a Subtract may survive, a Negate may sit directly above a sum, and two
+// AC-equivalent inputs may keep two shapes. What still holds is what the stage
+// is actually for: the algebraic meaning and the symbolic domain are unchanged,
+// because a preserved subtree is not rewritten at all.
+//
+// v2 of this proposal called this "an exception to uniqueness, and only to
+// uniqueness". That was wrong on both counts -- it is not only uniqueness, and
+// the second barrier is reachable without the first (4.4).
 //
 // A SESSION, not a free function, for the reason RewriteSession is one: an
 // equation system is many roots of one shared DAG, and rebuilding a shared
@@ -1051,8 +1078,12 @@ reszty:                  trzy
 
 > Łańcuch złożony **wyłącznie ze stałych**, którego reszt nie da się połączyć
 > dokładnie do jednej, jest zwracany **bez zmiany**. Wartość i dziedzina są
-> zachowane trywialnie, bo nic nie zostaje przepisane; **jednoznaczność postaci
-> normalnej dla takich wyrażeń nie jest obiecywana**.
+> zachowane trywialnie, bo nic nie zostaje przepisane; **strukturalne
+> postcondition’y postaci normalnej wewnątrz takiego poddrzewa nie obowiązują**.
+
+To jest **pierwsza z dwóch barier reprezentowalności** — pojęcie i pełny zakres
+tego, co przestaje obowiązywać, w 4.4. v2 pisała tu „traci jedynie
+jednoznaczność" i to było za wąskie.
 
 Trzy powody, dla których to jest właściwy wybór, a nie kapitulacja:
 
@@ -1061,8 +1092,9 @@ alternatywa A   zbudować mimo wszystko    -> fabryka zwinie 1.0 + 1e308 z zaokr
                                              łamie gwarancję „bez nowego zaokrąglenia"
 alternatywa B   rozszerzyć fabrykę        -> zmiana kontraktu R5 dla przypadku,
                                              którego pipeline nie potrafi zbudować
-alternatywa C   zwrócić bez zmiany        -> traci JEDYNIE jednoznaczność,
-                                             i tylko dla tej klasy wyrażeń
+alternatywa C   zwrócić bez zmiany        -> traci strukturalne postcondition'y
+                                             WEWNĄTRZ tego poddrzewa (4.4),
+                                             zachowuje wartość i dziedzinę
 ```
 
 **Zasięg wyjątku jest wąski i policzalny:** wymaga stałych przy górnej granicy
@@ -1109,6 +1141,91 @@ Jedna konsekwencja numeryczna, żeby nie była zaskoczeniem: `-(0*x)` ewaluuje s
 do `-0.0`, a `0*x` do `0.0`. Po poprawce zostaje ta druga postać. Obie są sobie
 równe (`-0.0 == 0.0`), różni je wyłącznie bit znaku — i cały projekt traktuje je
 jednakowo, bo `isZero` nie rozróżnia zer.
+
+---
+
+### 4.4 Bariery reprezentowalności — blocker z v2
+
+v2 nazwała rzecz z 4.2 „wyjątkiem od jednoznaczności, i tylko od niej". Review
+pokazało, że to **nieprawda w dwie strony**: wyjątek dotyczy więcej niż
+jednoznaczności, a druga droga do niego nie ma z 4.2 nic wspólnego.
+
+#### Co jeszcze pada, poza jednoznacznością
+
+```text
+A = add(max, max)          fabryka odmawia zwinięcia  ->  Add(max, max)
+E = subtract(A, 1.0)       legalny Subtract
+
+składniki:  max, max, -1.0        same stałe
+-1 + max    skończone, zaokrąglone  -> nie łączymy
+max + max   nieskończone            -> nie łączymy
+=> nullopt  =>  zwracamy WEJŚCIE, czyli Subtract
+```
+
+Czyli pada też **„wyjście nie zawiera `Subtract`"**. A `canonicalNegate` dla
+all-constant `Add` owija w `Negate`, więc pada również **„`Negate` nigdy
+bezpośrednio nad sumą"**. Trzy własności, nie jedna.
+
+#### Druga bariera, niezależna od pierwszej
+
+Ta jest ważniejsza, bo **nie przechodzi przez `nullopt`** i była ukryta
+w architekturze v8 od początku:
+
+```text
+A = add(max, max)          Add(max, max)
+D = subtract(A, A)         legalne: D nie jest literalnym zerem
+E = divide(x, D)           legalne: divide() asertuje tylko !isZero(D)
+
+kanonizacja D:
+    składniki:  max, max, -max, -max
+    reduktor łączy je DOKŁADNIE do zera
+    stala neutralna odrzucona
+    D  ->  Constant(0)
+
+guard:  isZero(denominator)  ->  denominator = node.rhs
+        czyli wraca ORYGINALNY Subtract(A, A)
+```
+
+Nie ma tu żadnej stałej nie do zapisania i żadnego `nullopt` — kanonizacja
+mianownika **udała się w pełni**, a mimo to guard z F3.1 2.7 przywraca oryginalne
+poddrzewo. Napięcie między „pełna postać normalna" a „zachowaj mianownik, jeśli
+kanonicznie jest zerem" istniało w architekturze v8, tylko nikt go nie wywołał
+po imieniu.
+
+#### Pojęcie, które to zamyka
+
+> **Bariera reprezentowalności.** Kanonizacja normalnie produkuje pełną postać
+> AC-normalną. Dwie sytuacje wymuszają zachowanie oryginalnego poddrzewa:
+>
+> 1. **łańcuch samych stałych**, którego dokładnych reszt nie da się zapisać bez
+>    zmuszenia `ExpressionFactory` do zaokrąglenia;
+> 2. **mianownik**, którego postać kanoniczna jest literalnym zerem, a więc nie
+>    do przekazania do `ExpressionFactory::divide`.
+>
+> **Wewnątrz zachowanego poddrzewa strukturalne postcondition’y postaci normalnej
+> nie obowiązują** — ani „bez `Subtract`", ani konwencja umiejscowienia znaku,
+> ani jednoznaczność kształtu AC. Zachowane są **znaczenie algebraiczne
+> i dziedzina symboliczna**, bo zachowane poddrzewo nie jest przepisywane w ogóle.
+
+Dlaczego nie „naprawć to porządnie": obie bariery biorą się z kontraktów
+`ExpressionFactory`, których **nie chcemy** luzować — zakazu nieskończonych stałych
+z R5 i zakazu literalnego zera w mianowniku. Rozszerzanie fabryki dla wartości,
+których ten pipeline nie potrafi zbudować, kupowałoby jednoznaczność w zamian za
+osłabienie dwóch gwarancji, na których stoi cała Faza 3.
+
+Zasięg jest przy tym różny dla obu barier i warto to rozróżnić:
+
+```text
+bariera 1   wymaga stałych przy granicy zakresu double
+            nieosiągalna z URDF/FK/ograniczeń — tam są długości członów i kąty
+
+bariera 2   wymaga mianownika, który kanonicznie znika
+            dziś nieosiągalna, bo pipeline nie buduje ANI JEDNEGO węzła Divide
+            po F3.3 osiągalna: zbieranie wyrazów podobnych da 1/(x-x)
+```
+
+Druga bariera przestanie więc być teoretyczna dokładnie wtedy, gdy F3.3 doda
+zbieranie wyrazów podobnych — i lepiej, żeby pojęcie już wtedy istniało.
 
 ---
 
@@ -1249,7 +1366,7 @@ a `create` zwróci błąd, który zniknie.
 
 ---
 
-## 6. Testy — 33
+## 6. Testy — 36
 
 Plik `tests/test_expression_canonicalizer.cpp`. Pełny kod jest długi i powtarza
 wzorce z F3.1, więc podaję **listę z intencją**, a pełne źródła w części, której
@@ -1263,12 +1380,18 @@ porządek (4)
   OrdersByNameNotByHash                   „a" < „z"; łapie podmianę na odcisk
   DoesNotDependOnConstructionOrder        a+b i b+a -> jedna postać
 
-AC-normalizacja (19)
+AC-normalizacja (22)
   FlattensNestedAssociativeChains
   ReducesExactConstantsAndDropsNeutral    3 + x + 4 -> 7 + x
   DoesNotJoinConstantsInexactly           1e16 + 1 zostaje rozdzielone
   ReducesConstantsToAFixedPoint           2^52, 2^52+1, 2^52+3 -> JEDNA stała
-  EliminatesSubtractionEntirely           + obchód całego wyniku: zero Subtract
+  EliminatesSubtractionWhenCanonicalFormIsRepresentable
+                                          obchód całego wyniku: zero Subtract
+                                          -- zakres zawężony przez 4.4
+  PreservesOriginalSubtreeAtRepresentabilityBarrier
+                                          divide(x, subtract(A,A)), A=add(max,max):
+                                          brak asserta, brak utraty danych,
+                                          mianownik zachowany, Subtract PRZEŻYWA
   NormalizesExplicitNegatedSum            -(a+b), 0-(a+b), (-a)+(-b)
   FlattensOperatorRevealedByChildNormalization   a + -(-(b+c)) -> płasko
   NormalizesSignByParity                  -(a*b), (-a)*b, a*(-b)
@@ -1308,9 +1431,14 @@ EquationSimplifier (4)
                                           -> structurallyEqual   <-- 6.2
 ```
 
-Liczby w nawiasach: 4 + 19 + 2 + 1 + 3 + 4 = **33**. Do tego dwa testy z 4.2
-muszą być uruchomione **w obu konfiguracjach** — pod `NDEBUG` też — bo to tam
-v1 gubiła dane po cichu, i tam poprawka ma największe znaczenie.
+**Liczby policzone maszynowo z tej listy**, nie na piechotę — v2 miała w tym
+miejscu 33 przy 35 faktycznie wypisanych pozycjach, co review wyłapało. Sumy są
+w nagłówkach grup i w 7.1; przy implementacji należy je zweryfikować licznikiem
+`TEST(`, tak jak w F3.1 6.7.
+
+Trzy testy z 4.2 i 4.4 muszą być uruchomione **w obu konfiguracjach** — pod
+`NDEBUG` też — bo to tam v1 gubiła dane po cichu, a bariera z 4.4 jest miejscem,
+gdzie łatwo dopisać `assert`, który w Release zniknie.
 
 ### 6.1 Test, który jest sercem sekcji 3.2.1 architektury
 
@@ -1390,8 +1518,8 @@ TEST(CanonicalizerTest, JoinsExactlyFoldableConstantsThroughTheChain)
 
 ```text
 przed    450 / 450
-nowe     +33
-po       483 / 483
+nowe     +36
+po       486 / 486
 ```
 
 W obu konfiguracjach, z `-Wall -Wextra -Wswitch -Werror`, z assertami żywymi
@@ -1400,8 +1528,12 @@ i pod `NDEBUG`.
 **Ta liczba jest przewidywaniem, nie pomiarem.** Zmierzone było `475/475` dla
 **v1**, której kod zawierał trzy błędy z tego review — w tym jeden, którego
 żaden z tamtych 25 testów nie łapał, bo żaden nie budował przepełniającej stałej.
-Poprawki v2 są przeczytane, nie uruchomione. Zgodnie z lekcją z F3.1 6.7 traktuj
-`483/483` jako deklarację do zweryfikowania przy implementacji.
+Poprawki v2 i v3 są przeczytane, nie uruchomione. Zgodnie z lekcją z F3.1 6.7
+traktuj `486/486` jako deklarację do zweryfikowania przy implementacji.
+
+Sama **liczba 36** jest za to policzona maszynowo z listy w 6, a nie oszacowana —
+v2 podawała 33 przy 35 wypisanych pozycjach i to jest dokładnie ten rodzaj
+pomyłki, który ten projekt już raz popełnił.
 
 ### 7.2 Rozmiar wyniku — liczba, której się nie spodziewałem
 
@@ -1435,6 +1567,8 @@ konstrukcję sesji.
 
 | Ryzyko | Reakcja |
 |---|---|
+| Kontrakt obiecuje więcej, niż bariery pozwalają dotrzymać | **błąd v2** — pojęcie bariery reprezentowalności, z jawną listą tego, co wewnątrz niej nie obowiązuje (4.4); erratum do architektury v8 |
+| Guard mianownika przywraca `Subtract` do wyniku | **realne, druga bariera** — osiągalne bez `nullopt`; dziś tylko przy stałych skrajnych, po F3.3 przy `1/(x-x)` (4.4) |
 | Stałe, których fabryka odmówiła zwinąć | **błąd v1, z cichą utratą danych w Release** — jawna polityka zamiast asserta, dwa testy w obu konfiguracjach (4.2) |
 | Znak przy zerowym współczynniku | **błąd v1** — parzystość zerowana przy czynniku zerowym i zerowym liczniku; **iloczyn** nietknięty (4.3) |
 | Przyszłe pole `Equation` gubione przez rekonstrukcję | **błąd v1**, i `-Werror=missing-field-initializers` by go **nie złapał** — kopia zamiast listy pól (5.1) |
@@ -1452,7 +1586,7 @@ konstrukcję sesji.
 
 ## 9. Rekomendacja
 
-Przyjąć, zaimplementować, uruchomić gate `483/483` w obu konfiguracjach, dorobić
+Przyjąć, zaimplementować, uruchomić gate `486/486` w obu konfiguracjach, dorobić
 pomiar z 7.2, zaktualizować `STATUS.md`, `KATALOG.md` i roadmapę, przenieść oba
 dokumenty F3.2 do `proposal/done/`, zrobić commit.
 

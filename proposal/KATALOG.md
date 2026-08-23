@@ -31,14 +31,14 @@ aktualizowany na bieżąco, bez wersji.
 
 Faza 2 zamknięta 2026-08-21, F3.1 zamknięte 2026-08-22.
 
-> **Stan: architektura ZATWIERDZONA, czekamy na review implementacji, wersja v2.**
+> **Stan: architektura ZATWIERDZONA, czekamy na review implementacji, wersja v3.**
 > Kod F3.2 **nie istnieje w repo** i na tym etapie nie powinien — dokument czeka
 > na werdykt.
 
 | Dokument | Temat | Stan | Linii |
 |---|---|---|---|
 | [`F3.2-canonical-form/proposal-canonical-form-architecture.md`](F3.2-canonical-form/proposal-canonical-form-architecture.md) | Postać AC-normalna: predykat dokładności sound+complete, idempotentny reducer, kanoniczne nakładanie znaku | **ZATWIERDZONY (v8)** | 1618 |
-| [`F3.2-canonical-form/proposal-canonical-form-implementation.md`](F3.2-canonical-form/proposal-canonical-form-implementation.md) | Pełny kod kanonizatora i cienkiego EquationSimplifier, 33 testy | **DO REVIEW (v2)** | 1463 |
+| [`F3.2-canonical-form/proposal-canonical-form-implementation.md`](F3.2-canonical-form/proposal-canonical-form-implementation.md) | Pełny kod kanonizatora, bariery reprezentowalności, 36 testów | **DO REVIEW (v3)** | 1597 |
 
 ## Faza 3, F3.1 — silnik przepisywania (zamknięta)
 

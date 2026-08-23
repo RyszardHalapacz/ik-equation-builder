@@ -60,6 +60,18 @@
 > 4. Zakres normalizacji znaku **rozszerzony na `Divide`** i powiedziany wprost,
 >    żeby `F3.5` nie zostało z „znak jednoznaczny, ale nie przy dzieleniu" (3.3).
 
+> **ERRATUM, 2026-08-23 — dokument pozostaje zatwierdzony.** Postcondition z 3.4
+> („wyjście nie zawiera `Subtract`, `Negate` tylko jako znak...") oraz obietnica
+> jednoznaczności z 3.1 są **warunkowe**, czego ta wersja nie mówiła. Dwie
+> **bariery reprezentowalności** wymuszają zachowanie oryginalnego poddrzewa:
+> łańcuch samych stałych, których reszt nie da się zapisać bez zaokrąglenia, oraz
+> mianownik, którego postać kanoniczna jest literalnym zerem — ten drugi wynika
+> wprost z guarda z 6.5 i był tu ukryty od początku. Wewnątrz zachowanego
+> poddrzewa strukturalne postcondition'y nie obowiązują; znaczenie algebraiczne
+> i dziedzina symboliczna — owszem. Pełny opis:
+> [`proposal-canonical-form-implementation.md`](proposal-canonical-form-implementation.md),
+> sekcja 4.4.
+
 > **Stan tego dokumentu: ZATWIERDZONY.** Następny krok to proposal
 > implementacyjny. Dwie uwagi nieblokujące z approvala idą tam, nie tutaj:
 > jawny kontrakt platformowy IEEE-754 binary64 wraz z `static_assert`ami
