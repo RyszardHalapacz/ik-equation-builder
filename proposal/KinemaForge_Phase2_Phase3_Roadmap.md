@@ -29,7 +29,7 @@ F2.7  integracja z fasadą + milestone           ✅ zaimplementowane
 FAZA 2 ZAMKNIĘTA — URDF + opcjonalny TCP + cel -> IkEquationSystem
 Faza 3, F3.2 (postać AC-normalna)                 ◀ TUTAJ JESTEŚMY
                                                     architektura v8 ZATWIERDZONA
-                                                    implementacja v1, CZEKA NA REVIEW
+                                                    implementacja v2, CZEKA NA REVIEW
 ```
 
 Proposale etapów zamkniętych leżą w `proposal/done/<etap>/` — przeniesienie tam
@@ -1272,7 +1272,7 @@ F3.1-rewrite-engine/
 
 F3.2-canonical-form/
     proposal-canonical-form-architecture.md                 ◀ v1, do review
-    proposal-canonical-form-implementation.md               ◀ v1, do review
+    proposal-canonical-form-implementation.md               ◀ v2, do review
     implementation + tests
 ```
 

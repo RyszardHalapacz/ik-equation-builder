@@ -1,13 +1,36 @@
 # Proposal: postać AC-normalna — F3.2, implementacja
 
-**Etap:** F3.2 · **v1 — CZEKA NA REVIEW** · 2026-08-22 · część 2 z 2
+**Etap:** F3.2 · **v2 — CZEKA NA REVIEW** · 2026-08-23 · część 2 z 2
 
-> **Stan tego dokumentu:** wersja **v1**, oddana do review, werdyktu jeszcze nie
+> **v2, po review.** Trzy blockery, wszystkie prawdziwe, a pierwszy z nich
+> **gubił dane w Release**:
+>
+> 1. **`assert(constants.size() == 1)` opierał się na fałszywym założeniu.**
+>    `ExpressionFactory::foldFinite` **odmawia** zwinięcia, gdy wynik nie jest
+>    skończony, więc `Add(1e308, 1e308)` to legalny węzeł o dwóch stałych
+>    dzieciach. Z assertami — abort; pod `NDEBUG` — **cicha utrata drugiej
+>    stałej**. Jawna polityka zamiast asserta (4.2).
+> 2. **Znak przy zerowym współczynniku nie był jednoznaczny.** `((-1)*0)*x`
+>    i `(-1)*(0*x)` dawały `0*x` i `-(0*x)`. Parzystość jest zerowana przy
+>    czynniku zerowym i przy zerowym liczniku (4.3).
+> 3. **`EquationSimplifier` łamał własną obietnicę** o zachowaniu przyszłych pól:
+>    rekonstruował `Equation` przez inicjalizację agregatową, więc nowe pole
+>    dostałoby wartość domyślną. Kopia i podmiana dwóch uchwytów (5).
+>
+> Plus trzy uwagi nieblokujące, wszystkie przyjęte: współdzielony nagłówek
+> zamiast zależności od `RewriteEngine.hpp` (1.1), osłabiony kontrakt
+> `addsExactly` wobec FTZ (2.1) i **dziesięć dobranych testów** (6).
+>
+> **Kod v2 nie jest skompilowany.** v1 była — wbrew procesowi — i to zostało
+> zgłoszone poniżej; poprawki z v2 są napisane, przeczytane i **nieuruchomione**.
+> Traktuj gate z 7.1 jako liczbę dla v1, nie dla tego dokumentu.
+
+> **Stan tego dokumentu:** wersja **v2**, oddana do review, werdyktu jeszcze nie
 > ma. Kod w repo kończy się na F3.1. Następny krok to decyzja recenzenta,
 > nie pisanie do `src/`.
 
-> **Nota o procesie, którą jestem winien.** Kod z tego dokumentu **został
-> skompilowany i uruchomiony** — 25 testów, wszystkie zielone — zanim dokument
+> **Nota o procesie, którą jestem winien.** Kod **v1** z tego dokumentu został
+> skompilowany i uruchomiony — 25 testów, wszystkie zielone — zanim dokument
 > powstał. To było **złamanie ustalonego procesu**: proposal ma powstać przed
 > kodem, a weryfikacja kompilacją należy do etapu po zatwierdzeniu. Zgłaszam to
 > wprost zamiast przemilczeć, bo liczby i wyniki poniżej są prawdziwe i
@@ -39,22 +62,31 @@ Wchodzą tu również **dwie uwagi nieblokujące z approvala**:
 ## 0. Zakres i stan wyjściowy
 
 ```text
-NOWE   src/ik_equations/symbolic/ExpressionCanonicalizer.hpp   porządek, sesja, predykaty
+NOWE   src/ik_equations/symbolic/ExpressionIdentityMap.hpp     współdzielone funktory
+       src/ik_equations/symbolic/ExpressionCanonicalizer.hpp   porządek, sesja, predykaty
        src/ik_equations/symbolic/ExpressionCanonicalizer.cpp   przebieg kanonizujący
        src/ik_equations/builders/EquationSimplifier.hpp        cienki orkiestrator
        src/ik_equations/builders/EquationSimplifier.cpp
-       tests/test_expression_canonicalizer.cpp                 25 testów
+       tests/test_expression_canonicalizer.cpp                 35 testów
 
-ZMIENIONE  CMakeLists.txt          +2 wiersze
+ZMIENIONE  src/ik_equations/symbolic/RewriteEngine.hpp   funktory do nowego
+                                                         nagłówka: -20 / +1
+           CMakeLists.txt          +2 wiersze
            tests/CMakeLists.txt    +1 wiersz
 
-BEZ ZMIAN  Expression, ExpressionFactory, ExpressionEvaluator, RewriteEngine,
+BEZ ZMIAN  Expression, ExpressionFactory, ExpressionEvaluator, RewriteEngine.cpp,
            SymbolicTransform, cały model, ConstraintBuilder, fasada, loader
 ```
 
-Ostatni wiersz jest sprawdzianem, tak jak w F3.1, i **wychodzi**. W szczególności
-`ExpressionFactory::divide` zachowuje `assert(!isZero(rhs))`, a `RewriteEngine`
-nie jest wołany — F3.2 nie dostarcza silnikowi żadnej reguły (architektura 8.1).
+`RewriteEngine.hpp` **jest ruszany** i v1 tego nie przewidywała — uzasadnienie
+w 1.1. Zmiana jest mechaniczna: definicje funktorów przenoszą się do nowego
+nagłówka, a `RewriteEngine.hpp` go włącza. Semantyka silnika nietknięta,
+`RewriteEngine.cpp` i jego testy bez zmiany.
+
+Reszta wiersza „bez zmian" jest sprawdzianem, tak jak w F3.1, i **wychodzi**.
+W szczególności `ExpressionFactory::divide` zachowuje `assert(!isZero(rhs))`,
+a `RewriteSession` nie jest wołana — F3.2 nie dostarcza silnikowi żadnej reguły
+(architektura 8.1).
 
 Stan wyjściowy: `450/450` w obu konfiguracjach, gałąź `f2.3r-review-remediation`.
 
@@ -67,9 +99,10 @@ Stan wyjściowy: `450/450` w obu konfiguracjach, gałąź `f2.3r-review-remediat
 
 #include "ik_equations/symbolic/Expression.hpp"
 #include "ik_equations/symbolic/ExpressionFactory.hpp"
-#include "ik_equations/symbolic/RewriteEngine.hpp"
+#include "ik_equations/symbolic/ExpressionIdentityMap.hpp"
 
 #include <cstddef>
+#include <optional>
 #include <vector>
 
 namespace kinemaforge::ik {
@@ -84,6 +117,15 @@ namespace detail {
 // introducing rounding; completeness keeps it from splitting one
 // AC-equivalence class into two normal forms, because ExpressionFactory folds
 // adjacent constants greedily while building.
+//
+// PRECONDITION, and an ENVIRONMENT one rather than an argument one: the default
+// IEEE-754 floating-point environment, with gradual underflow. The
+// static_asserts in the .cpp pin what the TYPE provides; they cannot see a
+// runtime flush-to-zero mode set through _MM_SET_FLUSH_ZERO_MODE or by a
+// consumer compiled with -ffast-math. Under FTZ a sum whose result is subnormal
+// stops being exact and addsExactly loses completeness -- silently, and only
+// for very small constants. Recorded in STATUS.md as a known gap; this project
+// never changes the FP mode itself.
 [[nodiscard]] bool addsExactly(double lhs, double rhs) noexcept;
 [[nodiscard]] bool multipliesExactly(double lhs, double rhs) noexcept;
 
@@ -127,6 +169,14 @@ namespace detail {
 //   * an expression already in normal form is returned as THE SAME NODE, even
 //     by a session that has never seen it.
 //
+// One documented EXCEPTION to uniqueness, and only to uniqueness: a chain built
+// entirely of constants that ExpressionFactory declined to fold -- which it does
+// when the fold would overflow -- is returned UNCHANGED when its constants
+// cannot all be joined exactly. Value and domain are trivially preserved, since
+// nothing is rewritten, but two such chains that differ only in association may
+// keep their two shapes. No expression this project builds reaches that case:
+// it needs constants near the top of the double range (4.2).
+//
 // A SESSION, not a free function, for the reason RewriteSession is one: an
 // equation system is many roots of one shared DAG, and rebuilding a shared
 // subtree once per root would break that sharing before every later stage pays
@@ -160,8 +210,13 @@ private:
     void collectProduct(const Expression& expression, int& parity,
                         std::vector<Expression>& factors);
 
-    [[nodiscard]] Expression buildSum(std::vector<Expression> terms);
-    [[nodiscard]] Expression buildProduct(std::vector<Expression> factors, int parity);
+    // nullopt means "this chain is nothing but constants that cannot all be
+    // joined exactly, so there is no way to write the result down" -- see 4.2.
+    // The caller decides what to do with that, because the answer differs
+    // between canonicalizeNode and canonicalNegate.
+    [[nodiscard]] std::optional<Expression> buildSum(std::vector<Expression> terms);
+    [[nodiscard]] std::optional<Expression> buildProduct(std::vector<Expression> factors,
+                                                        int parity);
     [[nodiscard]] Expression canonicalizeQuotient(const Expression& expression);
 
     ExpressionFactory factory_;
@@ -176,12 +231,74 @@ private:
 } // namespace kinemaforge::ik
 ```
 
-### 1.1 Dwie decyzje warte nazwania
+### 1.1 Współdzielony nagłówek zamiast zależności od silnika
 
-**`detail::ExpressionMap` przychodzi z `RewriteEngine.hpp`**, a nie powstaje po
-raz drugi. To trzeci użytkownik tej pary funktorów w projekcie i drugi w
-`namespace detail` — duplikat wobec `ExpressionEvaluator` jest już zapisany
-w `STATUS.md` jako znany brak i **nie rośnie** przez ten etap.
+v1 włączała `RewriteEngine.hpp` **wyłącznie** po to, żeby sięgnąć po
+`detail::ExpressionMap`. Review podważyło to z dwóch powodów naraz: komentarz F3.1
+definiuje tę parę jako **szczegół cache'a silnika**, którego nic poza silnikiem nie
+powinno nazywać — a kanonizator właśnie zaczynał ją nazywać; i powstawała
+zależność
+
+```text
+ExpressionCanonicalizer  ->  RewriteEngine
+```
+
+której **nie ma w semantyce**: kanonizator nie wie o istnieniu reguł i nigdy nie
+woła sesji przepisującej.
+
+Poprawka: nowy nagłówek `symbolic/ExpressionIdentityMap.hpp`, włączany przez oba
+mechanizmy.
+
+```cpp
+#pragma once
+
+#include "ik_equations/symbolic/Expression.hpp"
+
+#include <cstddef>
+#include <functional>
+#include <unordered_map>
+
+namespace kinemaforge::ik::detail {
+
+// Hashing and equality by NODE IDENTITY, with the key owning its node: an entry
+// keeps its node alive, so a cache filled while rewriting a temporary cannot be
+// answered for a different node that later reuses the address.
+//
+// Cache machinery shared by RewriteSession and CanonicalizationSession, in
+// `detail` because nothing outside them has a reason to name it. It lives in
+// its own header rather than in either mechanism, so that neither depends on
+// the other for a reason that is not semantic.
+//
+// ExpressionEvaluator still carries a private copy of this pair. Unifying that
+// one means editing a file neither stage otherwise touches, so it stays
+// recorded in STATUS.md as a known gap -- now one duplicate instead of two.
+struct ExpressionIdentityHash
+{
+    std::size_t operator()(const Expression& expression) const noexcept
+    {
+        return std::hash<const ExpressionNode*>{}(&expression.node());
+    }
+};
+
+struct ExpressionIdentityEqual
+{
+    bool operator()(const Expression& lhs, const Expression& rhs) const noexcept
+    {
+        return sameNode(lhs, rhs);
+    }
+};
+
+template <typename Value>
+using ExpressionMap =
+    std::unordered_map<Expression, Value, ExpressionIdentityHash, ExpressionIdentityEqual>;
+
+} // namespace kinemaforge::ik::detail
+```
+
+`RewriteEngine.hpp` traci te dwadzieścia linijek i zyskuje jeden `#include`.
+Nazwy pozostają dokładnie te same, więc `RewriteEngine.cpp`
+i `test_rewrite_engine.cpp` **nie wymagają zmiany** — co jest też sprawdzianem,
+że przeniesienie jest mechaniczne.
 
 **Predykaty są w API, nie w anonimowej przestrzeni.** Architektura ich tam nie
 wymagała; wystawiam je, bo approval prosił o oracle-testy, a testowanie ich
@@ -427,7 +544,14 @@ Expression CanonicalizationSession::canonicalNegate(const Expression& expression
         // pass produce a different result.
         std::vector<Expression> terms;
         collectSum(expression, -1, terms);
-        return buildSum(std::move(terms));
+        if (std::optional<Expression> negated = buildSum(std::move(terms)))
+            return *negated;
+
+        // The all-constant case from 4.2, reached through negation. Wrapping is
+        // the only representable answer, and it is where the postcondition
+        // takes its documented exception -- for expressions this project cannot
+        // build.
+        break;
     }
 
     case ExpressionType::Multiply:
@@ -565,7 +689,7 @@ i warto o tym wiedzieć, zanim ktoś „uprości" którąś z nich.
 ## 4. `ExpressionCanonicalizer.cpp` — budowanie i wejście
 
 ```cpp
-Expression CanonicalizationSession::buildSum(std::vector<Expression> terms)
+std::optional<Expression> CanonicalizationSession::buildSum(std::vector<Expression> terms)
 {
     std::vector<double> constants;
     std::vector<Expression> others;
@@ -615,14 +739,19 @@ Expression CanonicalizationSession::buildSum(std::vector<Expression> terms)
     {
         if (constants.empty())
             return factory_.constant(0.0);
+        if (constants.size() == 1)
+            return factory_.constant(constants.front());
 
-        // Two residual constants with no other summand would have to become
-        // operands of one add(), which the factory would then fold -- possibly
-        // inexactly, defeating the whole point. It cannot arise: a chain of
-        // nothing but constants would have been folded by the factory while it
-        // was built, and this stage never turns a non-constant into a constant.
-        assert(constants.size() == 1 && "an all-constant sum should not survive the factory");
-        return factory_.constant(constants.front());
+        // Two residual constants with no other summand would have to become the
+        // operands of one add(), and the factory folds any two constants whose
+        // sum is finite -- possibly rounding, which is exactly what this stage
+        // promises never to do.
+        //
+        // v1 asserted this away as unreachable. That was WRONG: foldFinite
+        // declines when the fold would overflow, so Add(1e308, 1e308) is a
+        // legal node with two constant children, and under NDEBUG the assert
+        // vanished and the second constant was silently dropped. See 4.2.
+        return std::nullopt;
     }
 
     // Balanced over the non-constant summands; constants are attached OUTSIDE,
@@ -642,7 +771,8 @@ Expression CanonicalizationSession::buildSum(std::vector<Expression> terms)
     return result;
 }
 
-Expression CanonicalizationSession::buildProduct(std::vector<Expression> factors, int parity)
+std::optional<Expression>
+CanonicalizationSession::buildProduct(std::vector<Expression> factors, int parity)
 {
     std::vector<double> constants;
     std::vector<Expression> others;
@@ -682,6 +812,15 @@ Expression CanonicalizationSession::buildProduct(std::vector<Expression> factors
     const bool hasZero = std::any_of(constants.begin(), constants.end(),
                                      [](double value) { return value == 0.0; });
 
+    // A zero coefficient makes the sign unobservable: -(0*x) and 0*x are the
+    // same partial function -- zero wherever x is defined, undefined where it is
+    // not. Leaving the parity on would give ((-1)*0)*x and (-1)*(0*x) two
+    // different normal forms, because the factory folds (-1)*0 to 0 while
+    // building the first one. Dropping the SIGN is not the same as folding the
+    // PRODUCT: 0*x keeps its shape, and with it its domain.
+    if (hasZero)
+        parity = 0;
+
     std::sort(others.begin(), others.end(), [](const Expression& lhs, const Expression& rhs) {
         return compareExpressions(lhs, rhs) < 0;
     });
@@ -713,7 +852,8 @@ Expression CanonicalizationSession::buildProduct(std::vector<Expression> factors
     }
     else if (!constants.empty())
     {
-        assert(constants.size() == 1 && "an all-constant product should not survive the factory");
+        if (constants.size() > 1)
+            return std::nullopt;                        // same reason as in buildSum, 4.2
         result = factory_.constant(constants.front());
     }
 
@@ -756,6 +896,11 @@ Expression CanonicalizationSession::canonicalizeQuotient(const Expression& expre
     if (isZero(denominator))
         denominator = node.rhs;
 
+    // The same argument as for a zero factor: 0/q and -(0/q) are one partial
+    // function, so the sign is unobservable and must not be written down.
+    if (isZero(numerator))
+        parity = 0;
+
     const Expression quotient = factory_.divide(numerator, denominator);
     return parity != 0 ? canonicalNegate(quotient) : quotient;
 }
@@ -778,7 +923,9 @@ Expression CanonicalizationSession::canonicalizeNode(const Expression& expressio
     {
         std::vector<Expression> terms;
         collectSum(expression, 1, terms);
-        result = buildSum(std::move(terms));
+        // nullopt: nothing but unjoinable constants. Returning the input keeps
+        // the value and the domain and writes no rounding down (4.2).
+        result = buildSum(std::move(terms)).value_or(expression);
         break;
     }
 
@@ -787,7 +934,7 @@ Expression CanonicalizationSession::canonicalizeNode(const Expression& expressio
         std::vector<Expression> factors;
         int parity = 0;
         collectProduct(expression, parity, factors);
-        result = buildProduct(std::move(factors), parity);
+        result = buildProduct(std::move(factors), parity).value_or(expression);
         break;
     }
 
@@ -849,6 +996,119 @@ wtedy, gdy w łańcuchu nie ma żadnego czynnika symbolicznego.
 To jest asymetryczne wobec sumy, gdzie `0` jest po prostu odrzucane jako
 neutralne — i słusznie: `x + 0 = x` na całej dziedzinie `x`, a `x * 0 = 0` tylko
 tam, gdzie `x` jest określone.
+
+### 4.2 Stałe, których fabryka odmówiła zwinąć — blocker z v1
+
+v1 zamykała ten przypadek `assert`em i **założenie było fałszywe**:
+
+```cpp
+assert(constants.size() == 1 && "an all-constant sum should not survive the factory");
+```
+
+`ExpressionFactory::foldFinite` odmawia zwinięcia, gdy wynik nie jest skończony —
+to jawny kontrakt z R5, nie przypadek:
+
+```cpp
+std::optional<Expression> ExpressionFactory::foldFinite(double value) const
+{
+    if (!std::isfinite(value))
+        return std::nullopt;
+    return constant(value);
+}
+```
+
+Więc `add(1e308, 1e308)` **nie** daje `Constant(inf)`, tylko legalny
+`AddNode(1e308, 1e308)`. Kanonizator zbiera z tego dwie stałe, `addsExactly`
+odmawia połączenia (suma jest nieskończona), i:
+
+```text
+build z assertami   ->  ABORT
+NDEBUG              ->  assert znika, zwracamy constants.front()
+                        DRUGA STAŁA ZNIKA po cichu
+```
+
+Rozbieżność między Release a buildem diagnostycznym, z cichą utratą danych po
+stronie Release. To najgorszy rodzaj błędu, jaki można zostawić w tym miejscu.
+
+**Samo usunięcie asserta nie wystarczy**, i to jest sedno uwagi z review. Trzeba
+powiedzieć, **jak zapisać kilka reszt**, skoro każde `factory_.add(c1, c2)` zwija
+je, gdy suma jest skończona. Przy sumie z członem symbolicznym problemu nie ma —
+stałe doklejane są na zewnątrz i żadne `add` nie dostaje dwóch (architektura
+3.2.3). Bez członu symbolicznego nie ma do czego ich doklejać, a przykład, który
+tego dowodzi, jest krótki:
+
+```text
+Add(Add(1e308, 1e308), 1.0)          legalne: obie wewnętrzne stałe przepełniają
+
+składniki po zebraniu:   1e308, 1e308, 1.0     -- SAME STAŁE
+posortowane:             1.0, 1e308, 1e308
+1.0 + 1e308              skończone, ale ZAOKRĄGLONE  -> nie łączymy
+1e308 + 1e308            nieskończone               -> nie łączymy
+reszty:                  trzy
+```
+
+**Polityka, jawnie:**
+
+> Łańcuch złożony **wyłącznie ze stałych**, którego reszt nie da się połączyć
+> dokładnie do jednej, jest zwracany **bez zmiany**. Wartość i dziedzina są
+> zachowane trywialnie, bo nic nie zostaje przepisane; **jednoznaczność postaci
+> normalnej dla takich wyrażeń nie jest obiecywana**.
+
+Trzy powody, dla których to jest właściwy wybór, a nie kapitulacja:
+
+```text
+alternatywa A   zbudować mimo wszystko    -> fabryka zwinie 1.0 + 1e308 z zaokrągleniem
+                                             łamie gwarancję „bez nowego zaokrąglenia"
+alternatywa B   rozszerzyć fabrykę        -> zmiana kontraktu R5 dla przypadku,
+                                             którego pipeline nie potrafi zbudować
+alternatywa C   zwrócić bez zmiany        -> traci JEDYNIE jednoznaczność,
+                                             i tylko dla tej klasy wyrażeń
+```
+
+**Zasięg wyjątku jest wąski i policzalny:** wymaga stałych przy górnej granicy
+zakresu `double`. Cały pipeline — URDF, FK, TCP, ograniczenia — operuje na
+długościach członów i kątach; żadna z tych liczb nie zbliża się do `1e308`. Wyjątek
+jest **nieosiągalny z tego projektu**, ale osiągalny dla caller'a, który zbuduje
+takie wyrażenie ręcznie — i dlatego ma być opisany, a nie zaassertowany.
+
+Sygnalizacja przez `std::optional` zamiast wcześniejszego `assert`a: `buildSum`
+i `buildProduct` zwracają `nullopt`, a **wołający decyduje**, bo odpowiedź jest
+różna. `canonicalizeNode` zwraca wejście; `canonicalNegate` musi coś zbudować,
+więc owija w `Negate` — i to jest jedyne miejsce, w którym postcondition
+„`Negate` nigdy nad sumą" ma swój **udokumentowany wyjątek**, dla tej samej,
+nieosiągalnej klasy wyrażeń.
+
+### 4.3 Znak przy zerowym współczynniku — drugi blocker z v1
+
+Ten sam rodzaj błędu, co `(-1)*(a+b)` z architektury: dwie drogi konstrukcji, dwie
+postacie.
+
+```text
+A = ((-1) * 0) * x       fabryka zwija (-1)*0 -> 0        =>  0 * x
+B = (-1) * (0 * x)       parity = 1, stałe [1, 0] -> [0]  =>  -(0 * x)
+```
+
+`0*x` i `-(0*x)` są **tą samą funkcją częściową**: zerem wszędzie tam, gdzie `x`
+jest określone, i nieokreślone tam, gdzie `x` nie jest. Znak jest więc
+**nieobserwowalny** i nie wolno go zapisać. Poprawka to jedna linijka:
+
+```cpp
+if (hasZero)
+    parity = 0;
+```
+
+**Kluczowe rozróżnienie**, bez którego ta poprawka byłaby regresją: zerujemy
+**znak**, nie **iloczyn**. `0 * x` zostaje `0 * x`, bo zwinięcie go do `0`
+rozszerzyłoby dziedzinę — to zakaz, którego fabryka pilnuje od Fazy 1 i który 4.1
+opisuje z drugiej strony.
+
+To samo dotyczy ilorazu: `0/q` i `-(0/q)` są jedną funkcją częściową, więc przy
+zerowym liczniku parzystość też znika.
+
+Jedna konsekwencja numeryczna, żeby nie była zaskoczeniem: `-(0*x)` ewaluuje się
+do `-0.0`, a `0*x` do `0.0`. Po poprawce zostaje ta druga postać. Obie są sobie
+równe (`-0.0 == 0.0`), różni je wyłącznie bit znaku — i cały projekt traktuje je
+jednakowo, bo `isZero` nie rozróżnia zer.
 
 ---
 
@@ -926,9 +1186,17 @@ EquationSimplifier::normalize(const IkEquationSystem& system) const
     equations.reserve(system.equations().size());
 
     for (const Equation& equation : system.equations())
-        equations.push_back(Equation{session.canonicalize(equation.lhs),
-                                     session.canonicalize(equation.rhs),
-                                     equation.source});
+    {
+        // COPY, then replace the two expression handles. Listing the fields in
+        // an aggregate initialiser would compile just as well after a field is
+        // added to Equation, and the new field would quietly take its default
+        // value -- which is exactly what the contract above promises will not
+        // happen. Copying makes the promise structural instead of remembered.
+        Equation normalized = equation;
+        normalized.lhs = session.canonicalize(equation.lhs);
+        normalized.rhs = session.canonicalize(equation.rhs);
+        equations.push_back(std::move(normalized));
+    }
 
     const std::span<const JointVariable> unknowns = system.unknowns();
     return IkEquationSystem::create(system.taskKind(),
@@ -939,7 +1207,33 @@ EquationSimplifier::normalize(const IkEquationSystem& system) const
 } // namespace kinemaforge::ik
 ```
 
-### 5.1 Odstępstwo od architektury, świadome
+### 5.1 Kopia zamiast rekonstrukcji — trzeci blocker z v1
+
+v1 miała komentarz obiecujący, że **przyszłe pole nie wypadnie po cichu**, i kod,
+który dokładnie to robił:
+
+```cpp
+equations.push_back(Equation{session.canonicalize(equation.lhs),
+                             session.canonicalize(equation.rhs),
+                             equation.source});
+```
+
+Dziś `Equation` ma trzy pola, więc testy przechodzą. Po dopisaniu czwartego
+inicjalizacja agregatowa **nadal się kompiluje**, a nowe pole dostaje wartość
+domyślną — czyli dzieje się to, przed czym komentarz twierdził, że chroni.
+Komentarz i kod mówiły dwie przeciwne rzeczy.
+
+Kopia i podmiana dwóch uchwytów czyni obietnicę **strukturalną**: nowe pole jest
+przenoszone dlatego, że nikt go nie wymienia, a nie dlatego, że ktoś pamiętał
+o dopisaniu go do listy.
+
+Warto zauważyć, że `-Werror=missing-field-initializers` **nie złapałoby** tego
+przypadku: wszystkie istniejące pola są wymienione, więc nowe pole z
+inicjalizatorem domyślnym w klasie nie generuje ostrzeżenia. To ta sama pułapka,
+która w F2.7 zatrzymała build przy czwartym polu błędu — tam pola nie miały
+inicjalizatorów, więc ostrzeżenie było; tutaj nie byłoby.
+
+### 5.2 Odstępstwo od architektury, świadome
 
 Architektura pisała `IkEquationSystem normalize(...)`, zwracane przez wartość.
 Zwracam `expected`, bo `IkEquationSystem::create` jest **jedynym** sposobem
@@ -955,19 +1249,21 @@ a `create` zwróci błąd, który zniknie.
 
 ---
 
-## 6. Testy — 25
+## 6. Testy — 33
 
 Plik `tests/test_expression_canonicalizer.cpp`. Pełny kod jest długi i powtarza
 wzorce z F3.1, więc podaję **listę z intencją**, a pełne źródła w części, której
 review najczęściej dotyka.
 
 ```text
-porządek (3)
-  IsTotalAndAntisymmetricOnMixedKinds     11 rodzajów węzłów, wszystkie pary
+porządek (4)
+  IsTotalAndAntisymmetricOnMixedKinds     jedenaście wyrażeń pokrywających
+                                          wszystkie DZIEWIĘĆ rodzajów węzłów
+  AgreesWithStructuralEquality            compare == 0  <=>  structurallyEqual
   OrdersByNameNotByHash                   „a" < „z"; łapie podmianę na odcisk
   DoesNotDependOnConstructionOrder        a+b i b+a -> jedna postać
 
-AC-normalizacja (13)
+AC-normalizacja (19)
   FlattensNestedAssociativeChains
   ReducesExactConstantsAndDropsNeutral    3 + x + 4 -> 7 + x
   DoesNotJoinConstantsInexactly           1e16 + 1 zostaje rozdzielone
@@ -981,6 +1277,14 @@ AC-normalizacja (13)
   NormalizesMinusOneTimesSum              (-1)*(a+b) BEZ Negate nad sumą
   NormalizesSignThroughDivision           -(a/b), (-a)/b, a/(-b)
   IsIdempotent                            pięć wyrażeń, sameNode po drugim przebiegu
+  RebuildsInBalancedShape                 ośmiu składników -> głębokość 3, nie 7
+  NormalizesNestedSubtractionWithPolarity  a-(b-c) i (a-b)+c -> jedna postać
+  KeepsUnjoinableConstantsApartInRebuild  żadne add() nie dostaje dwóch stałych
+  KeepsOriginalDenominatorIfItBecomesZero  guard z F3.1 2.7, mianownik nietknięty
+  PreservesDeclinedOverflowingConstantSum  Add(1e308,1e308) -> BEZ ZMIANY (4.2)
+  PreservesDeclinedOverflowingConstantProduct  to samo dla iloczynu
+  NormalizesSignAwayFromZeroProduct       ((-1)*0)*x i (-1)*(0*x) -> jedna postać (4.3)
+  NormalizesSignAwayFromZeroNumerator     0/q i -(0/q) -> jedna postać
 
 sesja i tożsamość (2)
   KeepsNodeIdentityInAFreshSession        PUSTE memo, ten sam węzeł
@@ -995,11 +1299,18 @@ predykaty dokładności (3)
   RejectsProductWhoseRoundingErrorUnderflows   nextafter(2^-511)^2
   AcceptsExactProductOutsideTheNormalRange     2^-1000 * 2^-70
 
-EquationSimplifier (3)
+EquationSimplifier (4)
   PreservesEverythingButTheExpressions    taskKind, unknowns, kolejność, source
   SharesOneSessionAcrossTheSystem         liczba unikalnych węzłów po
   AgreesNumericallyWithinToleranceOnFk    oba roboty, 50 konfiguracji, próg 1e-12
+  JoinsExactlyFoldableConstantsThroughTheChain
+                                          (1e200*3)*x  i  1e200*(3*x)
+                                          -> structurallyEqual   <-- 6.2
 ```
+
+Liczby w nawiasach: 4 + 19 + 2 + 1 + 3 + 4 = **33**. Do tego dwa testy z 4.2
+muszą być uruchomione **w obu konfiguracjach** — pod `NDEBUG` też — bo to tam
+v1 gubiła dane po cichu, i tam poprawka ma największe znaczenie.
 
 ### 6.1 Test, który jest sercem sekcji 3.2.1 architektury
 
@@ -1052,18 +1363,45 @@ liczyły to samo tym samym sposobem, test badałby zgodność kodu z samym sobą
 
 ---
 
+### 6.2 Test, który pilnuje kompletności predykatu na poziomie całości
+
+Oracle z 6.1 dowodzi, że `multipliesExactly` odpowiada poprawnie. **Nie dowodzi**,
+że kanonizator z niego korzysta w sposób zachowujący postać normalną — a to jest
+właśnie problem, który wymusił kontrakt sound **i** complete (architektura 3.2.1):
+
+```cpp
+TEST(CanonicalizerTest, JoinsExactlyFoldableConstantsThroughTheChain)
+{
+    const Expression x = sym("x");
+
+    // 1e200 * 3 is exactly representable, so the factory folds it while
+    // building A. If the canonicaliser refused the same join in B -- which a
+    // merely conservative predicate would -- the two would normalise apart.
+    const Expression a = kFactory.multiply(kFactory.multiply(con(1e200), con(3.0)), x);
+    const Expression b = kFactory.multiply(con(1e200), kFactory.multiply(con(3.0), x));
+
+    EXPECT_TRUE(structurallyEqual(norm(a), norm(b)));
+}
+```
+
 ## 7. Gate i liczby
 
-### 7.1 Zmierzone
+### 7.1 Gate
 
 ```text
 przed    450 / 450
-nowe     +25
-po       475 / 475
+nowe     +33
+po       483 / 483
 ```
 
 W obu konfiguracjach, z `-Wall -Wextra -Wswitch -Werror`, z assertami żywymi
 i pod `NDEBUG`.
+
+**Ta liczba jest przewidywaniem, nie pomiarem.** Zmierzone było `475/475` dla
+**v1**, której kod zawierał trzy błędy z tego review — w tym jeden, którego
+żaden z tamtych 25 testów nie łapał, bo żaden nie budował przepełniającej stałej.
+Poprawki v2 są przeczytane, nie uruchomione. Zgodnie z lekcją z F3.1 6.7 traktuj
+`483/483` jako deklarację do zweryfikowania przy implementacji.
 
 ### 7.2 Rozmiar wyniku — liczba, której się nie spodziewałem
 
@@ -1097,19 +1435,24 @@ konstrukcję sesji.
 
 | Ryzyko | Reakcja |
 |---|---|
+| Stałe, których fabryka odmówiła zwinąć | **błąd v1, z cichą utratą danych w Release** — jawna polityka zamiast asserta, dwa testy w obu konfiguracjach (4.2) |
+| Znak przy zerowym współczynniku | **błąd v1** — parzystość zerowana przy czynniku zerowym i zerowym liczniku; **iloczyn** nietknięty (4.3) |
+| Przyszłe pole `Equation` gubione przez rekonstrukcję | **błąd v1**, i `-Werror=missing-field-initializers` by go **nie złapał** — kopia zamiast listy pól (5.1) |
 | Splice w kolektorze zapętla się | Terminacja opiera się na tożsamości węzła; argument w 3.1, nie tylko w komentarzu |
 | Fabryka zwija dwie reszty stałych | Stałe doklejane na zewnątrz, nigdy dwie w jednym `add`/`multiply` (4) |
 | `x * 0` zwinięte do `0` | Zwijane tylko przy braku czynników symbolicznych (4.1) |
 | FTZ/DAZ włączone w runtime psuje 2Sum | `static_assert` łapie typ, nie tryb procesora — zapisane jako znany brak (2.1) |
 | `EquationSimplifier` zwraca `expected` wbrew architekturze | Odstępstwo świadome i uzasadnione (5.1); do cofnięcia w cztery linijki |
 | Postać normalna większa od wejścia | Zmierzone i wyjaśnione (7.2), nie ukryte |
-| Rosnący duplikat funktorów tożsamości | Nie rośnie: `detail::ExpressionMap` bierze się z `RewriteEngine.hpp` (1.1) |
+| Rosnący duplikat funktorów tożsamości | **Maleje**: wspólny nagłówek zamiast kopii, zostaje jeden duplikat w `ExpressionEvaluator` (1.1) |
+| Kanonizator zależny od `RewriteEngine.hpp` bez powodu semantycznego | Zależność usunięta; oba mechanizmy włączają wspólny nagłówek (1.1) |
+| Kontrakt `addsExactly` mocniejszy niż egzekwowany | Precondition środowiskowe zapisane w nagłówku; FTZ/DAZ jako znany brak, bo `static_assert` widzi typ, nie tryb procesora (2.1) |
 
 ---
 
 ## 9. Rekomendacja
 
-Przyjąć, zaimplementować, uruchomić gate `475/475` w obu konfiguracjach, dorobić
+Przyjąć, zaimplementować, uruchomić gate `483/483` w obu konfiguracjach, dorobić
 pomiar z 7.2, zaktualizować `STATUS.md`, `KATALOG.md` i roadmapę, przenieść oba
 dokumenty F3.2 do `proposal/done/`, zrobić commit.
 
