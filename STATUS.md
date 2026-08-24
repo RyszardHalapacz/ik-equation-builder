@@ -23,8 +23,21 @@
 > this repo ends at F3.1. The next action is **the reviewer's verdict on the
 > implementation proposal**, not typing.
 >
-> After APPROVED, in this order: implementation proposal → review → code → both
-> builds green → update these documents → move F3.2 to `proposal/done/`.
+> After APPROVED, in this order: write the code → both builds green → fill in
+> the measurement 7.2 of the implementation proposal leaves open → update these
+> documents → move both F3.2 proposals to `proposal/done/` → commit. Then F3.3,
+> trigonometry, which is where the F3.1 rewrite engine finally gets a rule.
+>
+> **First action in a new session:** read this block, then the two proposal
+> documents named above. Do not start writing code, and do not re-derive the
+> state from git history — the branch is long and every stage runs through
+> several review rounds, so the log says what happened, not what is pending.
+>
+> ```text
+> AWAITING:  the reviewer's verdict on the F3.2 implementation proposal, v3
+> BLOCKED:   nothing else -- F3.1 is closed and green
+> OPEN, the user's call:  tag v0.2-ik-equations; merge f2.3r-review-remediation -> main
+> ```
 >
 > This block is the answer to „where are we?" and is rewritten at every change
 > of stage or version. If it disagrees with the tables further down, trust the
