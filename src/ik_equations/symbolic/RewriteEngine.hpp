@@ -2,52 +2,15 @@
 
 #include "ik_equations/symbolic/Expression.hpp"
 #include "ik_equations/symbolic/ExpressionFactory.hpp"
+#include "ik_equations/symbolic/ExpressionIdentityMap.hpp"
 #include "ik_equations/symbolic/RewriteRule.hpp"
 
 #include <cstddef>
-#include <functional>
 #include <optional>
 #include <span>
-#include <unordered_map>
 #include <vector>
 
 namespace kinemaforge::ik {
-
-// Cache machinery, not vocabulary: in `detail` because nothing outside this
-// engine has a reason to name it, and `kinemaforge::ik::ExpressionMap` would
-// read as a type the module offers on purpose.
-//
-// Hashing and equality by NODE IDENTITY, with the key owning its node: an entry
-// keeps its node alive, so a cache filled while rewriting a temporary cannot be
-// answered for a different node that later reuses the address.
-//
-// ExpressionEvaluator carries a private copy of this pair for its own memo.
-// Promoting one shared definition means editing a file this stage otherwise
-// does not touch, so the duplication is recorded in STATUS.md as a known gap
-// rather than fixed in passing.
-namespace detail {
-
-struct ExpressionIdentityHash
-{
-    std::size_t operator()(const Expression& expression) const noexcept
-    {
-        return std::hash<const ExpressionNode*>{}(&expression.node());
-    }
-};
-
-struct ExpressionIdentityEqual
-{
-    bool operator()(const Expression& lhs, const Expression& rhs) const noexcept
-    {
-        return sameNode(lhs, rhs);
-    }
-};
-
-template <typename Value>
-using ExpressionMap =
-    std::unordered_map<Expression, Value, ExpressionIdentityHash, ExpressionIdentityEqual>;
-
-} // namespace detail
 
 // The syntactic domain guards of an expression: the divisor of every Divide
 // node, deduplicated STRUCTURALLY. Complete for the nine node kinds that exist

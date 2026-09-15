@@ -93,6 +93,12 @@ add_library(kinemaforge_ik STATIC
     src/ik_equations/builders/JointTransformBuilder.cpp
     src/ik_equations/builders/ForwardKinematicsBuilder.cpp
     src/ik_equations/builders/ConstraintBuilder.cpp
+    src/ik_equations/builders/EquationSimplifier.cpp
+    src/ik_equations/builders/KinematicGeometryBuilder.cpp
+    src/ik_equations/solver/IkPatternDetector.cpp
+    src/ik_equations/solver/AnalyticIkSolver.cpp
+    src/ik_equations/solver/PrimitiveSolvers.cpp
+    src/ik_equations/codegen/CppAnalyticIkGenerator.cpp
     src/ik_equations/builders/RigidTransformConstruction.cpp
     src/ik_equations/builders/detail/PrincipalRotation.cpp
     src/ik_equations/model/IkEquationSystem.cpp
@@ -100,9 +106,11 @@ add_library(kinemaforge_ik STATIC
     src/ik_equations/model/QuaternionTarget.cpp
     src/ik_equations/symbolic/Expression.cpp
     src/ik_equations/symbolic/ExpressionFactory.cpp
+    src/ik_equations/symbolic/ExpressionCanonicalizer.cpp
     src/ik_equations/symbolic/ExpressionEvaluator.cpp
     src/ik_equations/symbolic/RewriteEngine.cpp
     src/ik_equations/symbolic/SymbolicTransform.cpp
+    src/ik_equations/symbolic/TrigonometricSimplifier.cpp
 )
 target_include_directories(kinemaforge_ik PUBLIC src)
 target_link_libraries(kinemaforge_ik PUBLIC pugixml::pugixml)

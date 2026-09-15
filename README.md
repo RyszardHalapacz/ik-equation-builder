@@ -52,6 +52,27 @@ This repo is the home of `IkEquationBuilder`: a small, self-contained C++ librar
                                                     ▼
                                             IkEquationSystem
                                        (3 equations, or 12 for a pose)
+
+For the first explicitly supported 6R family there is also a numeric analytic path:
+
+    KinematicChain + PoseTarget (+ TCP)
+                  │
+                  ▼
+         base-frame axis geometry
+                  │
+                  ▼
+          IkPatternDetector
+                  │
+                  ▼
+          AnalyticIkSolver
+          /             \
+ regular branches   singular family
+                  │
+                  ▼
+       CppAnalyticIkGenerator
+                  │
+                  ▼
+       specialized C++23 solver
 ```
 
 Everything under the facade is a private implementation detail. From the outside, using the whole pipeline looks like this:
@@ -104,14 +125,24 @@ const SymbolicTransform* tcpFk = builder.tcpForwardKinematics();
 const auto system = builder.buildEquationSystem(PositionTarget{{2.0, 0.5, 1.5}});
 if (!system)
 {
-    std::cerr << system.error().message << '
-';   // error().constraintError has the detail
+    std::cerr << system.error().message << '\n';   // error().constraintError has the detail
     return;
 }
 
 // Three equations, lhs = rhs, in the joint variables q1..qn.
 for (const auto& equation : system->equations())
     use(equation.lhs, equation.rhs);
+
+// For the first supported 6R analytic family, solve a full pose directly.
+// This uses the selected chain and the optional TCP already stored in the facade.
+const auto ik = builder.solveAnalyticIk(poseTarget);
+if (!ik)
+{
+    std::cerr << ik.error().message << '\n';
+    return;
+}
+for (const auto& branch : ik->branches)
+    use(branch);
 
 // Or substitute a joint configuration into the transform directly. One
 // evaluator is one substitution; all sixteen cells share its cache.
@@ -153,6 +184,10 @@ The important consequence is that **the TCP is a sibling of the transform, not a
 - **`ExpressionEvaluator`** — substitutes concrete joint values back into a symbolic tree and returns a `double`. Memoized by node identity, which is not an optimization but a requirement: a composed FK transform for `kr640.urdf` is 281 unique nodes but 21 882 counted with multiplicity. One instance is one substitution, so a cache filled for one configuration can never answer for another.
 - **The equation model** (`Equation`, `IkEquationSystem`, `IkTarget`) — what an IK equation and a task target *are*. Types only, and deliberately written **before** anything that builds them, so the constraint builder had a contract to satisfy instead of one to invent. An equation is stored as `lhs = rhs`, never normalised to `lhs - rhs = 0`: subtracting would destroy which side came from the robot and which from the task, and that boundary cannot be recovered without algebraic decomposition.
 - **`ConstraintBuilder`** — the first component that *formulates* IK rather than describing geometry. Given the symbolic transform, the chain it came from and a target, it emits an explicit `IkEquationSystem`: three equations for a `PositionTarget`, twelve for a `PoseTarget` (three of position, nine of orientation). Nine matrix cells for three rotational degrees of freedom is on purpose — no fixed subset of three is independent for every rotation, so **the equation count is not the constraint count**, and picking an independent subproblem belongs to the layer that knows the solution structure. It also guarantees that every symbol appearing in the equations is a declared unknown of the chain — checked by walking the equations, not assumed.
+- **`ExpressionCanonicalizer` + `TrigonometricSimplificationSession`** — prepare symbolic equations for structural matching without widening their domain. AC chains get a deterministic normal form; trigonometric identities are intentionally small and guarded rather than pretending to be a general CAS.
+- **`KinematicGeometryBuilder` + `IkPatternDetector`** — translate the selected chain into base-frame axis lines and conservatively recognize geometry supported by the analytic backend. The first family is six rotary joints with parallel shoulder/elbow axes and a spherical wrist of the supported XYX-equivalent arrangement.
+- **`AnalyticIkSolver`** — solves a `PoseTarget` for that first family, returns all regular branches allowed by joint limits, and represents spherical-wrist singularities as an infinite family instead of inventing a joint value. Unsupported geometry fails explicitly.
+- **`CppAnalyticIkGenerator`** — emits a robot-specialized C++23 solver containing numeric geometry/limits and depending only on a lightweight generated runtime; URDF parsing, symbolic expressions and the general analytic solver do not survive into generated runtime code.
 
 ### Is the math right?
 
@@ -162,32 +197,28 @@ Two limits stay attached to that claim and are worth knowing before trusting it:
 
 ### Where this is headed
 
-The pipeline above is deliberately the *first* phase — parsing and forward kinematics. The same facade is meant to grow into the rest of the story:
+The project has crossed the boundary from *formulating* IK to solving one explicit analytic family:
 
-```
+```text
 IkEquationBuilder
 │
-├── (done) URDF → chain → symbolic forward kinematics, numerically cross-checked
-├── (done) constant TCP offset → T_base_tcp(q)
-├── (done) the equation and target model — what an equation and a target *are*
-├── (done) ConstraintBuilder — FK + a target → an explicit system of IK equations
-├── (done) quaternion targets, directional targets, angle-to-a-direction targets
-├── (done) all of it behind IkEquationBuilder — PHASE 2 COMPLETE
-│
-├── (done) a rewrite engine with machine-checked domain safety — no rules yet
-│
-└── (future)
-    ├── EquationSimplifier   — collapse the raw symbolic mess into something readable
-    ├── EquationSolver       — actually solve the equation for inverse kinematics
-    ├── IkPatternDetector    — recognize known structural shortcuts (e.g. spherical wrist)
-    └── CodeGenerator        — emit fast, specialized code straight from the derived formula
+├── (done) URDF -> chain -> symbolic forward kinematics
+├── (done) optional TCP -> T_base_tcp(q)
+├── (done) targets + ConstraintBuilder -> explicit IkEquationSystem
+├── (done) rewrite engine + AC canonical form + guarded trig simplification
+├── (done) base-frame joint-axis geometry + conservative pattern detection
+├── (working release candidate) analytic 6R solver for the first supported family
+│     ├── regular shoulder / elbow / wrist branches
+│     ├── joint-limit expansion
+│     └── spherical-wrist singular family
+└── (working release candidate) specialized C++23 code generator
 ```
 
-The project now **states** an IK problem end to end, through one public surface: a URDF file, a chain, an optional tool offset and a target go in; an explicit system of symbolic equations in the joint variables comes out. Six kinds of task are expressible — position, full pose, the direction of a tool axis, and the angle between that axis and a reference direction, the last two with and without position — and a target orientation may be given as a rotation matrix or as a quaternion.
+The support claim is deliberately narrow. The analytic backend currently requires exactly six rotary actuated joints, parallel joint-2/joint-3 axes, a spherical wrist, and the supported XYX-equivalent wrist arrangement (axis 4 parallel to axis 6 and axis 5 perpendicular). A robot outside that family is rejected; it is not pushed through a heuristic fallback.
 
-It does **not** solve them. That is the honest shape of the milestone: the project can formulate inverse kinematics, and deriving `q` is the next phase and the larger one.
+For the two shipped KUKA models, standalone property validation in the 2026-09-13 work session recovered 1000/1000 random generating configurations for each robot, with every returned regular branch checked against an independent quaternion FK implementation. Generated KR640/KR4 solvers were also compiled and passed 1000/1000 random targets each; a non-trivial TCP variant passed 500/500. These are real executed gates, but they are **not a substitute for the repository's full CMake/CTest gate**, which could not be run in the offline sandbox because `FetchContent` could not reach GitHub. See [`STATUS.md`](STATUS.md) for the exact boundary.
 
-One thing worth saying plainly: everything built so far was mechanical translation with a known correct answer — parse, walk, compose, evaluate. What follows is not. `EquationSolver` has no single algorithm; it is case analysis, and for some robots a closed-form solution does not exist at all. Measured by effort rather than by component count, the first phase is closer to a quarter of the whole than to half.
+One singular family is still explicitly open: when the wrist centre lies exactly on the shoulder axis, `q1` becomes free and the remaining position solution must be parameterized by it. The general solver fails closed with `UnsupportedKinematicStructure` rather than silently setting `q1` to an arbitrary value. Closing that case and running the normal full test suite are the release gates before calling the working branch a green v1.0 analytic-IK release.
 
 ## A quiet word about where this is going
 
@@ -207,10 +238,13 @@ URDF
   → Symbolic forward kinematics
   → Symbolic forward kinematics to the TCP
   → An explicit system of IK equations
-  → (next) simplification, then a solution
+  → AC/trigonometric preparation
+  → geometry/pattern recognition
+  → analytic solutions for a supported family
+  → specialized generated C++23
 ```
 
-Each stage owns exactly one responsibility. The goal is to keep the architecture modular enough that future stages — simplification, inverse kinematics solving, and code generation — can be added without changing the earlier pipeline. So far it has held: the TCP offset, the equation model and the constraint builder were all pure additions, with no change to any earlier stage.
+Each stage owns exactly one responsibility. The architecture is deliberately layered so symbolic preparation, geometric classification, analytic solving and code generation can evolve without rewriting parsing or FK. That boundary has held through the first analytic family: the solver consumes the selected chain/target/TCP, while generated runtime code contains only numeric robot parameters and the lightweight family implementation.
 
 Two decisions shape the symbolic layer more than any others, and both cost something on purpose:
 

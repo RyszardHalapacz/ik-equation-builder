@@ -26,6 +26,13 @@ add_executable(kinemaforge_tests
     test_expression_factory.cpp
     test_expression_evaluator.cpp
     test_rewrite_engine.cpp
+    test_expression_canonicalizer.cpp
+    test_trigonometric_simplifier.cpp
+    test_kinematic_geometry.cpp
+    test_ik_pattern_detector.cpp
+    test_primitive_solvers.cpp
+    test_analytic_ik_solver.cpp
+    test_code_generator.cpp
     test_symbolic_matrix.cpp
     test_symbolic_transform.cpp
     support/NumericForwardKinematics.cpp

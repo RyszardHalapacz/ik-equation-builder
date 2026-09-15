@@ -10,6 +10,7 @@
 #include "ik_equations/model/KinematicChainError.hpp"
 #include "ik_equations/model/RobotDescription.hpp"
 #include "ik_equations/symbolic/SymbolicTransform.hpp"
+#include "ik_equations/solver/AnalyticIkSolver.hpp"
 
 #include <expected>
 #include <filesystem>
@@ -28,12 +29,14 @@ enum class IkEquationBuilderErrorCode
     TcpNotSet,
     InvalidTcpTransform,
     TcpForwardKinematicsNotBuilt,
-    ConstraintBuildFailed
+    ConstraintBuildFailed,
+    AnalyticIkSolveFailed
 };
 
 // Errors returned by IkEquationBuilder satisfy this invariant: chainError has
-// a value if and only if code == ChainBuildFailed, and constraintError has a
-// value if and only if code == ConstraintBuildFailed. The type is a public
+// a value if and only if code == ChainBuildFailed, constraintError has a value
+// if and only if code == ConstraintBuildFailed, and analyticIkError has a value
+// if and only if code == AnalyticIkSolveFailed. The type is a public
 // aggregate, so a caller can hand-build an inconsistent value; that is not
 // worth a variant or a factory, but the guarantee is about what this class
 // produces, not about what the struct can hold.
@@ -53,6 +56,7 @@ struct IkEquationBuilderError
     std::string message;
     std::optional<KinematicChainError> chainError;
     std::optional<ConstraintBuilderError> constraintError;
+    std::optional<AnalyticIkSolverError> analyticIkError;
 };
 
 // The public entry point of this module: URDF file -> symbolic forward
@@ -185,6 +189,15 @@ public:
     [[nodiscard]] std::expected<IkEquationSystem, IkEquationBuilderError>
     buildEquationSystem(const IkTarget& target) const;
 
+    // Analytic IK for the first explicitly supported 6R family.  The target is
+    // interpreted in the same frame policy as buildEquationSystem(): with a
+    // configured TCP it constrains the TCP, otherwise the selected chain tip.
+    // Unlike symbolic constraint construction this operation does not require
+    // buildForwardKinematics(); it works directly from the selected chain's
+    // canonical geometry and validates every regular solution by FK round-trip.
+    [[nodiscard]] std::expected<AnalyticIkSolution, IkEquationBuilderError>
+    solveAnalyticIk(const PoseTarget& target) const;
+
 private:
     // Which transform the constraints are built on, or the first missing
     // prerequisite. Reads four members, so it belongs to the class rather than
@@ -197,6 +210,7 @@ private:
     JointTransformBuilder jointTransformBuilder_;
     ForwardKinematicsBuilder fkBuilder_;
     ConstraintBuilder constraintBuilder_;
+    AnalyticIkSolver analyticIkSolver_;
 
     std::optional<RobotDescription> robotDescription_;
     std::optional<KinematicChain> kinematicChain_;

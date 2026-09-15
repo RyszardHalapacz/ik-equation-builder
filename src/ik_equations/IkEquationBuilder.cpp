@@ -21,7 +21,7 @@ std::unexpected<IkEquationBuilderError> makeError(IkEquationBuilderErrorCode cod
     // error has to answer for a new field instead of receiving a default in
     // silence, and the answer here is the invariant from the header.
     return std::unexpected(
-        IkEquationBuilderError{code, std::move(message), std::nullopt, std::nullopt});
+        IkEquationBuilderError{code, std::move(message), std::nullopt, std::nullopt, std::nullopt});
 }
 
 // The nested error is preserved, not flattened: the caller gets
@@ -33,7 +33,7 @@ std::unexpected<IkEquationBuilderError> constraintBuildFailed(ConstraintBuilderE
     auto message = "constraint build failed: " + error.message;
     return std::unexpected(IkEquationBuilderError{
         IkEquationBuilderErrorCode::ConstraintBuildFailed, std::move(message),
-        std::nullopt, std::move(error)});
+        std::nullopt, std::move(error), std::nullopt});
 }
 
 // Explicit overload set, no generic lambda: a seventh IkTarget alternative must
@@ -153,6 +153,7 @@ IkEquationBuilder::selectChain(const std::string& baseLink, const std::string& t
             "cannot select chain '" + baseLink + "' -> '" + toolLink + "': " +
                 describe(selected.error()),
             selected.error(),
+            std::nullopt,
             std::nullopt});
 
     kinematicChain_ = std::move(*selected);
@@ -254,6 +255,25 @@ IkEquationBuilder::transformForConstraints() const
                          "buildTcpForwardKinematics first");
 
     return &*tcpForwardKinematics_;
+}
+
+std::expected<AnalyticIkSolution, IkEquationBuilderError>
+IkEquationBuilder::solveAnalyticIk(const PoseTarget& target) const
+{
+    if (!kinematicChain_)
+        return makeError(IkEquationBuilderErrorCode::KinematicChainNotSelected,
+                         "no kinematic chain selected; call selectChain first");
+
+    auto solved = analyticIkSolver_.solve(*kinematicChain_, target, tcp_);
+    if (!solved)
+    {
+        auto nested = std::move(solved.error());
+        auto message = "analytic IK solve failed: " + nested.message;
+        return std::unexpected(IkEquationBuilderError{
+            IkEquationBuilderErrorCode::AnalyticIkSolveFailed, std::move(message),
+            std::nullopt, std::nullopt, std::move(nested)});
+    }
+    return *std::move(solved);
 }
 
 std::expected<IkEquationSystem, IkEquationBuilderError>

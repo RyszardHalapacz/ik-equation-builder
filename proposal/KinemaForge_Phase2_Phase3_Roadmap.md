@@ -1,6 +1,16 @@
 # KinemaForge / IkEquationBuilder — roadmapa Fazy 2 i Fazy 3
 
-**Data:** 2026-08-03 · **ostatnia aktualizacja:** 2026-08-22  
+> **Aneks stanu — 2026-09-13.** Ten dokument powstawał jako plan i zachowuje
+> historyczne uzasadnienia/ryzyka. Aktualny kod wyprzedził stare znaczniki
+> „TUTAJ JESTEŚMY”. W bieżącym workspace F3.2–F3.9 i F3.12 są zaimplementowane,
+> F3.10 ma zaimplementowane limity i singularność spherical wrist, ale nadal
+> otwartą rodzinę shoulder-axis (`q1` free), a F3.11 ma przeprowadzone
+> standalone round-trip/property gates. Pełny CMake/CTest pozostaje do
+> uruchomienia poza offline sandboxem. Szczegóły i faktycznie wykonane pomiary:
+> [`../STATUS.md`](../STATUS.md).
+
+
+**Data:** 2026-08-03 · **ostatnia aktualizacja:** 2026-09-13  
 **Zakres:** rozwój po zakończeniu Fazy 1 (`URDF → zweryfikowane symboliczne FK`)  
 **Założenie wejściowe:** `IkEquationBuilder` jest zaimplementowany, pełny clean build przechodzi, a Faza 1 jest oznaczona jako zakończona.
 
@@ -16,20 +26,21 @@
 ## ▶ Gdzie jesteśmy teraz
 
 ```text
-F2.1  transformacja TCP — architektura          ✅ zaimplementowane
-F2.2  transformacja TCP — implementacja         ✅ zaimplementowane
-F2.3  model równań i targetów                   ✅ zaimplementowane
-F2.3.R  remediacja po review kodu               ✅ zaimplementowane
-F2.4  ConstraintBuilder: PositionOnly           ✅ zaimplementowane
-F2.5  ConstraintBuilder: FullPose               ✅ zaimplementowane
-F2.5Q target kwaternionowy                      ✅ zaimplementowane
-F2.6  constrainty kierunkowe                    ✅ zaimplementowane (a + b)
-F2.7  integracja z fasadą + milestone           ✅ zaimplementowane
+F2.1–F2.7  Phase 2                               ✅ zamknięte
+F3.1       RewriteEngine                         ✅ zamknięte
+F3.2       AC canonical form                     ✅ working implementation + property gate
+F3.3       guarded trig simplification           ✅ working implementation
+F3.4       base-frame kinematic geometry         ✅ working implementation
+F3.5       conservative pattern detector         ✅ working implementation
+F3.6       analytic solution IR                  ✅ working implementation
+F3.7       primitive solvers                     ✅ working implementation
+F3.8       position solver, first 6R family      ✅ 1000 KR640 + 1000 KR4 random gate
+F3.9       spherical-wrist orientation solver    ✅ same round-trip gate
+F3.10      limits + singularities                ⚠ wrist done; shoulder-axis family open
+F3.11      end-to-end validation + facade        ✅ standalone gate; full CTest pending
+F3.12      C++23 generator                       ✅ generated code compiled/property-tested
 
-FAZA 2 ZAMKNIĘTA — URDF + opcjonalny TCP + cel -> IkEquationSystem
-Faza 3, F3.2 (postać AC-normalna)                 ◀ TUTAJ JESTEŚMY
-                                                    architektura v8 ZATWIERDZONA
-                                                    implementacja v3, CZEKA NA REVIEW
+RELEASE GATE: clean normal CMake build + full CTest outside offline sandbox.
 ```
 
 Proposale etapów zamkniętych leżą w `proposal/done/<etap>/` — przeniesienie tam
@@ -902,7 +913,7 @@ nie może zostać bezwarunkowo zamienione na `0`.
 
 ---
 
-## F3.2 — `EquationSimplifier`: kanonizacja algebraiczna
+## F3.2 — `EquationSimplifier`: kanonizacja algebraiczna ✅ WORKING-BRANCH IMPLEMENTATION
 
 > **⚠ Zakres tego etapu jest kwestionowany przez proposal z 2026-08-22.**
 > Lista „pierwszy bezpieczny zakres" poniżej powstała **przed Fazą 1** i została
@@ -937,7 +948,7 @@ Reguły warunkowe muszą znać preconditions.
 
 ---
 
-## F3.3 — `EquationSimplifier`: trygonometria i równania
+## F3.3 — `EquationSimplifier`: trygonometria i równania ✅ WORKING-BRANCH IMPLEMENTATION
 
 ### Zakres
 
@@ -956,7 +967,7 @@ Nie wprowadzać od razu pełnego CAS.
 
 ---
 
-## F3.4 — geometryczny model osi i jointów
+## F3.4 — geometryczny model osi i jointów ✅ WORKING-BRANCH IMPLEMENTATION
 
 ### Cel
 
@@ -979,7 +990,7 @@ Tolerancje geometryczne muszą być jawne i uzasadnione. Nie wolno mieszać dok�
 
 ---
 
-## F3.5 — `IkPatternDetector`
+## F3.5 — `IkPatternDetector` ✅ WORKING-BRANCH IMPLEMENTATION
 
 ### Pierwsze wzorce
 
@@ -1009,7 +1020,7 @@ Detektor ma zwracać dowody/metryki, nie tylko enum.
 
 ---
 
-## F3.6 — model rozwiązań analitycznych
+## F3.6 — model rozwiązań analitycznych ✅ WORKING-BRANCH IMPLEMENTATION
 
 ### Cel
 
@@ -1042,7 +1053,7 @@ FreeParameter
 
 ---
 
-## F3.7 — primitive solvers
+## F3.7 — primitive solvers ✅ WORKING-BRANCH IMPLEMENTATION
 
 Budować małe, testowalne solvery:
 
@@ -1062,7 +1073,7 @@ Nie zaczynać od monolitycznego solvera 6R.
 
 ---
 
-## F3.8 — solver pozycji dla wspieranej rodziny 6R
+## F3.8 — solver pozycji dla wspieranej rodziny 6R ✅ PROPERTY-VALIDATED WORKING IMPLEMENTATION
 
 ### Cel
 
@@ -1083,7 +1094,7 @@ Pierwszy zakres powinien być jawnie ograniczony do geometrii, którą potwierdz
 
 ---
 
-## F3.9 — solver orientacji / wrist
+## F3.9 — solver orientacji / wrist ✅ PROPERTY-VALIDATED WORKING IMPLEMENTATION
 
 ### Cel
 
@@ -1105,7 +1116,7 @@ Zakres:
 
 ---
 
-## F3.10 — osobliwości, degeneracje i limity
+## F3.10 — osobliwości, degeneracje i limity ⚠ PARTIAL: WRIST + LIMITS DONE, SHOULDER-AXIS FAMILY OPEN
 
 ### Zakres
 
@@ -1124,7 +1135,7 @@ Nie wolno „naprawiać” przypadku singularnego arbitralną wartością bez oz
 
 ---
 
-## F3.11 — walidacja solvera end-to-end
+## F3.11 — walidacja solvera end-to-end ✅ STANDALONE GATE PASSED / FULL CTEST PENDING
 
 ### Pipeline
 
@@ -1154,7 +1165,7 @@ Każde zwrócone rozwiązanie przechodzi FK round-trip. Solver nie może zwróci
 
 ---
 
-## F3.12 — `CodeGenerator`
+## F3.12 — `CodeGenerator` ✅ GENERATED CODE COMPILED + PROPERTY-VALIDATED
 
 ### Cel
 
