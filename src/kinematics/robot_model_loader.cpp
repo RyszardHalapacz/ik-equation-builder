@@ -184,6 +184,9 @@ read_limit_attribute(pugi::xml_node limit, std::string_view jointName,
 //   T0b  <link> names are unique   -- link.name IS node identity here, so
 //                                     without it the graph is not well defined
 //                                     and nothing below means anything
+//   T0c  every <joint> has a non-empty, unique name -- joint names identify
+//        axes in IK results, so an empty or repeated one makes that mapping
+//        ambiguous
 //   T1   every joint.parent_link resolves to a declared <link>
 //   T2   every joint.child_link resolves to a declared <link>
 //   T3   no link is the child of two joints -- this is what makes it a tree
@@ -216,6 +219,19 @@ validate_topology(std::span<Link const> links, std::span<Joint const> joints) {
         if (!declared.insert(link.name).second)
             return std::unexpected(makeError(LoadErrorCode::invalid_link_declaration,
                                              {}, "link/name", link.name));
+    }
+
+    // T0c. The second occurrence is the first point at which uniqueness is
+    // observably broken, so that is the one reported.
+    std::unordered_set<std::string_view> jointNames;
+    jointNames.reserve(joints.size());
+    for (auto const& joint : joints) {
+        if (joint.name.empty())
+            return std::unexpected(makeError(LoadErrorCode::invalid_joint_declaration,
+                                             {}, "joint/name", std::string_view{}));
+        if (!jointNames.insert(joint.name).second)
+            return std::unexpected(makeError(LoadErrorCode::invalid_joint_declaration,
+                                             joint.name, "joint/name", joint.name));
     }
 
     // T1, T2
@@ -333,6 +349,15 @@ load_urdf(std::filesystem::path const& urdf_path) {
                                              j.name, "type",
                                              node.attribute("type").as_string()));
         j.type = *jtype;
+
+        // <mimic> makes this joint a function of another one. The model has no
+        // notion of coupled joints, and silently treating it as an independent
+        // axis lets IK return configurations the robot cannot take, so such a
+        // model is refused until coupling is supported.
+        if (node.child("mimic"))
+            return std::unexpected(makeError(LoadErrorCode::unsupported_mimic_joint,
+                                             j.name, "mimic",
+                                             node.child("mimic").attribute("joint").as_string()));
 
         // A missing element or a missing attribute means "use the default".
         // An attribute that is present but unparsable is an error — including

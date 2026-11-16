@@ -333,19 +333,36 @@ TEST(ExpressionCanonicalizerTest, KeepsUnjoinableConstantsApartInRebuild)
     EXPECT_FALSE(ik::isConstant(root.lhs) && ik::isConstant(root.rhs));
 }
 
-TEST(ExpressionCanonicalizerTest, KeepsOriginalDenominatorIfItBecomesZero)
+TEST(ExpressionCanonicalizerTest, PreservesZeroDenominatorDefinedness)
 {
     const Expression denominator = kFactory.subtract(sym("q"), sym("q"));
     const Expression input = kFactory.divide(sym("x"), denominator);
     const Expression normalized = norm(input);
     const auto& node = std::get<ik::DivideNode>(normalized.node().value);
-    EXPECT_TRUE(ik::sameNode(node.rhs, denominator));
+    EXPECT_FALSE(ik::isZero(node.rhs));
+    ik::ExpressionEvaluator evaluator{{{"q", 3.0}, {"x", 1.0}}};
+    const auto before = evaluator.evaluate(input);
+    const auto after = evaluator.evaluate(normalized);
+    ASSERT_FALSE(before);
+    ASSERT_FALSE(after);
+    EXPECT_EQ(before.error().code, ik::EvaluationErrorCode::DivisionByZero);
+    EXPECT_EQ(after.error().code, before.error().code);
 }
 
 TEST(ExpressionCanonicalizerTest, PreservesDeclinedOverflowingConstantSum)
 {
     const Expression input = kFactory.add(con(1e308), con(1e308));
     EXPECT_TRUE(ik::sameNode(norm(input), input));
+}
+
+TEST(ExpressionCanonicalizerTest, KeepsOriginalDenominatorWhenConstantRegroupingProducesZero)
+{
+    const Expression overflowing = kFactory.add(con(1e308), con(1e308));
+    const Expression denominator = kFactory.subtract(overflowing, overflowing);
+    ASSERT_TRUE(ik::isZero(norm(denominator)));
+    const Expression normalized = norm(kFactory.divide(sym("x"), denominator));
+    ASSERT_EQ(normalized.type(), ik::ExpressionType::Divide);
+    EXPECT_TRUE(ik::sameNode(std::get<ik::DivideNode>(normalized.node().value).rhs, denominator));
 }
 
 TEST(ExpressionCanonicalizerTest, PreservesDeclinedOverflowingConstantProduct)
@@ -368,6 +385,23 @@ TEST(ExpressionCanonicalizerTest, NormalizesSignAwayFromZeroNumerator)
     const Expression a = kFactory.divide(con(0.0), sym("q"));
     const Expression b = kFactory.negate(a);
     EXPECT_TRUE(ik::structurallyEqual(norm(a), norm(b)));
+}
+
+TEST(ExpressionCanonicalizerTest, NegatedZeroProductRetainsPartialFactorDomain)
+{
+    const Expression partial = kFactory.divide(con(1.0), sym("q"));
+    const Expression product = kFactory.multiply(con(0.0), partial);
+    const Expression normalized = norm(kFactory.negate(product));
+    EXPECT_TRUE(ik::structurallyEqual(normalized, norm(product)));
+    EXPECT_TRUE(ik::sameNode(normalized, norm(normalized)));
+    ik::ExpressionEvaluator atZero{{{"q", 0.0}}};
+    const auto undefined = atZero.evaluate(normalized);
+    ASSERT_FALSE(undefined);
+    EXPECT_EQ(undefined.error().code, ik::EvaluationErrorCode::DivisionByZero);
+    ik::ExpressionEvaluator awayFromZero{{{"q", 2.0}}};
+    const auto defined = awayFromZero.evaluate(normalized);
+    ASSERT_TRUE(defined);
+    EXPECT_EQ(*defined, 0.0);
 }
 
 // --- session and identity (2) --------------------------------------------
@@ -517,7 +551,9 @@ TEST(EquationSimplifierTest, AgreesNumericallyWithinToleranceOnFk)
                 const auto b = after.evaluate(normalized->equations()[i].lhs);
                 ASSERT_EQ(a.has_value(), b.has_value());
                 if (a && b)
+                {
                     EXPECT_NEAR(*a, *b, 1e-12 * std::max({1.0, std::fabs(*a), std::fabs(*b)}));
+                }
             }
         }
     }
@@ -529,4 +565,53 @@ TEST(EquationSimplifierTest, JoinsExactlyFoldableConstantsThroughTheChain)
     const Expression a = kFactory.multiply(kFactory.multiply(con(1e200), con(3.0)), x);
     const Expression b = kFactory.multiply(con(1e200), kFactory.multiply(con(3.0), x));
     EXPECT_TRUE(ik::structurallyEqual(norm(a), norm(b)));
+}
+
+// ---- F3.R2: what the canonical form does NOT promise ------------------------
+//
+// These two tests pin documented behaviour. They are not regressions waiting to
+// be fixed; changing either outcome is a change of contract.
+
+TEST(ExpressionCanonicalizerTest, DoesNotRecoverConstantsAlreadyRoundedByTheFactory)
+{
+    // ExpressionFactory folds two ADJACENT constants at once, with rounding:
+    // 1.91 + 0.1 becomes a single double. The canonicaliser merges constants
+    // only when the sum is exact, and it cannot split a constant it was handed.
+    // So the canonical form is a function of the expression as built.
+    const Expression x = sym("x");
+    const Expression separate = kFactory.add(kFactory.add(x, con(1.91)), con(0.1));
+    const Expression folded = kFactory.add(x, kFactory.add(con(1.91), con(0.1)));
+
+    EXPECT_FALSE(ik::structurallyEqual(norm(separate), norm(folded)));
+
+    ik::ExpressionEvaluator evaluator{ik::SymbolValues{{"x", 0.25}}};
+    const auto lhs = evaluator.evaluate(norm(separate));
+    const auto rhs = evaluator.evaluate(norm(folded));
+    ASSERT_TRUE(lhs.has_value());
+    ASSERT_TRUE(rhs.has_value());
+    EXPECT_NEAR(*lhs, *rhs, 1e-15);
+}
+
+TEST(ExpressionCanonicalizerTest, DomainGuaranteeIsStructuralNotBitwise)
+{
+    // What IS guaranteed: the divisor survives canonicalisation as a divisor,
+    // even though 1 - (sin^2 a + cos^2 a) is algebraically zero.
+    //
+    // What is NOT guaranteed: the same ExpressionEvaluator outcome in double.
+    // Canonicalisation reorders the sum, and whether it rounds to exactly zero
+    // depends on that order and on the platform's sin/cos -- so a
+    // DivisionByZero before can be a huge finite number after, and vice versa.
+    // Singularity detection must not be built on evaluating a canonical form.
+    const Expression a = sym("a");
+    const Expression s = kFactory.sin(a);
+    const Expression c = kFactory.cos(a);
+    const Expression denominator = kFactory.subtract(
+        con(1.0), kFactory.add(kFactory.multiply(s, s), kFactory.multiply(c, c)));
+    const Expression quotient = kFactory.divide(sym("b"), denominator);
+
+    const Expression canonical = norm(quotient);
+    ASSERT_EQ(canonical.type(), ik::ExpressionType::Divide);
+    const auto& node = std::get<ik::DivideNode>(canonical.node().value);
+    EXPECT_FALSE(ik::isConstant(node.rhs));
+    EXPECT_FALSE(ik::structurallyEqual(node.rhs, denominator)); // reordered
 }

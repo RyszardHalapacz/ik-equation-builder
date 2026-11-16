@@ -90,6 +90,12 @@ struct AnalyticIkSolution
     AnalyticIkStatus status{AnalyticIkStatus::NoSolution};
     std::vector<SolutionBranch> branches;
     std::string message;
+    // Every branch reproduces the target position and the rotation NEAREST to
+    // the target orientation. This is the largest element-wise distance between
+    // that rotation and the orientation the caller passed in: ~1e-16 for a
+    // clean matrix, up to kMaxOrientationCorrection for one accepted at the
+    // edge of the validation band.
+    double orientationCorrection{};
 };
 
 } // namespace kinemaforge::ik

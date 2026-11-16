@@ -161,7 +161,7 @@ TEST(AnalyticIkSolver, RespectsJointLimits)
 
     // Make q1 impossible while preserving valid geometry.
     for (auto& joint : chain.joints)
-        if (joint.variable && joint.variable->index == 0)
+        if (joint.variable && joint.variable->index == 1)
         {
             joint.limits.lower = 1.5;
             joint.limits.upper = 1.6;
@@ -170,10 +170,8 @@ TEST(AnalyticIkSolver, RespectsJointLimits)
 
     const auto result = ik::AnalyticIkSolver{}.solve(chain, target);
     ASSERT_TRUE(result);
-    for (const auto& branch : result->branches)
-        for (const auto& value : branch.joints)
-            if (value.actuatedJointPosition == 0)
-                EXPECT_GE(value.value, 1.5);
+    EXPECT_EQ(result->status, ik::AnalyticIkStatus::NoSolution);
+    EXPECT_TRUE(result->branches.empty());
 }
 
 TEST(AnalyticIkSolver, RejectsPrismaticSixJointChain)

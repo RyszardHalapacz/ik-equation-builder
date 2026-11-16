@@ -66,7 +66,7 @@ TEST(IkPatternDetector, ReportsWristCenterEvidence)
 TEST(IkPatternDetector, RejectsSkewWristAxes)
 {
     auto geometry = supportedGeometry();
-    geometry.actuatedJoints[5].axis.point.z = 0.01;
+    geometry.actuatedJoints[5].axis.point.y = 0.01;
     const auto patterns = ik::IkPatternDetector{}.detect(geometry);
     EXPECT_FALSE(has(patterns, ik::IkPatternKind::SphericalWrist));
     EXPECT_FALSE(has(patterns, ik::IkPatternKind::SixRotarySphericalWrist));

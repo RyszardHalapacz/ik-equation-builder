@@ -18,6 +18,27 @@ namespace detail {
 
 [[nodiscard]] int compareExpressions(const Expression& lhs, const Expression& rhs);
 
+// What the canonical form promises, and what it does not.
+//
+// Promised:
+//   * commutativity, associativity and sign placement do not affect the
+//     result: x+y and y+x, x-y and x+(-y), -(x*y) and (-x)*y come out equal;
+//   * canonicalisation is idempotent;
+//   * the set of divisors is preserved. An expression whose divisor is
+//     algebraically zero never becomes an expression without that divisor.
+//
+// NOT promised:
+//   * Recovering constants ExpressionFactory already rounded. The factory folds
+//     two adjacent constants immediately, with rounding; the canonicaliser
+//     merges constants only when the result is exact. (x + 1.91) + 0.1 and
+//     x + (1.91 + 0.1) therefore have different canonical forms: the form is a
+//     function of the expression as built.
+//   * The same ExpressionEvaluator outcome in double. Terms are reordered, so
+//     rounding changes -- including whether a divisor evaluates to exactly
+//     zero. DivisionByZero before can be a large finite value after, and the
+//     reverse. The guarantee is algebraic, not bitwise; do not detect
+//     singularities by evaluating a canonical form.
+
 class CanonicalizationSession
 {
 public:

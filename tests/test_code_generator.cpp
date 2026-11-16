@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cmath>
 #include <filesystem>
+#include <locale>
 #include <string>
 #include <vector>
 
@@ -77,6 +78,43 @@ TEST(CppAnalyticIkGenerator, RejectsInvalidNamespaceName)
                                                                std::nullopt, "bad-name");
     ASSERT_FALSE(result);
     EXPECT_EQ(result.error().code, ik::CodeGenerationErrorCode::InvalidNamespaceName);
+}
+
+TEST(CppAnalyticIkGenerator, RejectsCppKeywordsAsNamespaceNames)
+{
+    const auto chain = loadChain("kr640.urdf");
+    for (const char* name : {"class", "namespace", "template", "co_await", "concept",
+                             "requires", "and_eq", "char8_t", "nullptr", "consteval"})
+    {
+        SCOPED_TRACE(name);
+        const auto result = ik::CppAnalyticIkGenerator{}.generate(chain, std::nullopt, name);
+        ASSERT_FALSE(result);
+        EXPECT_EQ(result.error().code, ik::CodeGenerationErrorCode::InvalidNamespaceName);
+    }
+}
+
+TEST(CppAnalyticIkGenerator, GlobalLocaleDoesNotChangeGeneratedCode)
+{
+    struct CommaDecimal : std::numpunct<char>
+    {
+        char do_decimal_point() const override { return ','; }
+        char do_thousands_sep() const override { return '.'; }
+        std::string do_grouping() const override { return "\3"; }
+    };
+    struct RestoreLocale
+    {
+        std::locale previous;
+        ~RestoreLocale() { std::locale::global(previous); }
+    } restore{std::locale()};
+
+    const auto chain = loadChain("kr640.urdf");
+    std::locale::global(std::locale::classic());
+    const auto classic = ik::CppAnalyticIkGenerator{}.generate(chain);
+    std::locale::global(std::locale(std::locale::classic(), new CommaDecimal));
+    const auto localized = ik::CppAnalyticIkGenerator{}.generate(chain);
+    ASSERT_TRUE(classic);
+    ASSERT_TRUE(localized);
+    EXPECT_EQ(*localized, *classic);
 }
 
 TEST(CppAnalyticIkGenerator, CheckedInKr640GeneratedSolverCompilesAndRecoversPose)

@@ -897,6 +897,124 @@ TEST(UrdfModelLoaderTest, RejectsDuplicateLinkName)
     expectRejectedWith(urdf, mt::kinematics::LoadErrorCode::invalid_link_declaration);
 }
 
+namespace {
+
+// Two unit links; j2 is declared as a mimic of j1. Treated as an independent
+// axis, j2 gives the arm a two-dimensional workspace, while the coupling leaves
+// it a single curve -- IK would return configurations that violate the
+// coupling. Audit 2026-11-16 #1.
+std::string mimicArmUrdf(std::string_view mimicElement)
+{
+    return std::string{
+        R"(<?xml version="1.0"?><robot name="t">)"
+        R"(<link name="base"/><link name="l1"/><link name="tool"/>)"
+        R"(<joint name="j1" type="revolute">)"
+        R"(<parent link="base"/><child link="l1"/>)"
+        R"(<axis xyz="0 0 1"/><limit lower="-3" upper="3" effort="1" velocity="1"/>)"
+        R"(</joint>)"
+        R"(<joint name="j2" type="revolute">)"
+        R"(<origin xyz="1 0 0"/><parent link="l1"/><child link="tool"/>)"
+        R"(<axis xyz="0 0 1"/><limit lower="-3" upper="3" effort="1" velocity="1"/>)"}
+        + std::string{mimicElement} +
+        R"(</joint></robot>)";
+}
+
+} // namespace
+
+TEST(UrdfModelLoaderTest, RejectsMimicJoint)
+{
+    // A mimic joint is not an independent axis. Until coupled joints are
+    // modelled, loading one as if it were independent would let IK return
+    // configurations the robot cannot take, so the model is refused.
+    const TemporaryUrdf file{mimicArmUrdf(R"(<mimic joint="j1" multiplier="1" offset="0"/>)")};
+    const auto result = mt::kinematics::load_urdf(file.path());
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error().code, mt::kinematics::LoadErrorCode::unsupported_mimic_joint);
+    EXPECT_EQ(result.error().jointName, "j2");
+    EXPECT_EQ(result.error().attribute, "mimic");
+}
+
+TEST(UrdfModelLoaderTest, RejectsMimicJointWithDefaultAttributes)
+{
+    // multiplier/offset default to 1/0 in URDF; the bare element still couples.
+    expectRejectedWith(mimicArmUrdf(R"(<mimic joint="j1"/>)"),
+                       mt::kinematics::LoadErrorCode::unsupported_mimic_joint);
+}
+
+TEST(UrdfModelLoaderTest, LoadsSameArmWithoutMimic)
+{
+    // Control: the rejection is caused by <mimic>, nothing else in the fixture.
+    const TemporaryUrdf file{mimicArmUrdf("")};
+    EXPECT_TRUE(mt::kinematics::load_urdf(file.path()).has_value());
+}
+
+TEST(UrdfModelLoaderTest, FacadeReportsMimicJointByName)
+{
+    const TemporaryUrdf file{mimicArmUrdf(R"(<mimic joint="j1"/>)")};
+    kinemaforge::ik::UrdfModelLoader loader;
+    try
+    {
+        loader.load(file.path());
+        FAIL() << "expected UrdfModelLoader::load to throw";
+    }
+    catch (const std::runtime_error& error)
+    {
+        const std::string message = error.what();
+        EXPECT_NE(message.find("mimic"), std::string::npos) << message;
+        EXPECT_NE(message.find("joint 'j2'"), std::string::npos) << message;
+    }
+}
+
+TEST(UrdfModelLoaderTest, RejectsEmptyJointName)
+{
+    // Joint names identify axes in IK results (JointValue::name), so an
+    // unnamed joint cannot be reported back unambiguously.
+    const std::string urdf =
+        R"(<?xml version="1.0"?><robot name="t">)"
+        R"(<link name="base"/><link name="tool"/>)"
+        R"(<joint name="" type="revolute">)"
+        R"(<parent link="base"/><child link="tool"/>)"
+        R"(<axis xyz="0 0 1"/><limit lower="-1" upper="1" effort="1" velocity="1"/>)"
+        R"(</joint></robot>)";
+    expectRejectedWith(urdf, mt::kinematics::LoadErrorCode::invalid_joint_declaration);
+}
+
+TEST(UrdfModelLoaderTest, RejectsDuplicateMovableJointName)
+{
+    // Audit 2026-11-16 #6: two movable joints called "same" loaded fine and made
+    // identification of axes by name in IK results ambiguous.
+    const std::string urdf =
+        R"(<?xml version="1.0"?><robot name="t">)"
+        R"(<link name="base"/><link name="mid"/><link name="tool"/>)"
+        R"(<joint name="same" type="revolute">)"
+        R"(<parent link="base"/><child link="mid"/>)"
+        R"(<axis xyz="0 0 1"/><limit lower="-1" upper="1" effort="1" velocity="1"/>)"
+        R"(</joint>)"
+        R"(<joint name="same" type="revolute">)"
+        R"(<parent link="mid"/><child link="tool"/>)"
+        R"(<axis xyz="0 1 0"/><limit lower="-1" upper="1" effort="1" velocity="1"/>)"
+        R"(</joint></robot>)";
+    const TemporaryUrdf file{urdf};
+    const auto result = mt::kinematics::load_urdf(file.path());
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error().code, mt::kinematics::LoadErrorCode::invalid_joint_declaration);
+    EXPECT_EQ(result.error().jointName, "same");
+}
+
+TEST(UrdfModelLoaderTest, RejectsDuplicateJointNameAcrossJointTypes)
+{
+    // URDF requires joint names to be unique regardless of type.
+    const std::string urdf =
+        R"(<?xml version="1.0"?><robot name="t">)"
+        R"(<link name="base"/><link name="mid"/><link name="tool"/>)"
+        R"(<joint name="j" type="fixed"><parent link="base"/><child link="mid"/></joint>)"
+        R"(<joint name="j" type="revolute">)"
+        R"(<parent link="mid"/><child link="tool"/>)"
+        R"(<axis xyz="0 0 1"/><limit lower="-1" upper="1" effort="1" velocity="1"/>)"
+        R"(</joint></robot>)";
+    expectRejectedWith(urdf, mt::kinematics::LoadErrorCode::invalid_joint_declaration);
+}
+
 TEST(UrdfModelLoaderTest, RejectsUndeclaredParentLink)
 {
     // T1. A typo used to conjure a usable frame out of thin air.

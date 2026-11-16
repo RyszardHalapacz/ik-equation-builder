@@ -44,6 +44,10 @@ struct TargetValidationError
 // purpose: the right fix is an explicit orthonormalisation on the caller's
 // side, not a threshold loose enough to let a genuinely non-orthogonal target
 // through and make the equation system quietly unsatisfiable.
+//
+// Inside the accepted band a matrix is still not exactly a rotation. Validation
+// leaves it untouched; nearestRotation() below is the explicit, bounded and
+// reported projection, and the analytic solvers apply it themselves.
 inline constexpr double kOrientationTolerance = 1e-8;
 
 // Checked in this order, and the order is observable:
@@ -149,5 +153,35 @@ validate(const DirectionAngleTarget& target);
 validate(const PositionAndDirectionAngleTarget& target);
 
 [[nodiscard]] std::expected<void, TargetValidationError> validate(const IkTarget& target);
+
+// Upper bound on OrientationProjection::correction that the analytic solvers
+// accept. A matrix that passed validate(RotationMatrix3) stays below 1e-8 to
+// first order; anything above this bound is rejected, never silently rewritten.
+inline constexpr double kMaxOrientationCorrection = 2e-8;
+
+struct OrientationProjection
+{
+    RotationMatrix3 rotation;   // rotation nearest to the input (Frobenius norm)
+    double correction{};        // max |rotation_ij - input_ij|
+};
+
+// The rotation closest to a matrix that validate(RotationMatrix3) accepted.
+//
+// This is NOT the quaternion case. Dividing a quaternion by its norm does not
+// change the rotation it represents; projecting a matrix CHOOSES a nearby
+// rotation, because the input did not name one exactly. That is why the size of
+// the change is returned instead of hidden: a caller can inspect `correction`,
+// and the analytic solvers report it in their results and refuse a target whose
+// correction exceeds kMaxOrientationCorrection.
+//
+// validate() itself still never rewrites anything, and ConstraintBuilder still
+// receives the matrix exactly as written. A caller that wants symbolic
+// equations for an exactly orthonormal target calls this first.
+//
+// Returns NonOrthogonalOrientation when the input is not close enough to a
+// rotation for the projection to exist (non-finite values, non-positive
+// determinant, no convergence). Inputs accepted by validate() never do.
+[[nodiscard]] std::expected<OrientationProjection, TargetValidationError>
+nearestRotation(const RotationMatrix3& rotation);
 
 } // namespace kinemaforge::ik

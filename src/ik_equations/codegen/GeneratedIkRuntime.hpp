@@ -1,11 +1,14 @@
 #pragma once
 
+#include "ik_equations/solver/detail/AnalyticIkNumerics.hpp"
+
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
 #include <limits>
 #include <numbers>
+#include <numeric>
 #include <vector>
 
 namespace kinemaforge::ik::generated {
@@ -65,7 +68,16 @@ enum class Status
     Solutions,
     NoSolution,
     InfiniteFamily,
-    InvalidTarget
+    InvalidTarget,
+    // The result would hold more branches than the caller's budget. Nothing is
+    // returned; Result::requiredBranches says how many were needed.
+    ResourceLimitExceeded,
+    // The target lies on a singular family this solver does not parameterise
+    // (the wrist centre on the joint-1 axis, where q1 is free, or -- with equal
+    // arm links -- on the joint-2 axis, where q2 is free). Solutions may
+    // well exist; this is NOT NoSolution. Mirrors the general solver's
+    // UnsupportedKinematicStructure for the same case.
+    UnsupportedSingularity
 };
 
 struct Branch
@@ -83,7 +95,12 @@ struct Branch
 struct Result
 {
     Status status{Status::NoSolution};
-    std::vector<Branch> branches;
+    std::vector<Branch> branches;   // empty for ResourceLimitExceeded
+    // Branches the full result needs (upper estimate, saturated at SIZE_MAX).
+    std::size_t requiredBranches{};
+    // Branches reproduce the rotation NEAREST to the target orientation; this
+    // is its largest element-wise distance from the orientation passed in.
+    double orientationCorrection{};
 };
 
 namespace detail {
@@ -192,7 +209,16 @@ inline std::vector<PlanarBranch> solvePlanar(double x,double y,const Parameters&
     std::vector<PlanarBranch> out;
     for(double internal:{m,-m})
     {
-        const double q3=(internal-p.link2HomeAngle)/p.axis3Sign;
+        double q3=(internal-p.link2HomeAngle)/p.axis3Sign;
+        // An ill-conditioned elbow angle just outside its limit is put on the
+        // limit and the shoulder angle re-solved for it; the FK check decides
+        // (see kinemaforge::ik::detail::kElbowLimitSnapMargin).
+        if(p.limits[2].enabled)
+            if(const auto snapped=kinemaforge::ik::detail::nearbyLimit(q3,p.limits[2].lower,p.limits[2].upper,
+                                                                       kinemaforge::ik::detail::kElbowLimitSnapMargin))
+            {
+                q3=*snapped; internal=p.link2HomeAngle+p.axis3Sign*q3;
+            }
         const double vx=p.link1+p.link2*std::cos(internal);
         const double vy=p.link2*std::sin(internal);
         const double q2=normalizeAngle(target-std::atan2(vy,vx));
@@ -202,19 +228,67 @@ inline std::vector<PlanarBranch> solvePlanar(double x,double y,const Parameters&
     return out;
 }
 
+inline bool withinLimit(const JointLimit& l,double v) noexcept
+{
+    return std::isfinite(v)&&(!l.enabled||kinemaforge::ik::detail::withinLimit(v,l.lower,l.upper));
+}
+
+// Number of values equivalents() would return, without building them.
+inline std::size_t equivalentCount(const JointLimit& l,double q) noexcept
+{
+    if(!std::isfinite(q))return 0U;
+    if(!l.enabled)return 1U;
+    return kinemaforge::ik::detail::turnCount(kinemaforge::ik::detail::turnsWithin(l.lower,l.upper,normalizeAngle(q)));
+}
+
+// Precondition for bounded joints: equivalentCount() was checked against the
+// branch budget, so the vector built here is small.
 inline std::vector<double> equivalents(const JointLimit& l,double q)
 {
     q=normalizeAngle(q);
     if(!l.enabled) return {q};
-    const long first=static_cast<long>(std::ceil((l.lower-q)/kTwoPi-1e-12));
-    const long last=static_cast<long>(std::floor((l.upper-q)/kTwoPi+1e-12));
+    const auto turns=kinemaforge::ik::detail::turnsWithin(l.lower,l.upper,q);
     std::vector<double> out;
-    for(long k=first;k<=last;++k)
+    for(auto k=turns.first;k<=turns.last;++k)
     {
         const double v=q+kTwoPi*static_cast<double>(k);
-        if(v>=l.lower-1e-12&&v<=l.upper+1e-12) out.push_back(v);
+        // Within the numerical margin of a limit the value IS the limit; snap
+        // it so no returned number lies outside [lower, upper].
+        if(withinLimit(l,v)) out.push_back(kinemaforge::ik::detail::snapToLimit(v,l.lower,l.upper));
     }
     return out;
+}
+
+// One geometric branch before its in-limit full turns are expanded.
+struct Candidate
+{
+    std::array<double,6> q{};      // q[3], q[5] unused when singular
+    bool singular{};
+    double multiplier{};
+    double offset{};
+    std::size_t count{};           // branches this one expands to (upper estimate)
+};
+
+inline kinemaforge::ik::detail::TurnRange dependentTurns(const Parameters& p,double multiplier,double offset) noexcept
+{
+    if(!p.limits[5].enabled)return {0,0}; // an unbounded dependent axis needs one modulo relation
+    const double fl=p.limits[3].enabled?p.limits[3].lower:-std::numbers::pi_v<double>;
+    const double fu=p.limits[3].enabled?p.limits[3].upper: std::numbers::pi_v<double>;
+    const double a=offset+multiplier*fl,b=offset+multiplier*fu;
+    return kinemaforge::ik::detail::turnsWithin(p.limits[5].lower-std::max(a,b),p.limits[5].upper-std::min(a,b));
+}
+
+inline std::size_t branchCount(const Parameters& p,const Candidate& c) noexcept
+{
+    using kinemaforge::ik::detail::saturatingMultiply;
+    std::size_t n=1U;
+    for(std::size_t i=0;i<6;++i)
+    {
+        if(c.singular&&(i==3||i==5))continue;
+        n=saturatingMultiply(n,equivalentCount(p.limits[i],c.q[i]));
+    }
+    if(c.singular)n=saturatingMultiply(n,kinemaforge::ik::detail::turnCount(dependentTurns(p,c.multiplier,c.offset)));
+    return n;
 }
 
 inline void appendRegular(Result& result,const Parameters& p,const std::array<double,6>& q)
@@ -229,35 +303,98 @@ inline void appendRegular(Result& result,const Parameters& p,const std::array<do
     }
 }
 
-inline void appendSingular(Result& result,const Parameters& p,const std::array<double,4>& fixed,
-                           double q5,double multiplier,double offset)
+inline void appendSingular(Result& result,const Parameters& p,const Candidate& candidate)
 {
-    auto q1=equivalents(p.limits[0],fixed[0]),q2=equivalents(p.limits[1],fixed[1]),
-         q3=equivalents(p.limits[2],fixed[2]),q5s=equivalents(p.limits[4],q5);
+    const double multiplier=candidate.multiplier,offset=candidate.offset;
+    auto q1=equivalents(p.limits[0],candidate.q[0]),q2=equivalents(p.limits[1],candidate.q[1]),
+         q3=equivalents(p.limits[2],candidate.q[2]),q5s=equivalents(p.limits[4],candidate.q[4]);
     if(q1.empty()||q2.empty()||q3.empty()||q5s.empty())return;
     const double fl=p.limits[3].enabled?p.limits[3].lower:-std::numbers::pi_v<double>;
     const double fu=p.limits[3].enabled?p.limits[3].upper: std::numbers::pi_v<double>;
-    for(double a:q1)for(double b:q2)for(double c:q3)for(double e:q5s)for(int k=-2;k<=2;++k)
+    const auto turns=dependentTurns(p,multiplier,offset);
+    for(double a:q1)for(double b:q2)for(double c:q3)for(double e:q5s)
+    for(auto k=turns.first;k<=turns.last;++k)
     {
-        double off=offset+kTwoPi*static_cast<double>(k),lo=fl,hi=fu;
-        if(p.limits[5].enabled)
-        {
-            const double x=(p.limits[5].lower-off)/multiplier,y=(p.limits[5].upper-off)/multiplier;
-            lo=std::max(lo,std::min(x,y)); hi=std::min(hi,std::max(x,y));
-        }
-        if(lo>hi+1e-12)continue;
+        // Shared with the general solver: free bounds and the dependent values
+        // at those bounds lie within the limits exactly (audit 2026-11-16 #7).
+        const auto interval=kinemaforge::ik::detail::coupledFreeInterval(
+            fl,fu,p.limits[5].enabled,p.limits[5].lower,p.limits[5].upper,
+            offset+kTwoPi*static_cast<double>(k),multiplier,1e-12);
+        if(!interval)continue;
+        const double off=interval->offset,lo=interval->lower,hi=interval->upper;
         Branch br; br.q={a,b,c,std::numeric_limits<double>::quiet_NaN(),e,std::numeric_limits<double>::quiet_NaN()};
         br.singular=true;br.freeLower=lo;br.freeUpper=hi;br.dependentMultiplier=multiplier;br.dependentOffset=off;result.branches.push_back(br);
     }
 }
 
+// Forward kinematics from the generated numeric parameters alone (space-axis
+// product applied to the home target frame, including the TCP offset).
+inline bool forwardMatches(const Parameters& p,const std::array<double,6>& q,const Pose& target)
+{
+    for(double v:q)if(!std::isfinite(v))return false;
+    Mat3 orientation=p.targetFrameHomeRotation;
+    Vec3 position=sub(p.wristCenterHome,multiply(orientation,p.wristInTargetFrame));
+    for(std::size_t i=q.size();i-->0;)
+    {
+        const Mat3 r=rotation(p.axes[i].direction,q[i]);
+        position=add(p.axes[i].point,multiply(r,sub(position,p.axes[i].point)));
+        orientation=multiply(r,orientation);
+    }
+    const double distance=norm(sub(position,target.position));
+    if(!std::isfinite(distance)||distance>2e-9)return false;
+    for(std::size_t i=0;i<3;++i)for(std::size_t j=0;j<3;++j)
+        if(!std::isfinite(orientation[i][j])||std::abs(orientation[i][j]-target.orientation[i][j])>2e-9)return false;
+    return true;
+}
+
+inline bool poseMatches(const Parameters& p,const std::array<double,6>& q,const Pose& target)
+{
+    for(std::size_t i=0;i<q.size();++i)
+        if(!withinLimit(p.limits[i],q[i]))return false;
+    return forwardMatches(p,q,target);
+}
+
+inline bool branchMatches(const Parameters& p,const Branch& b,const Pose& target)
+{
+    if(!b.singular)return poseMatches(p,b.q,target);
+    auto q=b.q;
+    for(double free:{b.freeLower,std::midpoint(b.freeLower,b.freeUpper),b.freeUpper})
+    {
+        q[3]=free;
+        q[5]=b.dependentOffset+b.dependentMultiplier*free;
+        if(!poseMatches(p,q,target))return false;
+    }
+    return true;
+}
+
+inline bool sameGeometricBranch(const std::array<double,6>& a,const std::array<double,6>& b) noexcept
+{
+    for(std::size_t i=0;i<6;++i)if(std::abs(normalizeAngle(a[i]-b[i]))>1e-9)return false;
+    return true;
+}
+
 } // namespace detail
 
-inline Result solve(const Parameters& p,const Pose& target)
+// maxBranches bounds the number of branches (regular solutions and singular
+// families) in one result. Every in-limit full turn of every joint is a
+// separate branch, so the count is a product over joints; it is computed from
+// the limits before anything is allocated. A result that would exceed the
+// bound is reported as ResourceLimitExceeded and never truncated.
+inline Result solve(const Parameters& p,const Pose& requestedTarget,std::size_t maxBranches=4096)
 {
     using namespace detail;
     Result result;
-    if(!validTarget(target)){result.status=Status::InvalidTarget;return result;}
+    if(!validTarget(requestedTarget)){result.status=Status::InvalidTarget;return result;}
+
+    // Angles reproduce exact rotations only. Solve for the rotation nearest to
+    // the accepted input and report the distance.
+    const auto projected=kinemaforge::ik::detail::nearestRotation(requestedTarget.orientation);
+    if(!projected.converged||!(projected.correction<=kinemaforge::ik::detail::kMaxOrientationCorrection))
+    {
+        result.status=Status::InvalidTarget;return result;
+    }
+    const Pose target{requestedTarget.position,projected.rotation};
+    result.orientationCorrection=projected.correction;
 
     const Vec3 targetWrist=add(target.position,multiply(target.orientation,p.wristInTargetFrame));
     const Axis& a1=p.axes[0]; const Vec3 d2=p.axes[1].direction;
@@ -266,40 +403,81 @@ inline Result solve(const Parameters& p,const Pose& target)
     const double cc=dot(v,d2)-d1d2*d1v;
     const double sc=-dot(cross(a1.direction,v),d2);
     const double k=dot(a1.point,d2)+d1d2*d1v-dot(p.wristCenterHome,d2);
+    // Wrist centre on the joint-1 axis: the equation for q1 vanishes
+    // identically and q1 is free. Same test, same tolerance as the general
+    // solver's ScalarSolutionKind::Infinite, which it reports as unsupported.
+    if(std::hypot(sc,cc)<=kLinearTolerance&&std::abs(k)<=kLinearTolerance)
+    {
+        result.status=Status::UnsupportedSingularity;return result;
+    }
     const auto q1s=solveSinCos(sc,cc,-k,kLinearTolerance);
     if(q1s.empty()){result.status=Status::NoSolution;return result;}
+
+    // Phase A: geometric branches, verified and deduplicated before expansion.
+    std::vector<Candidate> candidates;
+    const auto addRegular=[&](const std::array<double,6>& q)
+    {
+        if(!forwardMatches(p,q,target))return;
+        for(const auto& existing:candidates)
+            if(!existing.singular&&sameGeometricBranch(existing.q,q))return;
+        Candidate c; c.q=q; c.count=branchCount(p,c); candidates.push_back(c);
+    };
+    const auto addSingular=[&](double q1,double q2,double q3,double q5,double multiplier,double offset)
+    {
+        Candidate c; c.q={q1,q2,q3,0.0,q5,0.0}; c.singular=true; c.multiplier=multiplier; c.offset=offset;
+        c.count=branchCount(p,c); candidates.push_back(c);
+    };
 
     for(double q1:q1s)
     {
         const Vec3 unrot=rotatePoint(targetWrist,a1,-q1);
         const Vec3 pt=projectPerpendicular(sub(unrot,p.axes[1].point),d2);
         const double tx=dot(pt,p.planarX),ty=dot(pt,p.planarY);
+        // Equal arm links with the wrist centre on the joint-2 axis (elbow
+        // fully folded): q2 is free. Same test as the general solver, which
+        // reports it as unsupported -- never one arbitrary q2.
+        if(std::hypot(tx,ty)<=kLinearTolerance&&std::abs(p.link1-p.link2)<=kLinearTolerance)
+        {
+            result.status=Status::UnsupportedSingularity;return result;
+        }
         for(const auto& arm:solvePlanar(tx,ty,p))
         {
             const Mat3 r123=multiply(multiply(rotation(p.axes[0].direction,q1),rotation(p.axes[1].direction,arm.q2)),rotation(p.axes[2].direction,arm.q3));
             const Mat3 wr=multiply(multiply(transpose(r123),target.orientation),transpose(p.targetFrameHomeRotation));
             const Mat3 local=multiply(multiply(transpose(p.wristBasis),wr),p.wristBasis);
-            const double beta=std::acos(std::clamp(local[0][0],-1.0,1.0));
-            if(std::abs(std::sin(beta))>kAngularTolerance)
+            const auto angles=kinemaforge::ik::detail::decomposeXyx(local,kAngularTolerance);
+            if(!angles.singular)
             {
-                const double alpha=std::atan2(local[1][0],-local[2][0]);
-                const double gamma=std::atan2(local[0][1],local[0][2]);
-                appendRegular(result,p,{q1,arm.q2,arm.q3,normalizeAngle(alpha),normalizeAngle(beta),normalizeAngle(gamma/p.axis6Sign)});
-                appendRegular(result,p,{q1,arm.q2,arm.q3,normalizeAngle(alpha+std::numbers::pi_v<double>),normalizeAngle(-beta),normalizeAngle((gamma+std::numbers::pi_v<double>)/p.axis6Sign)});
+                const double alpha=angles.alpha,beta=angles.beta,gamma=angles.gamma;
+                addRegular({q1,arm.q2,arm.q3,normalizeAngle(alpha),normalizeAngle(beta),normalizeAngle(gamma/p.axis6Sign)});
+                addRegular({q1,arm.q2,arm.q3,normalizeAngle(alpha+std::numbers::pi_v<double>),normalizeAngle(-beta),normalizeAngle((gamma+std::numbers::pi_v<double>)/p.axis6Sign)});
             }
             else if(local[0][0]>=0.0)
             {
-                const double theta=std::atan2(local[2][1],local[1][1]);
-                appendSingular(result,p,{q1,arm.q2,arm.q3,0.0},0.0,-1.0/p.axis6Sign,theta/p.axis6Sign);
+                addSingular(q1,arm.q2,arm.q3,0.0,-1.0/p.axis6Sign,angles.gamma/p.axis6Sign);
             }
             else
             {
-                const double theta=std::atan2(local[1][2],local[1][1]);
-                appendSingular(result,p,{q1,arm.q2,arm.q3,0.0},-std::numbers::pi_v<double>,1.0/p.axis6Sign,-theta/p.axis6Sign);
+                addSingular(q1,arm.q2,arm.q3,-std::numbers::pi_v<double>,1.0/p.axis6Sign,angles.gamma/p.axis6Sign);
             }
         }
     }
 
+    // Phase B: count before allocating.
+    for(const auto& c:candidates)
+        result.requiredBranches=kinemaforge::ik::detail::saturatingAdd(result.requiredBranches,c.count);
+    if(kinemaforge::ik::detail::branchBudgetExceeded(result.requiredBranches,maxBranches)){result.status=Status::ResourceLimitExceeded;return result;}
+
+    // Phase C: expand, then verify every branch that is returned.
+    result.branches.reserve(result.requiredBranches);
+    for(const auto& c:candidates)
+    {
+        if(c.count==0U)continue;
+        if(c.singular)appendSingular(result,p,c);
+        else appendRegular(result,p,c.q);
+    }
+
+    std::erase_if(result.branches,[&](const Branch& b){return !branchMatches(p,b,target);});
     if(result.branches.empty()){result.status=Status::NoSolution;return result;}
     result.status=std::any_of(result.branches.begin(),result.branches.end(),[](const Branch& b){return b.singular;})?Status::InfiniteFamily:Status::Solutions;
     return result;

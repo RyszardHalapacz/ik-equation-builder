@@ -91,6 +91,8 @@ std::string describeCode(mt::kinematics::LoadErrorCode code)
     case Code::duplicate_child_link:       return "link is the child of more than one joint";
     case Code::cyclic_topology:            return "URDF topology contains a cycle";
     case Code::disconnected_topology:      return "URDF does not describe one connected tree";
+    case Code::invalid_joint_declaration:  return "joint declaration has an empty or duplicate name";
+    case Code::unsupported_mimic_joint:    return "mimic joints are not supported";
     }
     return "unknown URDF load error";
 }

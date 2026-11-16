@@ -121,5 +121,12 @@ target_link_libraries(kinemaforge_ik PRIVATE kinemaforge_warnings)
 add_executable(${PROJECT_NAME} src/main.cpp)
 target_link_libraries(${PROJECT_NAME} PRIVATE kinemaforge_ik kinemaforge_warnings)
 
-enable_testing()
-add_subdirectory(tests)
+# Tests are built by default only when KinemaForge is the top-level project.
+# A parent that pulls it in through add_subdirectory() (MotionBridge) does not
+# get googletest or our test targets unless it asks for them explicitly; the
+# standard BUILD_TESTING=OFF switch is honoured in both cases.
+option(KINEMAFORGE_BUILD_TESTS "Build the KinemaForge test suite" ${PROJECT_IS_TOP_LEVEL})
+if (KINEMAFORGE_BUILD_TESTS AND (BUILD_TESTING OR NOT DEFINED BUILD_TESTING))
+    enable_testing()
+    add_subdirectory(tests)
+endif()

@@ -7,10 +7,10 @@
 
 #include <algorithm>
 #include <array>
-#include <cctype>
 #include <cmath>
 #include <iomanip>
 #include <limits>
+#include <locale>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -83,8 +83,29 @@ std::vector<const KinematicJoint*> actuated(const KinematicChain& chain)
 
 bool validIdentifier(std::string_view name)
 {
-    if(name.empty()||!(std::isalpha(static_cast<unsigned char>(name.front()))||name.front()=='_'))return false;
-    return std::all_of(name.begin()+1,name.end(),[](char c){return std::isalnum(static_cast<unsigned char>(c))||c=='_';});
+    const auto letter = [](char c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'); };
+    if (name.empty() || !(letter(name.front()) || name.front() == '_'))
+        return false;
+    if (!std::all_of(name.begin() + 1, name.end(), [&](char c) {
+            return letter(c) || (c >= '0' && c <= '9') || c == '_';
+        }))
+        return false;
+
+    static constexpr std::string_view keywords[] = {
+        "alignas", "alignof", "and", "and_eq", "asm", "auto", "bitand", "bitor", "bool",
+        "break", "case", "catch", "char", "char8_t", "char16_t", "char32_t", "class",
+        "compl", "concept", "const", "consteval", "constexpr", "constinit", "const_cast",
+        "continue", "co_await", "co_return", "co_yield", "decltype", "default", "delete",
+        "do", "double", "dynamic_cast", "else", "enum", "explicit", "export", "extern",
+        "false", "float", "for", "friend", "goto", "if", "inline", "int", "long", "mutable",
+        "namespace", "new", "noexcept", "not", "not_eq", "nullptr", "operator", "or", "or_eq",
+        "private", "protected", "public", "register", "reinterpret_cast", "requires", "return",
+        "short", "signed", "sizeof", "static", "static_assert", "static_cast", "struct",
+        "switch", "template", "this", "thread_local", "throw", "true", "try", "typedef",
+        "typeid", "typename", "union", "unsigned", "using", "virtual", "void", "volatile",
+        "wchar_t", "while", "xor", "xor_eq"
+    };
+    return std::ranges::find(keywords, name) == std::end(keywords);
 }
 
 std::unexpected<CodeGenerationError> fail(CodeGenerationErrorCode code,std::string message)
@@ -170,7 +191,10 @@ std::expected<Parameters,CodeGenerationError> buildParameters(const KinematicCha
 
 std::string number(double value)
 {
-    std::ostringstream s;s<<std::setprecision(std::numeric_limits<double>::max_digits10)<<value;return s.str();
+    std::ostringstream stream;
+    stream.imbue(std::locale::classic());
+    stream << std::setprecision(std::numeric_limits<double>::max_digits10) << value;
+    return stream.str();
 }
 std::string vecText(Vec3 v)
 {

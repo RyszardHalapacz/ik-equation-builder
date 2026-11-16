@@ -45,6 +45,7 @@ F3.1      rewrite engine
 | F3.10 | [`F3.10-singularities-limits/`](F3.10-singularities-limits/) | joint limits + wrist singular family implemented; shoulder-axis family open |
 | F3.11 | [`F3.11-end-to-end-validation/`](F3.11-end-to-end-validation/) | facade + standalone round-trip validation passed; full CTest pending |
 | F3.12 | [`F3.12-code-generator/`](F3.12-code-generator/) | generated C++23 backend implemented, compiled and property-tested |
+| F3.R2 | [`F3.R2-audit-followup/`](F3.R2-audit-followup/) | implemented 2026-11-15 on the user's go-ahead; 613/613 in Release, Debug and Werror |
 
 ## Release rule
 

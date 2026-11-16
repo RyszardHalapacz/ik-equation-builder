@@ -4,12 +4,14 @@
 #include "ik_equations/model/IkPattern.hpp"
 #include "ik_equations/solver/IkPatternDetector.hpp"
 #include "ik_equations/solver/PrimitiveSolvers.hpp"
+#include "ik_equations/solver/detail/AnalyticIkNumerics.hpp"
 
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <limits>
 #include <numbers>
+#include <numeric>
 #include <optional>
 #include <string>
 #include <utility>
@@ -235,7 +237,7 @@ bool finite(const Vector3& vector) noexcept
 std::unexpected<AnalyticIkSolverError> error(AnalyticIkSolverErrorCode code,
                                              std::string message)
 {
-    return std::unexpected(AnalyticIkSolverError{code, std::move(message), std::nullopt});
+    return std::unexpected(AnalyticIkSolverError{code, std::move(message), std::nullopt, std::nullopt});
 }
 
 bool rotary(JointType type) noexcept
@@ -262,7 +264,7 @@ const DetectedIkPattern* supportedPattern(const std::vector<DetectedIkPattern>& 
 
 std::expected<std::vector<PositionCandidate>, AnalyticIkSolverError>
 solvePosition(const KinematicGeometry& geometry, const Vector3& targetWrist,
-              const Vector3& homeWrist)
+              const Vector3& homeWrist, const KinematicJoint& elbowJoint)
 {
     const auto& joints = geometry.actuatedJoints;
     const AxisLine& axis1 = joints[0].axis;
@@ -315,10 +317,36 @@ solvePosition(const KinematicGeometry& geometry, const Vector3& targetWrist,
         const double tx = dot(planarTarget, ex);
         const double ty = dot(planarTarget, ey);
 
+        // Equal links and the wrist centre on the joint-2 axis (elbow fully
+        // folded): q2 is free. solvePlanar2R would pick one q2 from
+        // atan2(0, 0), silently dropping the rest of the family.
+        if (std::hypot(tx, ty) <= kGeometryLinearTolerance &&
+            std::abs(link1 - link2) <= kGeometryLinearTolerance)
+            return error(AnalyticIkSolverErrorCode::UnsupportedKinematicStructure,
+                         "target lies on an elbow-folded singular family (equal links, wrist "
+                         "centre on the joint-2 axis); the first solver does not parameterise "
+                         "q2-dependent position branches");
+
         const auto planar = solvePlanar2R(tx, ty, link1, link2, homeAngle, axis3Sign,
                                           kGeometryLinearTolerance);
-        for (const auto& branch : planar)
+        const bool elbowLimited = elbowJoint.type != JointType::Continuous &&
+                                  elbowJoint.limits.hasPositionLimits;
+        for (auto branch : planar)
         {
+            // An ill-conditioned elbow angle just outside its limit: put it on
+            // the limit and re-solve the shoulder angle for it. See
+            // detail::kElbowLimitSnapMargin; the FK check decides.
+            if (elbowLimited)
+                if (const auto snapped = detail::nearbyLimit(
+                        branch.secondJoint, elbowJoint.limits.lower, elbowJoint.limits.upper,
+                        detail::kElbowLimitSnapMargin))
+                {
+                    const double internal = homeAngle + axis3Sign * *snapped;
+                    branch.secondJoint = *snapped;
+                    branch.firstJoint = normalizeAngle(
+                        std::atan2(ty, tx) - std::atan2(link2 * std::sin(internal),
+                                                        link1 + link2 * std::cos(internal)));
+                }
             PositionCandidate candidate;
             candidate.q = {q1, branch.firstJoint, branch.secondJoint};
             candidate.shoulder = shoulderIndex == 0 ? ShoulderBranch::Primary
@@ -373,14 +401,14 @@ solveWrist(const KinematicGeometry& geometry,
     const Matrix3 local = multiply(multiply(transpose(basis), wrist), basis);
 
     const double axis6Sign = dot(c, a) >= 0.0 ? 1.0 : -1.0;
-    const double beta = std::acos(std::clamp(local[0][0], -1.0, 1.0));
-    const double sineBeta = std::sin(beta);
+    const auto angles = detail::decomposeXyx(local, kGeometryAngularTolerance);
 
     std::vector<WristCandidate> result;
-    if (std::abs(sineBeta) > kGeometryAngularTolerance)
+    if (!angles.singular)
     {
-        const double alpha = std::atan2(local[1][0], -local[2][0]);
-        const double gamma = std::atan2(local[0][1], local[0][2]);
+        const double alpha = angles.alpha;
+        const double beta = angles.beta;
+        const double gamma = angles.gamma;
         result.push_back({{normalizeAngle(alpha), normalizeAngle(beta),
                            normalizeAngle(gamma / axis6Sign)},
                           WristBranch::Primary, std::nullopt, std::nullopt});
@@ -403,16 +431,14 @@ solveWrist(const KinematicGeometry& geometry,
 
     if (local[0][0] >= 0.0)
     {
-        const double theta = std::atan2(local[2][1], local[1][1]);
         relation.multiplier = -1.0 / axis6Sign;
-        relation.offset = theta / axis6Sign;
+        relation.offset = angles.gamma / axis6Sign;
         singular.singularity = IkSingularityKind::WristAligned;
     }
     else
     {
-        const double theta = std::atan2(local[1][2], local[1][1]);
         relation.multiplier = 1.0 / axis6Sign;
-        relation.offset = -theta / axis6Sign;
+        relation.offset = angles.gamma / axis6Sign;
         singular.singularity = IkSingularityKind::WristAntiAligned;
     }
 
@@ -421,33 +447,106 @@ solveWrist(const KinematicGeometry& geometry,
     return result;
 }
 
+bool limited(const KinematicJoint& joint) noexcept
+{
+    return joint.type != JointType::Continuous && joint.limits.hasPositionLimits;
+}
+
 bool withinPositionLimit(const KinematicJoint& joint, double value) noexcept
 {
     if (!std::isfinite(value))
         return false;
-    if (joint.type == JointType::Continuous || !joint.limits.hasPositionLimits)
+    if (!limited(joint))
         return true;
-    return value >= joint.limits.lower - kPrimitiveSolverTolerance &&
-           value <= joint.limits.upper + kPrimitiveSolverTolerance;
+    return detail::withinLimit(value, joint.limits.lower, joint.limits.upper);
 }
 
+// How many values equivalentsWithinLimits() would return, without building
+// them. An upper estimate: a value on the very edge of the turn range can
+// still fail the limit check.
+std::size_t equivalentCount(const KinematicJoint& joint, double angle) noexcept
+{
+    if (!std::isfinite(angle))
+        return 0U;
+    if (!limited(joint))
+        return 1U;
+    return detail::turnCount(detail::turnsWithin(joint.limits.lower, joint.limits.upper,
+                                                 normalizeAngle(angle)));
+}
+
+// Precondition for bounded joints: the caller has checked equivalentCount()
+// against the branch budget, so the vector built here is small.
 std::vector<double> equivalentsWithinLimits(const KinematicJoint& joint, double angle)
 {
-    if (joint.type == JointType::Continuous || !joint.limits.hasPositionLimits)
+    if (!limited(joint))
         return {normalizeAngle(angle)};
 
     std::vector<double> result;
     constexpr double period = 2.0 * std::numbers::pi_v<double>;
     const double base = normalizeAngle(angle);
-    const long first = static_cast<long>(std::ceil((joint.limits.lower - base) / period - 1e-12));
-    const long last = static_cast<long>(std::floor((joint.limits.upper - base) / period + 1e-12));
-    for (long k = first; k <= last; ++k)
+    const auto turns = detail::turnsWithin(joint.limits.lower, joint.limits.upper, base);
+    for (auto k = turns.first; k <= turns.last; ++k)
     {
         const double value = base + period * static_cast<double>(k);
+        // A value within the numerical margin of a limit IS that limit; snap it
+        // so the caller never receives a number outside [lower, upper]. The
+        // final FK check runs on the snapped value.
         if (withinPositionLimit(joint, value))
-            result.push_back(value);
+            result.push_back(detail::snapToLimit(value, joint.limits.lower, joint.limits.upper));
     }
     return result;
+}
+
+struct FreeRange
+{
+    double lower{};
+    double upper{};
+};
+
+FreeRange freeRange(const KinematicJoint& joint) noexcept
+{
+    if (limited(joint))
+        return {joint.limits.lower, joint.limits.upper};
+    return {-std::numbers::pi_v<double>, std::numbers::pi_v<double>};
+}
+
+// Integers k for which dependent = offset + multiplier*free + 2*pi*k can fall
+// inside the dependent joint's limits for some admissible free value. An
+// unbounded dependent axis needs exactly one modulo relation.
+detail::TurnRange dependentTurns(const CoupledFreeParameter& relation,
+                                 const KinematicJoint& freeJoint,
+                                 const KinematicJoint& dependentJoint) noexcept
+{
+    if (!limited(dependentJoint))
+        return {0, 0};
+    const FreeRange range = freeRange(freeJoint);
+    const double a = relation.offset + relation.multiplier * range.lower;
+    const double b = relation.offset + relation.multiplier * range.upper;
+    return detail::turnsWithin(dependentJoint.limits.lower - std::max(a, b),
+                               dependentJoint.limits.upper - std::min(a, b));
+}
+
+std::size_t regularBranchCount(const std::array<double, 6>& q,
+                               const std::vector<const KinematicJoint*>& joints) noexcept
+{
+    std::size_t count = 1U;
+    for (std::size_t index = 0; index < q.size(); ++index)
+        count = detail::saturatingMultiply(count, equivalentCount(*joints[index], q[index]));
+    return count;
+}
+
+std::size_t singularBranchCount(const PositionCandidate& position,
+                                const WristCandidate& wrist,
+                                const std::vector<const KinematicJoint*>& joints) noexcept
+{
+    if (!wrist.coupled)
+        return 0U;
+    std::size_t count = equivalentCount(*joints[0], position.q[0]);
+    count = detail::saturatingMultiply(count, equivalentCount(*joints[1], position.q[1]));
+    count = detail::saturatingMultiply(count, equivalentCount(*joints[2], position.q[2]));
+    count = detail::saturatingMultiply(count, equivalentCount(*joints[4], wrist.q[1]));
+    return detail::saturatingMultiply(
+        count, detail::turnCount(dependentTurns(*wrist.coupled, *joints[3], *joints[5])));
 }
 
 void expandRegularBranch(const std::array<double, 6>& q,
@@ -506,38 +605,31 @@ void expandSingularWrist(const PositionCandidate& position,
 
     const KinematicJoint& freeJoint = *joints[3];
     const KinematicJoint& dependentJoint = *joints[5];
-    const double freeLower = freeJoint.type == JointType::Continuous || !freeJoint.limits.hasPositionLimits
-        ? -std::numbers::pi_v<double> : freeJoint.limits.lower;
-    const double freeUpper = freeJoint.type == JointType::Continuous || !freeJoint.limits.hasPositionLimits
-        ? std::numbers::pi_v<double> : freeJoint.limits.upper;
+    const FreeRange free = freeRange(freeJoint);
 
     constexpr double period = 2.0 * std::numbers::pi_v<double>;
+    const detail::TurnRange turns = dependentTurns(*wrist.coupled, freeJoint, dependentJoint);
     for (double q1 : q1s)
         for (double q2 : q2s)
             for (double q3 : q3s)
                 for (double q5 : q5s)
                 {
-                    // dependent = offset + multiplier*free + 2*pi*k.  Search
-                    // the small set of k that can intersect the dependent limits.
-                    for (int k = -2; k <= 2; ++k)
+                    // dependent = offset + multiplier*free + 2*pi*k; the
+                    // admissible turns follow from BOTH joints' limits.
+                    for (auto k = turns.first; k <= turns.last; ++k)
                     {
                         CoupledFreeParameter relation = *wrist.coupled;
                         relation.offset += period * static_cast<double>(k);
 
-                        double lower = freeLower;
-                        double upper = freeUpper;
-                        if (dependentJoint.type != JointType::Continuous &&
-                            dependentJoint.limits.hasPositionLimits)
-                        {
-                            const double a = (dependentJoint.limits.lower - relation.offset) /
-                                             relation.multiplier;
-                            const double b = (dependentJoint.limits.upper - relation.offset) /
-                                             relation.multiplier;
-                            lower = std::max(lower, std::min(a, b));
-                            upper = std::min(upper, std::max(a, b));
-                        }
-                        if (lower > upper + kPrimitiveSolverTolerance)
+                        const auto interval = detail::coupledFreeInterval(
+                            free.lower, free.upper, limited(dependentJoint),
+                            dependentJoint.limits.lower, dependentJoint.limits.upper,
+                            relation.offset, relation.multiplier, kPrimitiveSolverTolerance);
+                        if (!interval)
                             continue;
+                        relation.offset = interval->offset;
+                        const double lower = interval->lower;
+                        const double upper = interval->upper;
 
                         SolutionBranch branch;
                         branch.shoulder = position.shoulder;
@@ -566,6 +658,8 @@ bool poseMatches(const NumericTransform& transform, const PoseTarget& target) no
 {
     constexpr double translationTolerance = 2e-9;
     constexpr double rotationTolerance = 2e-9;
+    if (!finite(transform.translation) || !finite(transform.rotation))
+        return false;
     if (norm(subtract(transform.translation, target.position)) > translationTolerance)
         return false;
     const Matrix3 expected = targetRotation(target.orientation);
@@ -576,28 +670,87 @@ bool poseMatches(const NumericTransform& transform, const PoseTarget& target) no
     return true;
 }
 
-bool duplicateRegular(const SolutionBranch& lhs, const SolutionBranch& rhs) noexcept
+bool branchMatches(const SolutionBranch& branch, const KinematicChain& chain,
+                   const PoseTarget& target, const std::optional<FixedRigidTransform>& tcp,
+                   const std::vector<const KinematicJoint*>& joints)
 {
-    if (lhs.joints.size() != 6 || rhs.joints.size() != 6)
-        return false;
-    for (std::size_t i = 0; i < 6; ++i)
-        if (std::abs(normalizeAngle(lhs.joints[i].value - rhs.joints[i].value)) > 1e-9)
+    std::array<double, 6> q{};
+    for (const auto& joint : branch.joints)
+        q[joint.actuatedJointPosition] = joint.value;
+    const auto matches = [&] {
+        for (std::size_t i = 0; i < q.size(); ++i)
+            if (!withinPositionLimit(*joints[i], q[i]))
+                return false;
+        return poseMatches(numericForward(chain, q, tcp), target);
+    };
+    if (branch.freeParameters.empty())
+        return matches();
+
+    const auto& free = branch.freeParameters.front();
+    const auto& relation = branch.coupledFreeParameters.front();
+    for (double value : {free.lower, std::midpoint(free.lower, free.upper), free.upper})
+    {
+        q[free.actuatedJointPosition] = value;
+        q[relation.dependentActuatedJointPosition] = relation.offset + relation.multiplier * value;
+        if (!matches())
+            return false;
+    }
+    return true;
+}
+
+// Two geometric branches that agree modulo a full turn on every axis expand to
+// the same set of in-limit configurations, so one of them is dropped here --
+// before expansion, where there are at most eight of them.
+bool sameGeometricBranch(const std::array<double, 6>& lhs,
+                         const std::array<double, 6>& rhs) noexcept
+{
+    for (std::size_t i = 0; i < lhs.size(); ++i)
+        if (std::abs(normalizeAngle(lhs[i] - rhs[i])) > 1e-9)
             return false;
     return true;
 }
+
+struct GeometricBranch
+{
+    PositionCandidate position;
+    WristCandidate wrist;
+    std::array<double, 6> q{}; // meaningful for regular branches only
+    std::size_t count{};       // branches this one expands to (upper estimate)
+};
+
+static_assert(kMaxOrientationCorrection == detail::kMaxOrientationCorrection);
 
 } // namespace
 
 std::expected<AnalyticIkSolution, AnalyticIkSolverError>
 AnalyticIkSolver::solve(const KinematicChain& chain,
-                        const PoseTarget& target,
-                        const std::optional<FixedRigidTransform>& tcp) const
+                        const PoseTarget& requestedTarget,
+                        const std::optional<FixedRigidTransform>& tcp,
+                        const AnalyticIkSolverOptions& options) const
 {
-    if (const auto checked = validate(target); !checked)
+    if (const auto checked = validate(requestedTarget); !checked)
         return std::unexpected(AnalyticIkSolverError{
             AnalyticIkSolverErrorCode::InvalidTarget,
             checked.error().message,
-            checked.error()});
+            checked.error(),
+            std::nullopt});
+
+    // Angles can only ever reproduce an exact rotation. A matrix accepted at
+    // the edge of the validation band is not one, so every branch would fail
+    // the 2e-9 round-trip against it. Solve for the nearest rotation instead
+    // and report how far it is from what the caller wrote.
+    const auto projection = nearestRotation(requestedTarget.orientation);
+    if (!projection)
+        return std::unexpected(AnalyticIkSolverError{
+            AnalyticIkSolverErrorCode::InvalidTarget,
+            projection.error().message,
+            projection.error(),
+            std::nullopt});
+    if (projection->correction > kMaxOrientationCorrection)
+        return error(AnalyticIkSolverErrorCode::InvalidTarget,
+                     "target orientation is further from a rotation than the solver may correct");
+    const PoseTarget target{requestedTarget.position, projection->rotation};
+    const double correction = projection->correction;
 
     const auto joints = actuatedJoints(chain);
     if (joints.size() != 6 ||
@@ -633,14 +786,18 @@ AnalyticIkSolver::solve(const KinematicChain& chain,
         return error(AnalyticIkSolverErrorCode::NonFiniteComputation,
                      "target wrist centre is not finite");
 
-    const auto positionResult = solvePosition(geometry, targetWrist, homeWrist);
+    const auto positionResult = solvePosition(geometry, targetWrist, homeWrist, *joints[2]);
     if (!positionResult)
         return std::unexpected(positionResult.error());
     if (positionResult->empty())
         return AnalyticIkSolution{AnalyticIkStatus::NoSolution, {},
-                                  "target wrist centre is outside the position workspace"};
+                                  "target wrist centre is outside the position workspace",
+                                  correction};
 
-    std::vector<SolutionBranch> branches;
+    // Phase A: geometric branches. At most eight regular ones plus the wrist
+    // singular families; verification and deduplication happen here, where the
+    // work is constant, not after the full-turn expansion.
+    std::vector<GeometricBranch> geometric;
     for (const PositionCandidate& position : *positionResult)
     {
         const auto wristResult = solveWrist(geometry, home.rotation,
@@ -653,7 +810,8 @@ AnalyticIkSolver::solve(const KinematicChain& chain,
         {
             if (wrist.wrist == WristBranch::Singular)
             {
-                expandSingularWrist(position, wrist, joints, branches);
+                geometric.push_back({position, wrist, {},
+                                     singularBranchCount(position, wrist, joints)});
                 continue;
             }
 
@@ -663,31 +821,64 @@ AnalyticIkSolver::solve(const KinematicChain& chain,
             // the production kinematic convention maps it back to the target.
             if (!poseMatches(numericForward(chain, q, tcp), target))
                 continue;
-            expandRegularBranch(q, position, wrist, joints, branches);
+            if (std::any_of(geometric.begin(), geometric.end(), [&](const GeometricBranch& existing) {
+                    return existing.wrist.wrist != WristBranch::Singular &&
+                           sameGeometricBranch(existing.q, q);
+                }))
+                continue;
+            geometric.push_back({position, wrist, q, regularBranchCount(q, joints)});
         }
     }
 
-    std::vector<SolutionBranch> deduplicated;
-    for (auto& branch : branches)
+    // Phase B: count before allocating. The number of in-limit full turns is a
+    // product over joints, so it is decided from the limits alone whether the
+    // result fits the budget. Exceeding it is an error, never a shortened list.
+    std::size_t required = 0U;
+    for (const GeometricBranch& branch : geometric)
+        required = detail::saturatingAdd(required, branch.count);
+    if (detail::branchBudgetExceeded(required, options.maxBranches))
+        return std::unexpected(AnalyticIkSolverError{
+            AnalyticIkSolverErrorCode::ResourceLimitExceeded,
+            "the solution needs " +
+                (required == std::numeric_limits<std::size_t>::max()
+                     ? std::string{"more branches than can be counted"}
+                     : std::to_string(required) + " branches") +
+                ", more than the allowed " +
+                std::to_string(options.maxBranches) +
+                "; narrow the joint limits or raise AnalyticIkSolverOptions::maxBranches",
+            std::nullopt,
+            required});
+
+    // Phase C: expand, then verify every branch that will be returned.
+    std::vector<SolutionBranch> expanded;
+    expanded.reserve(required);
+    for (const GeometricBranch& branch : geometric)
     {
-        if (branch.wrist != WristBranch::Singular &&
-            std::any_of(deduplicated.begin(), deduplicated.end(), [&](const auto& existing) {
-                return duplicateRegular(existing, branch);
-            }))
+        if (branch.count == 0U)
             continue;
-        deduplicated.push_back(std::move(branch));
+        if (branch.wrist.wrist == WristBranch::Singular)
+            expandSingularWrist(branch.position, branch.wrist, joints, expanded);
+        else
+            expandRegularBranch(branch.q, branch.position, branch.wrist, joints, expanded);
     }
 
-    if (deduplicated.empty())
-        return AnalyticIkSolution{AnalyticIkStatus::NoSolution, {},
-                                  "geometric branches exist but none satisfies joint limits and pose round-trip"};
+    std::vector<SolutionBranch> verified;
+    verified.reserve(expanded.size());
+    for (auto& branch : expanded)
+        if (branchMatches(branch, chain, target, tcp, joints))
+            verified.push_back(std::move(branch));
 
-    const bool infinite = std::any_of(deduplicated.begin(), deduplicated.end(), [](const auto& branch) {
+    if (verified.empty())
+        return AnalyticIkSolution{AnalyticIkStatus::NoSolution, {},
+                                  "geometric branches exist but none satisfies joint limits and pose round-trip",
+                                  correction};
+
+    const bool infinite = std::any_of(verified.begin(), verified.end(), [](const auto& branch) {
         return !branch.freeParameters.empty() || !branch.coupledFreeParameters.empty();
     });
     return AnalyticIkSolution{infinite ? AnalyticIkStatus::InfiniteFamily
                                       : AnalyticIkStatus::Solutions,
-                              std::move(deduplicated), {}};
+                              std::move(verified), {}, correction};
 }
 
 } // namespace kinemaforge::ik

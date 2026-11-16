@@ -5,10 +5,12 @@
 #include "ik_equations/model/Quaternion.hpp"
 #include "ik_equations/model/ToolAxis.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <limits>
 #include <numbers>
+#include <random>
 #include <string>
 
 using kinemaforge::ik::IkTarget;
@@ -623,4 +625,120 @@ TEST(TargetValidationTest, RejectsDegenerateAngle)
         ASSERT_FALSE(position.has_value());
         EXPECT_EQ(position.error().code, TargetValidationErrorCode::NonFinitePosition);
     }
+}
+
+// ---- nearestRotation (F3.R2) ------------------------------------------------
+
+namespace {
+
+double orthogonalityError(const RotationMatrix3& rotation)
+{
+    double worst = 0.0;
+    for (std::size_t i = 0; i < 3; ++i)
+        for (std::size_t j = 0; j < 3; ++j)
+        {
+            double product = 0.0;
+            for (std::size_t k = 0; k < 3; ++k)
+                product += rotation.values[k][i] * rotation.values[k][j];
+            worst = std::max(worst, std::abs(product - (i == j ? 1.0 : 0.0)));
+        }
+    return worst;
+}
+
+// Rz(a) * Ry(b) * Rx(c)
+RotationMatrix3 rotationFromAngles(double a, double b, double c)
+{
+    const double ca = std::cos(a), sa = std::sin(a);
+    const double cb = std::cos(b), sb = std::sin(b);
+    const double cc = std::cos(c), sc = std::sin(c);
+    return RotationMatrix3{{{{ca * cb, ca * sb * sc - sa * cc, ca * sb * cc + sa * sc},
+                             {sa * cb, sa * sb * sc + ca * cc, sa * sb * cc - ca * sc},
+                             {-sb, cb * sc, cb * cc}}}};
+}
+
+} // namespace
+
+TEST(NearestRotationTest, LeavesAnExactRotationAlone)
+{
+    const auto projection = kinemaforge::ik::nearestRotation(identity());
+    ASSERT_TRUE(projection.has_value());
+    EXPECT_EQ(projection->correction, 0.0);
+    for (std::size_t i = 0; i < 3; ++i)
+        for (std::size_t j = 0; j < 3; ++j)
+            EXPECT_EQ(projection->rotation.values[i][j], i == j ? 1.0 : 0.0);
+}
+
+TEST(NearestRotationTest, ProjectsEveryAcceptedMatrixWithinTheDocumentedBound)
+{
+    // The bound the solvers enforce must hold for everything validation lets
+    // through. Rounding to eight decimals lands on both sides of the 1e-8 band;
+    // only accepted matrices are measured.
+    std::mt19937_64 random{20261119};
+    std::uniform_real_distribution<double> angle(-3.1, 3.1);
+    double worstCorrection = 0.0;
+    int accepted = 0;
+    for (int sample = 0; sample < 100000; ++sample)
+    {
+        RotationMatrix3 rotation = rotationFromAngles(angle(random), angle(random), angle(random));
+        for (auto& row : rotation.values)
+            for (double& value : row)
+                value = std::round(value * 1e8) / 1e8;
+        if (!validate(rotation))
+            continue;
+        ++accepted;
+
+        const auto projection = kinemaforge::ik::nearestRotation(rotation);
+        ASSERT_TRUE(projection.has_value());
+        worstCorrection = std::max(worstCorrection, projection->correction);
+        ASSERT_LT(orthogonalityError(projection->rotation), 1e-14);
+        ASSERT_TRUE(validate(projection->rotation).has_value());
+    }
+    EXPECT_GT(accepted, 50000);
+    EXPECT_LE(worstCorrection, kinemaforge::ik::kMaxOrientationCorrection);
+    // First-order estimate: |R - Q| <= sqrt(3)/2 * |R^T R - I| <= 8.7e-9.
+    EXPECT_LE(worstCorrection, 1e-8);
+    RecordProperty("worstCorrection", std::to_string(worstCorrection));
+}
+
+TEST(NearestRotationTest, IsIdempotent)
+{
+    RotationMatrix3 rotation = rotationFromAngles(0.4, -0.7, 1.3);
+    for (auto& row : rotation.values)
+        for (double& value : row)
+            value = std::round(value * 1e8) / 1e8;
+
+    const auto once = kinemaforge::ik::nearestRotation(rotation);
+    ASSERT_TRUE(once.has_value());
+    const auto twice = kinemaforge::ik::nearestRotation(once->rotation);
+    ASSERT_TRUE(twice.has_value());
+    EXPECT_LT(twice->correction, 1e-15);
+}
+
+TEST(NearestRotationTest, ReportsTheDistanceItMoved)
+{
+    const RotationMatrix3 input = withOrthogonalityDeviation(8e-9);
+    const auto projection = kinemaforge::ik::nearestRotation(input);
+    ASSERT_TRUE(projection.has_value());
+    double distance = 0.0;
+    for (std::size_t i = 0; i < 3; ++i)
+        for (std::size_t j = 0; j < 3; ++j)
+            distance = std::max(distance,
+                                std::abs(projection->rotation.values[i][j] - input.values[i][j]));
+    EXPECT_EQ(projection->correction, distance);
+    EXPECT_GT(projection->correction, 0.0);
+}
+
+TEST(NearestRotationTest, RefusesAMatrixThatIsNowhereNearARotation)
+{
+    const auto singular = kinemaforge::ik::nearestRotation(RotationMatrix3{});
+    ASSERT_FALSE(singular.has_value());
+    EXPECT_EQ(singular.error().code, TargetValidationErrorCode::NonOrthogonalOrientation);
+
+    RotationMatrix3 reflection = identity();
+    reflection.values[2][2] = -1.0;
+    EXPECT_FALSE(kinemaforge::ik::nearestRotation(reflection).has_value());
+
+    RotationMatrix3 nonFinite = identity();
+    nonFinite.values[0][0] = std::numeric_limits<double>::quiet_NaN();
+    EXPECT_FALSE(kinemaforge::ik::nearestRotation(nonFinite).has_value());
 }

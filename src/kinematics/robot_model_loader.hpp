@@ -30,6 +30,10 @@ enum class LoadErrorCode : std::uint8_t {
     duplicate_child_link,      // one link is the child of two joints
     cyclic_topology,           // the graph contains a cycle
     disconnected_topology,     // not one connected component / not one root
+
+    // Joint identity and semantics.
+    invalid_joint_declaration, // <joint> with an empty or duplicate name
+    unsupported_mimic_joint,   // <mimic>: the joint is not an independent axis
 };
 
 // Code plus diagnostic context. The code alone is not enough: "malformed
@@ -59,6 +63,8 @@ struct LoadResult {
 //
 // ...and the topology is a well-formed tree:
 //   * every <link> name is non-empty and unique — link names are node identity
+//   * every <joint> name is non-empty and unique — joint names identify axes
+//     in IK results
 //   * every joint parent/child reference resolves to a declared <link>
 //   * no link is the child of two joints
 //   * there is exactly one root, the graph is connected, and it has no cycle
@@ -82,6 +88,10 @@ struct LoadResult {
 // and claims conformance to no particular release. A joint whose limits default
 // to [0, 0] cannot be told apart from a mistake, and this project derives IK
 // equations from those numbers.
+//
+// A joint carrying <mimic> is rejected (unsupported_mimic_joint): it is a
+// function of another joint, not an independent axis, and the model has no
+// representation for that coupling yet.
 //
 // Choosing a kinematic chain is deliberately NOT done here — that needs a base
 // and a tool link, which only the caller knows. See KinematicChainBuilder.

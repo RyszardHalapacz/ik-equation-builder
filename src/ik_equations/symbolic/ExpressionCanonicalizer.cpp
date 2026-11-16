@@ -191,11 +191,17 @@ Expression CanonicalizationSession::canonicalNegate(const Expression& expression
     }
 
     case ExpressionType::Multiply:
-        // A canonical product may carry one outer Negate. buildProduct already
-        // removes unobservable sign when a literal zero factor is present, so
-        // callers that need parity-aware product construction must go through
-        // buildProduct rather than recursively re-entering canonicalNegate.
+    {
+        // Route an outer negation through the same parity/zero handling as
+        // an inner negative factor. Keep every non-constant factor: it may
+        // carry a divisor even when the product has a literal zero factor.
+        std::vector<Expression> factors;
+        int parity = 1;
+        collectProduct(expression, parity, factors);
+        if (auto negated = buildProduct(std::move(factors), parity))
+            return *negated;
         break;
+    }
 
     case ExpressionType::Divide:
     {

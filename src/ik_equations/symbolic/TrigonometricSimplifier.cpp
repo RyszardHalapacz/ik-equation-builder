@@ -3,6 +3,7 @@
 #include "ik_equations/symbolic/RewriteEngine.hpp"
 
 #include <algorithm>
+#include <cstddef>
 #include <optional>
 #include <utility>
 #include <variant>
@@ -27,23 +28,128 @@ std::optional<Expression> cosineEvenApply(const Expression& expression,
 
 enum class TrigKind { Sine, Cosine };
 
-struct TrigSquare
+// One way of reading a sum term as  sign * cofactors * t(u) * t(u).
+struct PairCandidate
 {
     TrigKind kind;
     Expression argument;
+    std::vector<Expression> cofactors; // every other factor, in canonical order
 };
 
-std::optional<TrigSquare> trigSquare(const Expression& expression)
+struct TermShape
 {
-    const auto* product = std::get_if<MultiplyNode>(&expression.node().value);
-    if (product == nullptr || !structurallyEqual(product->lhs, product->rhs))
-        return std::nullopt;
+    bool negative{};
+    std::vector<PairCandidate> candidates;
+};
 
-    if (const auto* sine = std::get_if<SinNode>(&product->lhs.node().value))
-        return TrigSquare{TrigKind::Sine, sine->operand};
-    if (const auto* cosine = std::get_if<CosNode>(&product->lhs.node().value))
-        return TrigSquare{TrigKind::Cosine, cosine->operand};
-    return std::nullopt;
+void flattenProduct(const Expression& expression, std::vector<Expression>& factors)
+{
+    if (const auto* product = std::get_if<MultiplyNode>(&expression.node().value))
+    {
+        flattenProduct(product->lhs, factors);
+        flattenProduct(product->rhs, factors);
+        return;
+    }
+    factors.push_back(expression);
+}
+
+// A term can have several readings -- sin(u)^2 * cos(u)^2 is a sine square
+// with cofactors cos(u), cos(u) and a cosine square with cofactors sin(u),
+// sin(u) -- so every distinct squared sin/cos factor yields one candidate.
+TermShape shapeOf(const Expression& term)
+{
+    TermShape shape;
+    const Expression* body = &term;
+    if (const auto* negated = std::get_if<NegateNode>(&term.node().value))
+    {
+        shape.negative = true;
+        body = &negated->operand;
+    }
+
+    std::vector<Expression> factors;
+    flattenProduct(*body, factors);
+
+    for (std::size_t i = 0; i < factors.size(); ++i)
+    {
+        const ExpressionType type = factors[i].type();
+        if (type != ExpressionType::Sin && type != ExpressionType::Cos)
+            continue;
+
+        const bool seenBefore = std::any_of(factors.begin(), factors.begin() + static_cast<std::ptrdiff_t>(i),
+                                            [&](const Expression& earlier) {
+                                                return structurallyEqual(earlier, factors[i]);
+                                            });
+        if (seenBefore)
+            continue;
+
+        std::size_t partner = factors.size();
+        for (std::size_t j = i + 1; j < factors.size(); ++j)
+            if (structurallyEqual(factors[j], factors[i]))
+            {
+                partner = j;
+                break;
+            }
+        if (partner == factors.size())
+            continue;
+
+        PairCandidate candidate{
+            type == ExpressionType::Sin ? TrigKind::Sine : TrigKind::Cosine,
+            type == ExpressionType::Sin
+                ? std::get<SinNode>(factors[i].node().value).operand
+                : std::get<CosNode>(factors[i].node().value).operand,
+            {}};
+        for (std::size_t k = 0; k < factors.size(); ++k)
+            if (k != i && k != partner)
+                candidate.cofactors.push_back(factors[k]);
+        std::sort(candidate.cofactors.begin(), candidate.cofactors.end(),
+                  [](const Expression& lhs, const Expression& rhs) {
+                      return compareExpressions(lhs, rhs) < 0;
+                  });
+        shape.candidates.push_back(std::move(candidate));
+    }
+    return shape;
+}
+
+bool sameCofactors(const std::vector<Expression>& lhs, const std::vector<Expression>& rhs)
+{
+    if (lhs.size() != rhs.size())
+        return false;
+    for (std::size_t i = 0; i < lhs.size(); ++i)
+        if (!structurallyEqual(lhs[i], rhs[i]))
+            return false;
+    return true;
+}
+
+// sign * product(cofactors), built so that ExpressionFactory never multiplies
+// two constants (that would introduce a rounded constant). Canonical products
+// carry at most one constant unless two could not be merged exactly; that
+// rare shape is left alone.
+std::optional<Expression> collapsedTerm(const std::vector<Expression>& cofactors, bool negative,
+                                        const ExpressionFactory& factory)
+{
+    std::optional<Expression> constant;
+    std::optional<Expression> product;
+    for (const Expression& factor : cofactors)
+    {
+        if (isConstant(factor))
+        {
+            if (constant)
+                return std::nullopt;
+            constant = factor;
+            continue;
+        }
+        product = product ? factory.multiply(*product, factor) : factor;
+    }
+
+    Expression result = factory.constant(1.0);
+    if (product && constant)
+        result = factory.multiply(*constant, *product);
+    else if (product)
+        result = *product;
+    else if (constant)
+        result = *constant;
+
+    return negative ? factory.negate(result) : result;
 }
 
 bool allConstants(const std::vector<Expression>& terms)
@@ -97,8 +203,80 @@ TrigonometricSimplificationSession::TrigonometricSimplificationSession(Expressio
 
 Expression TrigonometricSimplificationSession::simplify(const Expression& expression)
 {
-    const Expression canonical = canonicalizer_.canonicalize(expression);
-    return simplifyNode(canonical);
+    // One pass can expose work for the next: a negation pushed into a sum by
+    // the final canonicalisation, a factor that collapsed to 1. Iterating to a
+    // fixed point is what makes simplify() idempotent by construction. Every
+    // productive round removes nodes, so the bound is a safety net, not a
+    // tuning knob.
+    constexpr int maximumRounds = 32;
+    Expression current = simplifyNode(canonicalizer_.canonicalize(expression));
+    for (int round = 0; round < maximumRounds; ++round)
+    {
+        const Expression next = simplifyNode(canonicalizer_.canonicalize(current));
+        if (sameNode(next, current) || structurallyEqual(next, current))
+            break;
+        current = next;
+    }
+    return current;
+}
+
+// Replaces every pair of terms that differ only in sin/cos of the same
+// argument. Returns whether anything was replaced; `terms` is updated in place.
+bool TrigonometricSimplificationSession::reducePythagoreanPairs(std::vector<Expression>& terms)
+{
+    bool reducedAny = false;
+    bool reduced = true;
+    while (reduced)
+    {
+        reduced = false;
+
+        std::vector<TermShape> shapes;
+        shapes.reserve(terms.size());
+        for (const Expression& term : terms)
+            shapes.push_back(shapeOf(term));
+
+        for (std::size_t i = 0; i < terms.size() && !reduced; ++i)
+            for (std::size_t j = i + 1; j < terms.size() && !reduced; ++j)
+            {
+                if (shapes[i].negative != shapes[j].negative)
+                    continue;
+                for (const PairCandidate& left : shapes[i].candidates)
+                {
+                    const auto right = std::find_if(
+                        shapes[j].candidates.begin(), shapes[j].candidates.end(),
+                        [&](const PairCandidate& candidate) {
+                            return candidate.kind != left.kind &&
+                                   structurallyEqual(candidate.argument, left.argument) &&
+                                   sameCofactors(candidate.cofactors, left.cofactors);
+                        });
+                    if (right == shapes[j].candidates.end())
+                        continue;
+
+                    // sin^2(u)+cos^2(u)=1 is algebraically true wherever u is
+                    // defined, but dropping u would widen the symbolic domain
+                    // if u itself contains a divisor. The cofactors stay in the
+                    // result, so their divisors are preserved.
+                    if (!divisorsOf(left.argument).empty())
+                        continue;
+
+                    const auto collapsed = collapsedTerm(left.cofactors, shapes[i].negative, factory_);
+                    if (!collapsed)
+                        continue;
+
+                    const Expression replacement = canonicalizer_.canonicalize(*collapsed);
+                    terms.erase(terms.begin() + static_cast<std::ptrdiff_t>(j));
+                    terms.erase(terms.begin() + static_cast<std::ptrdiff_t>(i));
+                    if (replacement.type() == ExpressionType::Add)
+                        collectAddTerms(replacement, terms);
+                    else
+                        terms.push_back(replacement);
+                    reduced = true;
+                    reducedAny = true;
+                    break;
+                }
+            }
+    }
+    return reducedAny;
 }
 
 void TrigonometricSimplificationSession::collectAddTerms(
@@ -154,74 +332,49 @@ Expression TrigonometricSimplificationSession::rebuildSum(
 
 Expression TrigonometricSimplificationSession::simplifySum(const Expression& expression)
 {
-    std::vector<Expression> rawTerms;
-    collectAddTerms(expression, rawTerms);
-
-    std::vector<Expression> terms;
-    for (const Expression& raw : rawTerms)
+    // Pairs are looked for BEFORE the children are simplified as well as after.
+    // Before: if u simplifies to a constant, sin(u)*sin(u) folds into a number
+    // and the pattern is gone. After: sin(-u)^2 + cos(u)^2 only becomes a pair
+    // once the odd/even rules have normalised the arguments.
+    constexpr int maximumRounds = 32;
+    Expression current = expression;
+    for (int round = 0; round < maximumRounds; ++round)
     {
-        const Expression simplified = simplifyNode(raw);
-        if (simplified.type() == ExpressionType::Add)
-            collectAddTerms(simplified, terms);
-        else
-            terms.push_back(simplified);
-    }
+        if (current.type() != ExpressionType::Add)
+            return simplifyNode(current);
 
-    std::vector<bool> removed(terms.size(), false);
-    std::size_t replacements = 0;
+        std::vector<Expression> rawTerms;
+        collectAddTerms(current, rawTerms);
 
-    for (std::size_t i = 0; i < terms.size(); ++i)
-    {
-        if (removed[i])
-            continue;
-        const auto left = trigSquare(terms[i]);
-        if (!left)
-            continue;
+        bool changed = reducePythagoreanPairs(rawTerms);
 
-        for (std::size_t j = i + 1; j < terms.size(); ++j)
+        std::vector<Expression> terms;
+        terms.reserve(rawTerms.size());
+        for (const Expression& raw : rawTerms)
         {
-            if (removed[j])
-                continue;
-            const auto right = trigSquare(terms[j]);
-            if (!right || left->kind == right->kind)
-                continue;
-            if (!structurallyEqual(left->argument, right->argument))
-                continue;
-
-            // sin^2(u)+cos^2(u)=1 is algebraically true wherever u is defined,
-            // but replacing it by literal 1 would widen the symbolic domain if
-            // u itself contains a divisor.
-            if (!divisorsOf(left->argument).empty())
-                continue;
-
-            removed[i] = true;
-            removed[j] = true;
-            ++replacements;
-            break;
+            const Expression simplified = simplifyNode(raw);
+            if (!sameNode(simplified, raw))
+                changed = true;
+            if (simplified.type() == ExpressionType::Add)
+                collectAddTerms(simplified, terms);
+            else
+                terms.push_back(simplified);
         }
+
+        if (reducePythagoreanPairs(terms))
+            changed = true;
+
+        if (!changed)
+            return current;
+
+        // rebuildSum() hands `current` back unchanged at a representability
+        // barrier (only constants left that do not add exactly).
+        const Expression next = rebuildSum(terms, current);
+        if (sameNode(next, current) || structurallyEqual(next, current))
+            return current;
+        current = next;
     }
-
-    const bool childrenChanged = [&] {
-        if (terms.size() != rawTerms.size())
-            return true;
-        for (std::size_t i = 0; i < terms.size(); ++i)
-            if (!sameNode(terms[i], rawTerms[i]))
-                return true;
-        return false;
-    }();
-
-    if (replacements == 0 && !childrenChanged)
-        return expression;
-
-    std::vector<Expression> rebuiltTerms;
-    rebuiltTerms.reserve(terms.size() - 2 * replacements + replacements);
-    for (std::size_t i = 0; i < terms.size(); ++i)
-        if (!removed[i])
-            rebuiltTerms.push_back(terms[i]);
-    for (std::size_t i = 0; i < replacements; ++i)
-        rebuiltTerms.push_back(factory_.constant(1.0));
-
-    return rebuildSum(rebuiltTerms, expression);
+    return current;
 }
 
 Expression TrigonometricSimplificationSession::simplifyNode(const Expression& expression)
@@ -303,6 +456,13 @@ Expression TrigonometricSimplificationSession::simplifyNode(const Expression& ex
     result = canonicalizer_.canonicalize(result);
     if (!sameNode(result, expression) && structurallyEqual(result, expression))
         result = expression;
+
+    // -(x * (a - b)) canonicalises into a sum whose terms nobody has examined
+    // as a sum yet. simplifyNode on an Add goes through simplifySum, which
+    // never re-enters this branch, so the recursion is one level deep.
+    if (expression.type() != ExpressionType::Add && result.type() == ExpressionType::Add &&
+        !sameNode(result, expression))
+        result = simplifyNode(result);
 
     memo_.emplace(expression, result);
     return result;

@@ -1,5 +1,7 @@
 #include "ik_equations/model/TargetValidation.hpp"
 
+#include "ik_equations/solver/detail/AnalyticIkNumerics.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
@@ -302,6 +304,19 @@ validate(const PositionAndDirectionAngleTarget& target)
 std::expected<void, TargetValidationError> validate(const IkTarget& target)
 {
     return std::visit(TargetVisitor{}, target);
+}
+
+static_assert(kMaxOrientationCorrection == detail::kMaxOrientationCorrection,
+              "the public bound and the one compiled into generated solvers must agree");
+
+std::expected<OrientationProjection, TargetValidationError>
+nearestRotation(const RotationMatrix3& rotation)
+{
+    const detail::NearestRotation projected = detail::nearestRotation(rotation.values);
+    if (!projected.converged || !std::isfinite(projected.correction))
+        return makeError(TargetValidationErrorCode::NonOrthogonalOrientation,
+                         "orientation is too far from a rotation to be projected onto one");
+    return OrientationProjection{RotationMatrix3{projected.rotation}, projected.correction};
 }
 
 } // namespace kinemaforge::ik

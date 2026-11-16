@@ -6,6 +6,7 @@
 #include "ik_equations/model/KinematicChain.hpp"
 #include "ik_equations/model/TargetValidation.hpp"
 
+#include <cstddef>
 #include <expected>
 #include <optional>
 #include <string>
@@ -17,7 +18,11 @@ enum class AnalyticIkSolverErrorCode
     InvalidTarget,
     InvalidKinematicGeometry,
     UnsupportedKinematicStructure,
-    NonFiniteComputation
+    NonFiniteComputation,
+    // The result would hold more branches than AnalyticIkSolverOptions allows.
+    // Nothing is returned: a truncated list reported as success would hide
+    // valid configurations from the caller.
+    ResourceLimitExceeded
 };
 
 struct AnalyticIkSolverError
@@ -25,6 +30,19 @@ struct AnalyticIkSolverError
     AnalyticIkSolverErrorCode code{};
     std::string message;
     std::optional<TargetValidationError> targetError;
+    // Set for ResourceLimitExceeded: the number of branches the full result
+    // needs (an upper estimate, saturated at SIZE_MAX), so the caller can raise
+    // the budget or narrow the joint limits deliberately.
+    std::optional<std::size_t> requiredBranches;
+};
+
+struct AnalyticIkSolverOptions
+{
+    // Upper bound on branches (regular solutions and singular families) in one
+    // result. Every in-limit full turn of every joint is a separate branch, so
+    // the count is a product over joints and grows without bound as limits
+    // widen. It is computed from the limits BEFORE anything is allocated.
+    std::size_t maxBranches{4096};
 };
 
 // First analytic family supported by KinemaForge:
@@ -42,7 +60,8 @@ public:
     [[nodiscard]] std::expected<AnalyticIkSolution, AnalyticIkSolverError>
     solve(const KinematicChain& chain,
           const PoseTarget& target,
-          const std::optional<FixedRigidTransform>& tcp = std::nullopt) const;
+          const std::optional<FixedRigidTransform>& tcp = std::nullopt,
+          const AnalyticIkSolverOptions& options = {}) const;
 };
 
 } // namespace kinemaforge::ik
