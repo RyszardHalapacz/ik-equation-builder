@@ -1,5 +1,7 @@
 #pragma once
 
+#include "ik_equations/model/IkTolerances.hpp"
+
 #include "ik_equations/model/UrdfJoint.hpp"
 #include "ik_equations/model/Vector3.hpp"
 
@@ -10,8 +12,8 @@
 
 namespace kinemaforge::ik {
 
-inline constexpr double kGeometryAngularTolerance = 1e-10;
-inline constexpr double kGeometryLinearTolerance = 1e-9;
+inline constexpr double kGeometryAngularTolerance = tolerance::kSingularAngular;
+inline constexpr double kGeometryLinearTolerance = tolerance::kSingularLinear;
 
 struct AxisLine
 {

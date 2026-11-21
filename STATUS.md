@@ -2,13 +2,27 @@
 
 **Last updated:** 2026-11-16
 **Working branch state:** Phase 2 complete; Phase 3 F3.1–F3.9 and F3.12 implemented in the current workspace; F3.10 is complete for joint limits and spherical-wrist singularities but still has one explicit shoulder-axis singular-family gap.  
-**Full CMake/CTest gate:** **PASS — 639/639 tests in Release, Debug, and the `KINEMAFORGE_WERROR=ON` configuration** (613 after F3.R2, 579 before it), on Windows/MinGW GCC 13.1.0. The seven defects of the 2026-11-15 audit and the eight of the 2026-11-16 audit have been corrected. The shoulder-axis singular family remains outside the supported solver scope.
+**Full CMake/CTest gate:** **PASS — 681/681 tests in Release, Debug, and the `KINEMAFORGE_WERROR=ON` configuration** (639 after F3.R3, 613 after F3.R2), on Windows/MinGW GCC 13.1.0. The seven defects of the 2026-11-15 audit and the eight of the 2026-11-16 audit have been corrected. The shoulder-axis singular family remains outside the supported solver scope.
 
 > Current verification is recorded below. Component descriptions retain the
 > Phase 1–3 history; the original September standalone evidence is explicitly
 > dated and does not replace the November full-project test run.
 
 ## ▶ Where we are right now
+
+**Stage F3.R4 — follow-up list of 2026-11-16 (eight points): implemented test-first, not yet committed.**
+Gate: **681/681** in Release, Debug and `KINEMAFORGE_WERROR=ON`; the near-limit/singularity invariant also passes on 8 extra seeds.
+
+| # | Point | Result |
+|---|---|---|
+| 6 | Invariant test near limits and singularities | `InLimitTargetsNearLimitsAndSingularitiesAreNeverLost`. Found 5 new defects, all fixed: q4/q6 ill-conditioned next to the wrist singularity (snap + re-solve, margin `budget/|sin q5|`); singular-family q5 vs its limit; `xyxWithGamma` sign error (own regression); `coupledFreeInterval` oscillation when widths are equal; 1.29e-12 round-off beyond the old 1e-12 admission margin. Known boundary: elbow AND wrist both near-singular -- the target fixes q only up to a thin sheet; documented in the test. |
+| 7 | One tolerance model | `model/IkTolerances.hpp`, relations as `static_assert`; every older name is an alias. `kLimitAdmission` 1e-12 -> 1e-10 (safe: <= half the FK budget at 10 m reach). |
+| 5 | Math written twice | `solver/detail/AnalyticIkKernels.hpp`: sin/cos, planar arm, wrist, turn sets, families -- used by both solvers and by the public primitives. Differential test: both solvers return identical branches. |
+| 8 | Generated runtime unreadable | Rewritten one statement per line; generator emits designated initialisers (`.link1 = ...`). |
+| 3 | `continuous` not loadable | Loaded; `<limit>` optional (velocity/effort strict if present), lower/upper ignored; maps to `Continuous` without position limits. |
+| 2 | Mimic rejected | Loaded and validated (reference exists, movable, not self, not mimic); `KinematicChainBuilder` refuses only a chain THROUGH a mimic joint (`MimicJointInChain`) -- gripper fingers beside the arm now work. |
+| 4 | Full branch product | `solveCompact()` in both solvers (+ generated `solveCompact(target)`): per-joint turn sets, size independent of limits; `expand()` == `solve()` by construction and by test. `solve()` is now compact core + budget + expand + FK check. |
+| 1 | q1/q2-free families unsupported | Returned as `PositionalFamily` + `evaluate(family, value)` (`positionalFamilies`, status `InfiniteFamily`), verified with each solver's FK at 17 samples. Only both at once stays unsupported. |
 
 **Stage F3.R3 — third audit (2026-11-16), eight findings: implemented test-first, not yet committed.**
 Every fix was preceded by a test that failed for the reported reason and passes after it.

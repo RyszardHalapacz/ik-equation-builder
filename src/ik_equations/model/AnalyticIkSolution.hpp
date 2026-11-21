@@ -1,5 +1,7 @@
 #pragma once
 
+#include "ik_equations/model/PositionalFamily.hpp"
+
 #include <cstddef>
 #include <optional>
 #include <string>
@@ -65,6 +67,17 @@ struct CoupledFreeParameter
     double offset{};
 };
 
+// A positional singular family (q1 or q2 free) with its labels. Members come
+// from evaluate(family, value) in AnalyticIkSolver.hpp.
+struct PositionalFamilyBranch
+{
+    PositionalFamily family;
+    std::string freeJointName;
+    ElbowBranch elbow{ElbowBranch::Positive};
+    WristBranch wrist{WristBranch::Primary};
+    IkSingularityKind singularity{IkSingularityKind::ShoulderAxis};
+};
+
 struct SolutionBranch
 {
     std::vector<JointSolutionValue> joints;
@@ -96,6 +109,10 @@ struct AnalyticIkSolution
     // clean matrix, up to kMaxOrientationCorrection for one accepted at the
     // edge of the validation band.
     double orientationCorrection{};
+    // Families with a free arm joint (wrist centre on the joint-1 axis, or
+    // equal links with the elbow folded). status is InfiniteFamily when any
+    // exist; `branches` may then be empty.
+    std::vector<PositionalFamilyBranch> positionalFamilies;
 };
 
 } // namespace kinemaforge::ik

@@ -90,6 +90,7 @@ const char* describe(KinematicChainError error) noexcept
     case KinematicChainError::ToolLinkNotFound:        return "tool link not found";
     case KinematicChainError::NoPathFound:             return "no path from base to tool";
     case KinematicChainError::InvalidRobotDescription: return "invalid robot description";
+    case KinematicChainError::MimicJointInChain:       return "the chain passes through a mimic joint, which is not supported";
     }
     return "unknown kinematic chain error";
 }

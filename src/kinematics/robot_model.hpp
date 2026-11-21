@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -11,6 +12,7 @@ enum class JointType : std::uint8_t {
     revolute,
     prismatic,
     fixed,
+    continuous,  // revolute without position limits
 };
 
 struct JointLimits {
@@ -28,6 +30,13 @@ struct Vec3 {
     double z = 0.0;
 };
 
+// <mimic>: this joint's value is multiplier * value(joint) + offset.
+struct Mimic {
+    std::string joint;
+    double      multiplier = 1.0;
+    double      offset     = 0.0;
+};
+
 struct Joint {
     std::string name;
     JointType   type        = JointType::revolute;
@@ -37,6 +46,7 @@ struct Joint {
     std::string parent_link;
     std::string child_link;
     JointLimits limits;
+    std::optional<Mimic> mimic;  // engaged: not an independent axis
 };
 
 struct Link {

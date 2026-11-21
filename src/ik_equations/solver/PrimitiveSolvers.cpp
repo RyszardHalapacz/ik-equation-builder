@@ -1,4 +1,5 @@
 #include "ik_equations/solver/PrimitiveSolvers.hpp"
+#include "ik_equations/solver/detail/AnalyticIkKernels.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -28,15 +29,7 @@ void appendDistinct(std::vector<double>& values, double value, double tolerance)
 
 double normalizeAngle(double angle) noexcept
 {
-    if (!std::isfinite(angle))
-        return angle;
-
-    double result = std::remainder(angle, twoPi);
-    // Keep a single representative for the seam.  std::remainder may return
-    // +pi or -pi depending on the input quotient; the solver uses [-pi, pi).
-    if (result >= std::numbers::pi_v<double>)
-        result -= twoPi;
-    return result;
+    return detail::normalizeAngle(angle);
 }
 
 ScalarSolutions solveLinear(double a, double b, double tolerance)
@@ -87,30 +80,15 @@ ScalarSolutions solveCosine(double value, double tolerance)
 
 ScalarSolutions solveSinCos(double a, double b, double c, double tolerance)
 {
-    if (!std::isfinite(a) || !std::isfinite(b) || !std::isfinite(c) ||
-        tolerance < 0.0 || !std::isfinite(tolerance))
-        return {ScalarSolutionKind::None, {}};
-
-    const double amplitude = std::hypot(a, b);
-    if (amplitude <= tolerance)
+    // One implementation, shared with the generated runtime.
+    auto solutions = detail::solveSinCos(a, b, c, tolerance);
+    switch (solutions.kind)
     {
-        if (std::abs(c) <= tolerance)
-            return {ScalarSolutionKind::Infinite, {}};
-        return {ScalarSolutionKind::None, {}};
+    case detail::SinCosKind::None:     return {ScalarSolutionKind::None, {}};
+    case detail::SinCosKind::Infinite: return {ScalarSolutionKind::Infinite, {}};
+    case detail::SinCosKind::Finite:   return {ScalarSolutionKind::Finite, std::move(solutions.values)};
     }
-
-    const double ratio = c / amplitude;
-    if (ratio < -1.0 - tolerance || ratio > 1.0 + tolerance)
-        return {ScalarSolutionKind::None, {}};
-
-    // a*sin(x)+b*cos(x) = r*sin(x+phi), phi=atan2(b,a).
-    const double phase = std::atan2(b, a);
-    const ScalarSolutions shifted = solveSine(clampedUnit(ratio), tolerance);
-
-    ScalarSolutions result{ScalarSolutionKind::Finite, {}};
-    for (double value : shifted.values)
-        appendDistinct(result.values, value - phase, tolerance);
-    return result;
+    return {ScalarSolutionKind::None, {}};
 }
 
 std::vector<Planar2RBranch> solvePlanar2R(double targetX,
@@ -121,43 +99,18 @@ std::vector<Planar2RBranch> solvePlanar2R(double targetX,
                                          double secondJointDirectionSign,
                                          double tolerance)
 {
-    if (!std::isfinite(targetX) || !std::isfinite(targetY) ||
-        !std::isfinite(link1Length) || !std::isfinite(link2Length) ||
-        !std::isfinite(link2HomeAngle) || !std::isfinite(secondJointDirectionSign) ||
-        !std::isfinite(tolerance) || tolerance < 0.0 ||
-        link1Length <= tolerance || link2Length <= tolerance ||
-        std::abs(std::abs(secondJointDirectionSign) - 1.0) > tolerance)
-        return {};
-
-    const double radiusSquared = targetX * targetX + targetY * targetY;
-    const double denominator = 2.0 * link1Length * link2Length;
-    const double cosine = (radiusSquared - link1Length * link1Length -
-                           link2Length * link2Length) / denominator;
-
-    if (cosine < -1.0 - tolerance || cosine > 1.0 + tolerance)
-        return {};
-
-    const double internalMagnitude = std::acos(clampedUnit(cosine));
-    const double targetAngle = std::atan2(targetY, targetX);
-
+    // One implementation, shared with both analytic solvers. This public
+    // primitive keeps its contract: no limits, and the folded equal-link case
+    // yields its one arbitrary member marked singular.
+    const auto arm = detail::solvePlanarArm(targetX, targetY, link1Length, link2Length,
+                                            link2HomeAngle, secondJointDirectionSign, {},
+                                            tolerance);
     std::vector<Planar2RBranch> result;
-    for (double internal : {internalMagnitude, -internalMagnitude})
-    {
-        const double second = (internal - link2HomeAngle) / secondJointDirectionSign;
-        const double vx = link1Length + link2Length * std::cos(internal);
-        const double vy = link2Length * std::sin(internal);
-        const double first = normalizeAngle(targetAngle - std::atan2(vy, vx));
-        const bool singular = std::abs(std::sin(internal)) <= tolerance;
-        const ElbowBranch elbow = internal >= 0.0 ? ElbowBranch::Positive : ElbowBranch::Negative;
-
-        const bool duplicate = std::any_of(result.begin(), result.end(), [&](const auto& branch) {
-            return std::abs(normalizeAngle(branch.firstJoint - first)) <= tolerance &&
-                   std::abs(normalizeAngle(branch.secondJoint - second)) <= tolerance;
-        });
-        if (!duplicate)
-            result.push_back({first, normalizeAngle(second), elbow, singular});
-    }
-
+    result.reserve(arm.branches.size());
+    for (const auto& branch : arm.branches)
+        result.push_back({branch.shoulder, branch.elbow,
+                          branch.positiveElbow ? ElbowBranch::Positive : ElbowBranch::Negative,
+                          branch.singular});
     return result;
 }
 

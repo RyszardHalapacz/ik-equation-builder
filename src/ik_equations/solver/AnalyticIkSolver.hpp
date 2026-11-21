@@ -1,15 +1,18 @@
 #pragma once
 
 #include "ik_equations/model/AnalyticIkSolution.hpp"
+#include "ik_equations/model/CompactAnalyticIkSolution.hpp"
 #include "ik_equations/model/FixedRigidTransform.hpp"
 #include "ik_equations/model/IkTarget.hpp"
 #include "ik_equations/model/KinematicChain.hpp"
 #include "ik_equations/model/TargetValidation.hpp"
 
+#include <array>
 #include <cstddef>
 #include <expected>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace kinemaforge::ik {
 
@@ -62,6 +65,25 @@ public:
           const PoseTarget& target,
           const std::optional<FixedRigidTransform>& tcp = std::nullopt,
           const AnalyticIkSolverOptions& options = {}) const;
+
+    // The same solutions in compact form: geometric branches with, per joint,
+    // the set of its in-limit full turns. Its size does not depend on the
+    // width of the limits, so there is no branch budget; expand() produces
+    // exactly what solve() returns. ResourceLimitExceeded only when turn
+    // numbers would not fit an int64_t.
+    [[nodiscard]] std::expected<CompactAnalyticIkSolution, AnalyticIkSolverError>
+    solveCompact(const KinematicChain& chain,
+                 const PoseTarget& target,
+                 const std::optional<FixedRigidTransform>& tcp = std::nullopt) const;
 };
+
+// The member of a positional family at the given value of its free joint, every
+// joint on an in-limit turn; nothing where that member leaves a joint limit or
+// the value lies outside [freeLower, freeUpper]. Shared with generated code.
+[[nodiscard]] std::optional<std::array<double, 6>> evaluate(const PositionalFamily& family, double value);
+
+// Every branch a compact solution stands for, in AnalyticIkSolution's form.
+// Check expandedBranchCount() first: the result is a product over joints.
+[[nodiscard]] std::vector<SolutionBranch> expand(const CompactAnalyticIkSolution& solution);
 
 } // namespace kinemaforge::ik

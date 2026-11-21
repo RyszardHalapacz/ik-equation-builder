@@ -2,6 +2,7 @@
 
 #include "ik_equations/model/Vector3.hpp"
 
+#include <optional>
 #include <string>
 
 namespace kinemaforge::ik {
@@ -30,6 +31,15 @@ struct JointLimits
     bool hasPositionLimits{};
 };
 
+// URDF <mimic>: value = multiplier * value(joint) + offset. Such a joint is
+// not an independent axis; KinematicChainBuilder refuses a chain through it.
+struct JointMimic
+{
+    std::string joint;
+    double multiplier{1.0};
+    double offset{};
+};
+
 struct UrdfJoint
 {
     std::string name;
@@ -43,6 +53,8 @@ struct UrdfJoint
     Vector3 axis;
 
     JointLimits limits;
+
+    std::optional<JointMimic> mimic;
 };
 
 struct UrdfLink

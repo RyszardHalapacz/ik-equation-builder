@@ -317,7 +317,7 @@ gen::Pose generatedPose(const ik::PoseTarget& target)
 
 // ---- Audit 2026-11-16 ------------------------------------------------------
 
-TEST_P(AnalyticIkRegression, ShoulderSingularTargetIsUnsupportedNotNoSolution)
+TEST_P(AnalyticIkRegression, ShoulderSingularTargetIsAFamilyNotNoSolution)
 {
     // Audit #3: with the wrist centre on the joint-1 axis q1 is free. The
     // general solver reports that as unsupported; the generated solver used to
@@ -366,13 +366,15 @@ TEST_P(AnalyticIkRegression, ShoulderSingularTargetIsUnsupportedNotNoSolution)
     ASSERT_TRUE(singular.has_value()) << "no in-limit shoulder-singular configuration found";
     const auto target = pose(*singular);
 
+    // Follow-up #1: no longer unsupported -- returned as a q1-free family.
     const auto solved = ik::AnalyticIkSolver{}.solve(chain, target, tcp);
-    ASSERT_FALSE(solved);
-    EXPECT_EQ(solved.error().code, ik::AnalyticIkSolverErrorCode::UnsupportedKinematicStructure);
+    ASSERT_TRUE(solved) << solved.error().message;
+    EXPECT_EQ(solved->status, ik::AnalyticIkStatus::InfiniteFamily);
+    EXPECT_FALSE(solved->positionalFamilies.empty());
 
     const auto compiled = gen::solve(parameters, generatedPose(target));
-    EXPECT_EQ(compiled.status, gen::Status::UnsupportedSingularity);
-    EXPECT_TRUE(compiled.branches.empty());
+    EXPECT_EQ(compiled.status, gen::Status::InfiniteFamily);
+    EXPECT_FALSE(compiled.positionalFamilies.empty());
 }
 
 TEST_P(AnalyticIkRegression, SingularFamilyStaysExactlyWithinLimitsWhenIntervalsBarelyTouch)
@@ -568,6 +570,42 @@ TEST(AnalyticIkNumerics, NearbyLimitSnapsOnlyJustOutsideEveryTurn)
     EXPECT_FALSE(d::nearbyLimit(std::nan(""), 0.0, 1.0, m));
 }
 
+TEST(AnalyticIkNumerics, XyxWithOneAngleHeldRecoversTheOtherTwo)
+{
+    namespace d = kinemaforge::ik::detail;
+    using M = std::array<std::array<double, 3>, 3>;
+    const auto mul = [](const M& a, const M& b) {
+        M r{};
+        for (int i = 0; i < 3; ++i)
+            for (int j = 0; j < 3; ++j)
+                for (int k = 0; k < 3; ++k)
+                    r[i][j] += a[i][k] * b[k][j];
+        return r;
+    };
+    const auto rx = [](double t) {
+        return M{{{1, 0, 0}, {0, std::cos(t), -std::sin(t)}, {0, std::sin(t), std::cos(t)}}};
+    };
+    const auto ry = [](double t) {
+        return M{{{std::cos(t), 0, std::sin(t)}, {0, 1, 0}, {-std::sin(t), 0, std::cos(t)}}};
+    };
+    std::mt19937_64 random{11};
+    std::uniform_real_distribution<double> angle(-3.0, 3.0);
+    for (int sample = 0; sample < 1000; ++sample)
+    {
+        const double a = angle(random);
+        const double b = sample % 3 == 0 ? 1e-7 * angle(random) : angle(random);
+        const double c = angle(random);
+        const M r = mul(mul(rx(a), ry(b)), rx(c));
+        const auto withAlpha = d::xyxWithAlpha(r, a);
+        EXPECT_NEAR(std::remainder(withAlpha.beta - b, kPeriod), 0.0, 1e-12) << sample;
+        EXPECT_NEAR(std::remainder(withAlpha.gamma - c, kPeriod), 0.0, 1e-12) << sample;
+        const auto withGamma = d::xyxWithGamma(r, c);
+        EXPECT_NEAR(std::remainder(withGamma.alpha - a, kPeriod), 0.0, 1e-12) << sample;
+        EXPECT_NEAR(std::remainder(withGamma.beta - b, kPeriod), 0.0, 1e-12) << sample;
+        if (HasFailure()) return;
+    }
+}
+
 TEST(AnalyticIkNumerics, CoupledFreeIntervalIsExactlyWithinBothLimits)
 {
     namespace d = kinemaforge::ik::detail;
@@ -601,6 +639,47 @@ TEST(AnalyticIkNumerics, CoupledFreeIntervalIsExactlyWithinBothLimits)
     }
     // Beyond the tolerance the family is dropped, not stretched.
     EXPECT_FALSE(d::coupledFreeInterval(0.0, 1.0, true, 1.0 + 1e-9, 2.0, 0.0, 1.0, 1e-12));
+
+    // Free interval exactly as wide as the dependent range: shifting the offset
+    // fixes one end and breaks the other, so it used to oscillate until the
+    // iteration limit and drop a valid family (found by the invariant test).
+    {
+        const double q4 = -2.2629866450856975;
+        const double q6 = 0.97496071634942449;
+        const double offset = -1.2880259287362723;
+        const auto interval = d::coupledFreeInterval(q4 - 0.05, q4 + 0.05, true, q6, q6 + 0.05,
+                                                     offset, -1.0, 1e-12);
+        ASSERT_TRUE(interval);
+        for (double free : {interval->lower, interval->upper})
+        {
+            const double dependent = interval->offset - free;
+            EXPECT_GE(dependent, q6);
+            EXPECT_LE(dependent, q6 + 0.05);
+        }
+    }
+    std::uniform_real_distribution<double> unit(0.0, 1.0);
+    for (int sample = 0; sample < 20000; ++sample)
+    {
+        const double multiplier = sample % 2 == 0 ? 1.0 : -1.0;
+        const double offset = uniform(random) + kPeriod * static_cast<double>(sample % 7 - 3);
+        const double center = uniform(random);
+        const double width = 0.01 + unit(random);
+        // Dependent range implied by exactly the same free interval.
+        const double a = offset + multiplier * (center - width);
+        const double b = offset + multiplier * (center + width);
+        const auto interval = d::coupledFreeInterval(center - width, center + width, true,
+                                                     std::min(a, b), std::max(a, b), offset,
+                                                     multiplier, 1e-12);
+        ASSERT_TRUE(interval) << sample;
+        for (double free : {interval->lower, interval->upper})
+        {
+            const double dependent = interval->offset + multiplier * free;
+            ASSERT_GE(free, center - width) << sample;
+            ASSERT_LE(free, center + width) << sample;
+            ASSERT_GE(dependent, std::min(a, b)) << sample;
+            ASSERT_LE(dependent, std::max(a, b)) << sample;
+        }
+    }
 }
 
 TEST_P(AnalyticIkRegression, BranchBudgetIsExactAndNeverTruncates)
@@ -769,6 +848,139 @@ TEST_P(AnalyticIkRegression, ReturnedJointValuesNeverLeaveTheirLimits)
     }
 }
 
+TEST_P(AnalyticIkRegression, GeneratingValueOnLimitSurvivesRealisticRoundOff)
+{
+    // Found by the invariant test (another seed): an ordinary KR640
+    // configuration with q2 exactly on its upper limit; q2 came back 1.29e-12
+    // outside it, beyond the old 1e-12 admission margin, and the target was
+    // lost by both solvers. Upstream round-off reaching the joints is ~1e-12,
+    // not the 1.6e-13 measured when that margin was chosen.
+    if (GetParam() != 0)
+        GTEST_SKIP() << "configuration measured on KR640";
+    const Configuration q{1.839252928030759, 0.15922366961372525, 1.6855985305465024,
+                          2.9464943691723686, 0.51980614154961335, 2.4068159150456871};
+    limit(0, q[0], q[0] + 0.05);
+    limit(1, q[1] - 0.05, q[1]);
+    limit(2, q[2] - 0.05, q[2]);
+    limit(4, q[4] - 0.05, q[4] + 0.05);
+    limit(5, q[5], q[5] + 0.05);
+    checkBoth(q);
+}
+
+// ---- Invariant: near limits and singularities ------------------------------
+//
+// For a target generated by an in-limit configuration, each solver must either
+// return branches (all within limits exactly, all reproducing the target) or
+// explicitly say the case is unsupported. NoSolution -- or any other error --
+// is a lost reachable target. Five of the eight 2026-11-16 audit findings
+// broke exactly this, in corners the interior round trips never sample:
+// generating values exactly on a limit, nearly straight elbows, wrists at or
+// next to the singularity.
+TEST_P(AnalyticIkRegression, InLimitTargetsNearLimitsAndSingularitiesAreNeverLost)
+{
+    const double straight = std::remainder(-parameters.link2HomeAngle / parameters.axis3Sign, kPeriod);
+    const std::array<double, 7> nearDeltas{0.0, 1e-12, -1e-12, 1e-9, -1e-9, 1e-7, -1e-7};
+    std::mt19937_64 random{20261117};
+    const auto original = parameters;
+    const auto originalChain = chain;
+
+    for (int sample = 0; sample < 1500; ++sample)
+    {
+        SCOPED_TRACE(sample);
+        parameters = original;
+        chain = originalChain;
+        Configuration q{};
+        for (std::size_t i = 0; i < q.size(); ++i)
+            q[i] = std::uniform_real_distribution<double>(original.limits[i].lower + 0.06,
+                                                          original.limits[i].upper - 0.06)(random);
+        const auto pick = [&](std::size_t n) {
+            return std::uniform_int_distribution<std::size_t>(0, n - 1)(random);
+        };
+        bool wellConditioned = true;
+        if (pick(3) == 0) // wrist at / next to its singularity
+        {
+            q[4] = nearDeltas[pick(nearDeltas.size())];
+            wellConditioned = false;
+        }
+        if (pick(3) == 0 && straight > original.limits[2].lower + 0.06 &&
+            straight < original.limits[2].upper - 0.06) // elbow nearly straight
+        {
+            q[2] = straight + nearDeltas[pick(nearDeltas.size())];
+            wellConditioned = false;
+        }
+        // Next to the elbow singularity the target fixes q3 only to ~sqrt(eps).
+        // That slack is absorbed by q2 and the wrist -- and with the wrist also
+        // near its singularity, it can move the q4/q6 split by O(1) rad. The
+        // reachable set is then a thin sheet around q, not q itself, so joints
+        // other than q1 (independent of q3) and q3 (snapped onto its limit and
+        // covered by its own case) keep their model limits there.
+        std::array<std::size_t, 6> modes{};
+        const bool elbowNearSingular = std::abs(q[2] - straight) < 1e-6;
+        for (std::size_t i = 0; i < q.size(); ++i)
+            switch (modes[i] = (elbowNearSingular && i != 0 && i != 2) ? 0 : pick(4))
+            {
+            case 0: break;                                    // model limits
+            case 1: limit(i, q[i] - 0.05, q[i] + 0.05); break; // tight
+            case 2: limit(i, q[i] - 0.05, q[i]); break;        // generating value ON upper
+            case 3: limit(i, q[i], q[i] + 0.05); break;        // generating value ON lower
+            }
+
+        const auto target = pose(q);
+        const auto solved = ik::AnalyticIkSolver{}.solve(chain, target, tcp);
+        const auto compiled = gen::solve(parameters, generatedPose(target));
+
+        if (!solved)
+        {
+            EXPECT_EQ(solved.error().code, ik::AnalyticIkSolverErrorCode::UnsupportedKinematicStructure)
+                << solved.error().message;
+        }
+        else
+        {
+            EXPECT_NE(solved->status, ik::AnalyticIkStatus::NoSolution) << solved->message;
+        }
+        if (compiled.status != gen::Status::UnsupportedSingularity)
+        {
+            EXPECT_TRUE(compiled.status == gen::Status::Solutions ||
+                        compiled.status == gen::Status::InfiniteFamily)
+                << static_cast<int>(compiled.status);
+        }
+        // Both solvers must agree on whether the case is supported.
+        EXPECT_EQ(!solved && solved.error().code == ik::AnalyticIkSolverErrorCode::UnsupportedKinematicStructure,
+                  compiled.status == gen::Status::UnsupportedSingularity);
+
+        const auto checkResult = [&](const std::vector<gen::Branch>& branches, const char* name) {
+            SCOPED_TRACE(name);
+            checkBranches(branches, target);
+            for (const auto& branch : branches)
+                for (std::size_t i = 0; i < 6; ++i)
+                {
+                    if (branch.singular && (i == 3 || i == 5))
+                        continue;
+                    if (!parameters.limits[i].enabled)
+                        continue;
+                    EXPECT_GE(branch.q[i], parameters.limits[i].lower) << "joint " << i;
+                    EXPECT_LE(branch.q[i], parameters.limits[i].upper) << "joint " << i;
+                }
+            if (wellConditioned)
+            {
+                EXPECT_TRUE(contains(branches, q));
+            }
+        };
+        if (solved && solved->status != ik::AnalyticIkStatus::NoSolution)
+            checkResult(numericBranches(*solved), "general solver");
+        if (compiled.status == gen::Status::Solutions || compiled.status == gen::Status::InfiniteFamily)
+            checkResult(compiled.branches, "generated solver");
+        if (HasFailure())
+        {
+            ADD_FAILURE() << std::setprecision(17) << "q = {" << q[0] << ", " << q[1] << ", " << q[2]
+                          << ", " << q[3] << ", " << q[4] << ", " << q[5] << "}, limit modes {"
+                          << modes[0] << modes[1] << modes[2] << modes[3] << modes[4] << modes[5]
+                          << "} (0 model, 1 tight, 2 on upper, 3 on lower)";
+            return;
+        }
+    }
+}
+
 INSTANTIATE_TEST_SUITE_P(Robots, AnalyticIkRegression, testing::Values(0, 1, 2),
     [](const testing::TestParamInfo<int>& info) {
         return info.param == 0 ? "Kr640" : info.param == 1 ? "Kr4" : "Kr640Tcp";
@@ -838,7 +1050,7 @@ TEST(AnalyticIkEqualLinks, RegularTargetStillRoundTrips)
     EXPECT_EQ(compiled.status, gen::Status::Solutions);
 }
 
-TEST(AnalyticIkEqualLinks, FoldedElbowOnShoulderAxisIsUnsupportedNotOneArbitraryAngle)
+TEST(AnalyticIkEqualLinks, FoldedElbowOnShoulderAxisIsAFamilyNotOneArbitraryAngle)
 {
     // With L1 == L2 and the elbow fully folded the wrist centre lies on the
     // joint-2 axis and q2 is free. The planar solver used to pick one q2
@@ -853,12 +1065,13 @@ TEST(AnalyticIkEqualLinks, FoldedElbowOnShoulderAxisIsUnsupportedNotOneArbitrary
         robot.limitBoth(i, q[i] - 0.05, q[i] + 0.05);
     const auto target = robot.pose(q);
 
+    // Follow-up #1: returned as a q2-free family, never one arbitrary q2.
     const auto solved = ik::AnalyticIkSolver{}.solve(robot.chain, target);
-    ASSERT_FALSE(solved) << "status " << static_cast<int>(solved->status)
-                         << ", branches " << solved->branches.size();
-    EXPECT_EQ(solved.error().code, ik::AnalyticIkSolverErrorCode::UnsupportedKinematicStructure);
+    ASSERT_TRUE(solved) << solved.error().message;
+    EXPECT_EQ(solved->status, ik::AnalyticIkStatus::InfiniteFamily);
+    EXPECT_FALSE(solved->positionalFamilies.empty());
 
     const auto compiled = gen::solve(robot.parameters, generatedPose(target));
-    EXPECT_EQ(compiled.status, gen::Status::UnsupportedSingularity);
-    EXPECT_TRUE(compiled.branches.empty());
+    EXPECT_EQ(compiled.status, gen::Status::InfiniteFamily);
+    EXPECT_FALSE(compiled.positionalFamilies.empty());
 }

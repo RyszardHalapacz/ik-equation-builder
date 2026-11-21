@@ -1,5 +1,7 @@
 #pragma once
 
+#include "ik_equations/model/IkTolerances.hpp"
+
 #include "ik_equations/model/IkTarget.hpp"
 #include "ik_equations/model/Quaternion.hpp"
 
@@ -48,7 +50,7 @@ struct TargetValidationError
 // Inside the accepted band a matrix is still not exactly a rotation. Validation
 // leaves it untouched; nearestRotation() below is the explicit, bounded and
 // reported projection, and the analytic solvers apply it themselves.
-inline constexpr double kOrientationTolerance = 1e-8;
+inline constexpr double kOrientationTolerance = tolerance::kOrientationValidation;
 
 // Checked in this order, and the order is observable:
 //   1. all values finite      -> NonFiniteOrientation
@@ -157,7 +159,7 @@ validate(const PositionAndDirectionAngleTarget& target);
 // Upper bound on OrientationProjection::correction that the analytic solvers
 // accept. A matrix that passed validate(RotationMatrix3) stays below 1e-8 to
 // first order; anything above this bound is rejected, never silently rewritten.
-inline constexpr double kMaxOrientationCorrection = 2e-8;
+inline constexpr double kMaxOrientationCorrection = tolerance::kMaxOrientationCorrection;
 
 struct OrientationProjection
 {

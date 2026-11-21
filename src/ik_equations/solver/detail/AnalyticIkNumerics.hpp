@@ -1,5 +1,7 @@
 #pragma once
 
+#include "ik_equations/model/IkTolerances.hpp"
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -63,8 +65,8 @@ struct TurnRange
 // 2026-11-16 #8).
 inline TurnRange turnsWithin(double lower, double upper, double base = 0.0) noexcept
 {
-    const double first = std::ceil((lower - base) / kTwoPi - 1e-12);
-    const double last = std::floor((upper - base) / kTwoPi + 1e-12);
+    const double first = std::ceil((lower - base) / kTwoPi - tolerance::kRoundOff);
+    const double last = std::floor((upper - base) / kTwoPi + tolerance::kRoundOff);
     if (std::isnan(first) || std::isnan(last) || first > last)
         return {};
     constexpr double integerBound = 0x1p63;
@@ -115,8 +117,9 @@ inline std::size_t saturatingAdd(std::size_t lhs, std::size_t rhs) noexcept
 // Admission margin for a joint value against its position limits. A value that
 // is outside a limit by no more than this is the limit itself, displaced by
 // round-off; it is snapped onto the limit BEFORE the final FK check, so the
-// value handed to the caller is the value that was verified.
-inline constexpr double kLimitTolerance = 1e-12;
+// value handed to the caller is the value that was verified. See
+// model/IkTolerances.hpp for why it is 1e-10 and why that is safe.
+inline constexpr double kLimitTolerance = tolerance::kLimitAdmission;
 
 inline bool withinLimit(double value, double lower, double upper) noexcept
 {
@@ -124,8 +127,11 @@ inline bool withinLimit(double value, double lower, double upper) noexcept
            value <= upper + kLimitTolerance;
 }
 
-// Margin within which an ELBOW angle outside its limits is moved onto the
-// nearest limit before the rest of the arm is solved for it.
+// Margin within which an ill-conditioned angle outside its limits is moved
+// onto the nearest limit before the joints that depend on it are re-solved.
+// Two places need it: the elbow near straight/folded (below) and the outer
+// wrist angles q4/q6 next to the wrist singularity, where each is recovered
+// with an error ~eps/|sin q5| while their sum/difference stays exact.
 //
 // Near a straight (or folded) elbow the elbow angle is ill-conditioned: an
 // error of eps in the wrist distance changes it by ~sqrt(eps), so it is
@@ -137,7 +143,7 @@ inline bool withinLimit(double value, double lower, double upper) noexcept
 // pass the 2e-9 FK check -- away from the singularity, moving the elbow by
 // up to 1e-7 rad moves the wrist by far more than that and the branch is
 // rejected, exactly as the out-of-limit value would have been.
-inline constexpr double kElbowLimitSnapMargin = 1e-7;
+inline constexpr double kSingularLimitSnapMargin = tolerance::kSingularLimitSnap;
 
 // If `value` lies outside [lower, upper] for every 2*pi turn but some turn of
 // it is within `margin` of a limit, that limit; otherwise nullopt.
@@ -159,6 +165,89 @@ inline std::optional<double> nearbyLimit(double value, double lower, double uppe
     return aboveUpper <= margin ? std::optional<double>{upper} : std::nullopt;
 }
 
+// Outer XYX angles re-solved with one of them held fixed. With alpha (or
+// gamma) given, the remaining two follow from a single well-conditioned
+// rotation -- unlike decomposeXyx, whose alpha and gamma separately degrade
+// as sin(beta) -> 0.
+//   Rx(-alpha) R = Ry(beta) Rx(gamma)      R Rx(-gamma) = Rx(alpha) Ry(beta)
+inline XyxAngles xyxWithAlpha(const std::array<std::array<double, 3>, 3>& r, double alpha) noexcept
+{
+    const double c = std::cos(alpha);
+    const double s = std::sin(alpha);
+    // Rows of M = Rx(-alpha) * R that are needed.
+    const double m00 = r[0][0];
+    const double m11 = c * r[1][1] + s * r[2][1];
+    const double m12 = c * r[1][2] + s * r[2][2];
+    const double m20 = -s * r[1][0] + c * r[2][0];
+    return {alpha, std::atan2(-m20, m00), std::atan2(-m12, m11), false};
+}
+
+inline XyxAngles xyxWithGamma(const std::array<std::array<double, 3>, 3>& r, double gamma) noexcept
+{
+    const double c = std::cos(gamma);
+    const double s = std::sin(gamma);
+    // Entries of N = R * Rx(-gamma) that are needed. The columns of
+    // Rx(-gamma) are e0, (0, c, -s) and (0, s, c).
+    const double n00 = r[0][0];
+    const double n02 = s * r[0][1] + c * r[0][2];
+    const double n11 = c * r[1][1] - s * r[1][2];
+    const double n21 = c * r[2][1] - s * r[2][2];
+    return {std::atan2(n21, n11), std::atan2(n02, n00), gamma, false};
+}
+
+struct LimitRange
+{
+    bool enabled{};
+    double lower{};
+    double upper{};
+};
+
+// A regular wrist solution (q4, q5, q6) = (alpha, beta, gamma / axis6Sign)
+// next to the singularity: if q4 or q6 lies just outside its limit, put it on
+// the limit and re-solve the other two from `local` for that value. Away from
+// the singularity a moved q4/q6 changes the orientation and the FK check
+// rejects the branch, as it would have rejected the out-of-limit value.
+inline std::array<double, 3> snapWristNearLimits(const std::array<std::array<double, 3>, 3>& local,
+                                                 std::array<double, 3> q, double axis6Sign,
+                                                 const LimitRange& q4, const LimitRange& q6) noexcept
+{
+    // q4 and q6 are each recovered with an error ~e/|sin q5|, where e is the
+    // orientation error reaching the wrist -- not eps: upstream angles carry
+    // ~1e-13 and are amplified (measured: 8.4e-7 rad at q5 = 1e-7). The margin
+    // therefore grows as kWristSnapOrientationBudget/|sin q5|. That is safe by
+    // construction: moving q4 (or q6) by D and re-solving the rest changes
+    // the orientation by only ~|sin q5|*D <= the budget, far below the 2e-9 FK
+    // check. (q5 below the singular tolerance is a family and never gets here.)
+    constexpr double kWristSnapOrientationBudget = tolerance::kWristSnapOrientationBudget;
+    const double margin = std::max(kSingularLimitSnapMargin,
+                                   kWristSnapOrientationBudget /
+                                       std::max(std::abs(std::sin(q[1])), 1e-300));
+    if (q4.enabled)
+        if (const auto snapped = nearbyLimit(q[0], q4.lower, q4.upper, margin))
+        {
+            const auto angles = xyxWithAlpha(local, *snapped);
+            q = {*snapped, angles.beta, angles.gamma / axis6Sign};
+        }
+    if (q6.enabled)
+        if (const auto snapped = nearbyLimit(q[2], q6.lower, q6.upper, margin))
+        {
+            const auto angles = xyxWithGamma(local, *snapped * axis6Sign);
+            q = {angles.alpha, angles.beta, *snapped};
+        }
+    return q;
+}
+
+// q5 of a singular wrist family is set to exactly 0 or -pi, while the target
+// only puts it within the singular tolerance of that value. When the exact
+// value falls just outside q5's limit, the limit is used instead; the family's
+// FK check decides, as everywhere else.
+inline double snapSingularWristPitch(double q5, const LimitRange& limit) noexcept
+{
+    if (!limit.enabled)
+        return q5;
+    return nearbyLimit(q5, limit.lower, limit.upper, kSingularLimitSnapMargin).value_or(q5);
+}
+
 // Precondition: withinLimit(value, lower, upper).
 inline double snapToLimit(double value, double lower, double upper) noexcept
 {
@@ -176,10 +265,10 @@ inline double snapToLimit(double value, double lower, double upper) noexcept
 //     their midpoint, a value outside one of the limits by up to tolerance/2;
 //   * rounding in (limit - offset) / multiplier and back again can put the
 //     dependent value at a bound a few ulps outside its limit.
-// Both are repaired by shifting `offset` by the observed overshoot, which
-// moves the relation by at most ~tolerance -- orders of magnitude below the
-// 2e-9 FK check every branch still has to pass -- and, if the interval is
-// wider than the dependent range admits, by pulling its ends in by one ulp.
+// A proper interval is repaired by pulling in the offending end (a few ulps);
+// a single point by shifting `offset` by the observed overshoot, which moves
+// the relation by at most ~tolerance -- orders of magnitude below the 2e-9 FK
+// check every branch still has to pass.
 // A family that cannot be repaired within that budget is dropped, never
 // returned outside its limits.
 struct CoupledFreeInterval
@@ -215,7 +304,7 @@ coupledFreeInterval(double freeLower, double freeUpper, bool dependentLimited,
         2.0 * tolerance * std::max(1.0, std::abs(multiplier)) +
         64.0 * std::numeric_limits<double>::epsilon() * std::max(1.0, std::abs(originalOffset));
     constexpr double infinity = std::numeric_limits<double>::infinity();
-    for (int iteration = 0; iteration < 64; ++iteration)
+    for (int iteration = 0; iteration < 256; ++iteration)
     {
         const double atLower = offset + multiplier * lower;
         const double atUpper = offset + multiplier * upper;
@@ -225,15 +314,37 @@ coupledFreeInterval(double freeLower, double freeUpper, bool dependentLimited,
         const bool above = high > dependentUpper;
         if (!below && !above)
             return CoupledFreeInterval{lower, upper, offset};
-        if (below && above)
+        if (lower < upper)
         {
-            // Only possible while the interval spans the whole dependent range.
-            if (!(lower < upper))
-                return std::nullopt;
-            lower = std::nextafter(lower, upper);
-            upper = std::nextafter(upper, lower);
+            // A proper interval: pull in the end(s) whose dependent value is
+            // outside, leaving the relation alone. Shifting the offset instead
+            // oscillates when the interval is exactly as wide as the dependent
+            // range -- it repairs one end by breaking the other.
+            const double step = (below ? dependentLower - low : high - dependentUpper) /
+                                std::abs(multiplier);
+            // Below: the end with the smaller dependent value is out; above: the larger.
+            const bool moveLower = (atLower <= atUpper) == below;
+            if (below && above)
+            {
+                lower = std::nextafter(lower, upper);
+                upper = std::nextafter(upper, lower);
+            }
+            else if (moveLower)
+            {
+                const double next = lower + step;
+                lower = std::min(next == lower ? std::nextafter(lower, upper) : next, upper);
+            }
+            else
+            {
+                const double next = upper - step;
+                upper = std::max(next == upper ? std::nextafter(upper, lower) : next, lower);
+            }
             continue;
         }
+        // A single point (the barely-touching case): only the relation can
+        // move, by at most ~tolerance.
+        if (below && above)
+            return std::nullopt;
         double next = offset + (below ? dependentLower - low : dependentUpper - high);
         if (next == offset)
             next = std::nextafter(offset, below ? infinity : -infinity);
@@ -249,7 +360,7 @@ coupledFreeInterval(double freeLower, double freeUpper, bool dependentLimited,
 // orthogonality/determinant validation stays below 1e-8 to first order
 // (R - Q = Q*(S - I), S - I ~ (R^T R - I)/2); the bound leaves headroom and
 // turns anything larger into a rejected target rather than a silent rewrite.
-inline constexpr double kMaxOrientationCorrection = 2e-8;
+inline constexpr double kMaxOrientationCorrection = tolerance::kMaxOrientationCorrection;
 
 struct NearestRotation
 {

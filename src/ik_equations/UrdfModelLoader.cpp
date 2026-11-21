@@ -29,7 +29,7 @@ namespace {
 // caller has a std::expected to carry the error.
 //
 // The throw is unreachable through any public path: load() is the only caller,
-// and parse_joint_type admits exactly three strings. It is defence in depth
+// and parse_joint_type admits exactly four strings. It is defence in depth
 // against a future path that skips that validation.
 JointType mapJointType(mt::kinematics::JointType type)
 {
@@ -38,6 +38,7 @@ JointType mapJointType(mt::kinematics::JointType type)
     case mt::kinematics::JointType::revolute:  return JointType::Revolute;
     case mt::kinematics::JointType::prismatic: return JointType::Prismatic;
     case mt::kinematics::JointType::fixed:     return JointType::Fixed;
+    case mt::kinematics::JointType::continuous: return JointType::Continuous;
     }
 
     throw std::logic_error(
@@ -64,9 +65,12 @@ UrdfJoint mapJoint(mt::kinematics::Joint const& joint)
     result.limits.upper = joint.limits.upper;
     result.limits.velocity = joint.limits.velocity;
     result.limits.effort = joint.limits.effort;
-    // The copied loader requires <limit> for every non-fixed joint, so
-    // presence of position limits tracks 1:1 with "is actuated".
-    result.limits.hasPositionLimits = (result.type != JointType::Fixed);
+    // The loader requires lower/upper for every revolute and prismatic joint;
+    // a continuous joint has none, a fixed one cannot move.
+    result.limits.hasPositionLimits =
+        result.type == JointType::Revolute || result.type == JointType::Prismatic;
+    if (joint.mimic)
+        result.mimic = JointMimic{joint.mimic->joint, joint.mimic->multiplier, joint.mimic->offset};
     return result;
 }
 
@@ -92,7 +96,8 @@ std::string describeCode(mt::kinematics::LoadErrorCode code)
     case Code::cyclic_topology:            return "URDF topology contains a cycle";
     case Code::disconnected_topology:      return "URDF does not describe one connected tree";
     case Code::invalid_joint_declaration:  return "joint declaration has an empty or duplicate name";
-    case Code::unsupported_mimic_joint:    return "mimic joints are not supported";
+    case Code::unsupported_mimic_joint:    return "mimic on a fixed joint is not supported";
+    case Code::invalid_mimic_reference:    return "invalid mimic declaration or reference";
     }
     return "unknown URDF load error";
 }

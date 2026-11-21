@@ -46,6 +46,7 @@ std::optional<JointType> parse_joint_type(std::string_view s) noexcept {
     if (s == "revolute")  return JointType::revolute;
     if (s == "prismatic") return JointType::prismatic;
     if (s == "fixed")     return JointType::fixed;
+    if (s == "continuous") return JointType::continuous;
     return std::nullopt;
 }
 
@@ -350,14 +351,34 @@ load_urdf(std::filesystem::path const& urdf_path) {
                                              node.attribute("type").as_string()));
         j.type = *jtype;
 
-        // <mimic> makes this joint a function of another one. The model has no
-        // notion of coupled joints, and silently treating it as an independent
-        // axis lets IK return configurations the robot cannot take, so such a
-        // model is refused until coupling is supported.
-        if (node.child("mimic"))
-            return std::unexpected(makeError(LoadErrorCode::unsupported_mimic_joint,
-                                             j.name, "mimic",
-                                             node.child("mimic").attribute("joint").as_string()));
+        // <mimic> makes this joint a function of another one. Parsed here;
+        // the reference itself is checked once every joint is known.
+        if (auto mimic = node.child("mimic")) {
+            if (j.type == JointType::fixed)
+                return std::unexpected(makeError(LoadErrorCode::unsupported_mimic_joint,
+                                                 j.name, "mimic",
+                                                 mimic.attribute("joint").as_string()));
+            if (mimic.next_sibling("mimic"))
+                return std::unexpected(makeError(LoadErrorCode::invalid_mimic_reference,
+                                                 j.name, "mimic"));
+            Mimic parsed;
+            parsed.joint = mimic.attribute("joint").as_string();
+            if (parsed.joint.empty())
+                return std::unexpected(makeError(LoadErrorCode::invalid_mimic_reference,
+                                                 j.name, "mimic/joint", std::string_view{}));
+            for (auto [name, target] : {std::pair{"multiplier", &parsed.multiplier},
+                                        std::pair{"offset", &parsed.offset}}) {
+                if (auto attribute = mimic.attribute(name)) {
+                    auto const value = parse_scalar(attribute.value());
+                    if (!value)
+                        return std::unexpected(makeError(LoadErrorCode::invalid_mimic_reference,
+                                                         j.name, std::string("mimic/") + name,
+                                                         attribute.value()));
+                    *target = *value;
+                }
+            }
+            j.mimic = std::move(parsed);
+        }
 
         // A missing element or a missing attribute means "use the default".
         // An attribute that is present but unparsable is an error — including
@@ -414,7 +435,29 @@ load_urdf(std::filesystem::path const& urdf_path) {
         // same treatment: an axis is still parsed for syntax because the parser
         // runs for every type anyway, while validating a limit here would mean
         // running the whole path only to discard the result.
-        if (j.type != JointType::fixed) {
+        // Continuous joints: <limit> is optional (URDF), lower/upper carry no
+        // meaning and are ignored, but a <limit> that is present still follows
+        // the strict profile for velocity and effort.
+        if (j.type == JointType::continuous) {
+            auto lim = node.child("limit");
+            if (lim) {
+                if (lim.next_sibling("limit"))
+                    return std::unexpected(makeError(LoadErrorCode::duplicate_limit_element,
+                                                     j.name, "limit"));
+                auto const velocity = read_limit_attribute(lim, j.name, "velocity");
+                if (!velocity) return std::unexpected(velocity.error());
+                auto const effort = read_limit_attribute(lim, j.name, "effort");
+                if (!effort) return std::unexpected(effort.error());
+                if (*velocity < 0.0)
+                    return std::unexpected(makeError(LoadErrorCode::invalid_limit_constraint,
+                                                     j.name, "limit/velocity"));
+                if (*effort < 0.0)
+                    return std::unexpected(makeError(LoadErrorCode::invalid_limit_constraint,
+                                                     j.name, "limit/effort"));
+                j.limits.velocity = *velocity;
+                j.limits.effort   = *effort;
+            }
+        } else if (j.type != JointType::fixed) {
             auto lim = node.child("limit");
             if (!lim)
                 return std::unexpected(makeError(LoadErrorCode::missing_limit_element,
@@ -471,6 +514,21 @@ load_urdf(std::filesystem::path const& urdf_path) {
     // and a tool link, which only the caller knows (see KinematicChainBuilder).
     if (auto valid = validate_topology(out.model.links(), out.model.joints()); !valid)
         return std::unexpected(valid.error());
+
+    // Mimic references: to an existing, movable, independent, other joint.
+    // Checked after topology so the joint names are known to be unique.
+    for (auto const& joint : out.model.joints()) {
+        if (!joint.mimic)
+            continue;
+        auto const& joints = out.model.joints();
+        auto const target = std::find_if(joints.begin(), joints.end(), [&](Joint const& other) {
+            return other.name == joint.mimic->joint;
+        });
+        if (target == joints.end() || target->name == joint.name ||
+            target->type == JointType::fixed || target->mimic)
+            return std::unexpected(makeError(LoadErrorCode::invalid_mimic_reference,
+                                             joint.name, "mimic/joint", joint.mimic->joint));
+    }
 
     // out.diagnostics is empty on success now. The Info-per-fixed-joint and the
     // "< 6 actuated joints" warning both described a traced chain, and there is

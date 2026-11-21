@@ -759,18 +759,93 @@ TEST(UrdfModelLoaderTest, IncludesLoadErrorContextInException)
     }
 }
 
-TEST(UrdfModelLoaderTest, ReportsContinuousAsUnsupportedUntilImplemented)
+// --- Continuous joints (follow-up 2026-11-16 #3) ----------------------------
+//
+// URDF: a continuous joint is a revolute joint without position limits. Its
+// <limit> is optional; when present, this project's strict profile still
+// requires velocity and effort, and lower/upper carry no meaning and are
+// ignored.
+
+namespace {
+std::string continuousJoint(std::string_view limitXml)
 {
-    // TODO: remove together with the proposal adding Continuous support.
-    // This pins a known gap as deliberate, so it cannot quietly be taken
-    // for intended behaviour.
-    const std::string joint =
-        std::string{R"(<joint name="j" type="continuous">)"}
-        + R"(<parent link="base"/><child link="tool"/>)"
-        + R"(<axis xyz="0 0 1"/><limit effort="1" velocity="1"/>)"
-        + "</joint>";
-    expectRejectedWith(urdfWithJoint(joint),
-                       mt::kinematics::LoadErrorCode::unsupported_joint_type);
+    return std::string{R"(<joint name="j" type="continuous">)"}
+         + R"(<parent link="base"/><child link="tool"/>)"
+         + R"(<axis xyz="0 0 1"/>)" + std::string{limitXml} + "</joint>";
+}
+} // namespace
+
+TEST(UrdfModelLoaderTest, LoadsContinuousJointWithoutPositionLimits)
+{
+    const TemporaryUrdf file{urdfWithJoint(continuousJoint(R"(<limit effort="1" velocity="2"/>)"))};
+    const auto loaded = mt::kinematics::load_urdf(file.path());
+    ASSERT_TRUE(loaded.has_value());
+    ASSERT_EQ(loaded->model.joints().size(), 1U);
+    EXPECT_EQ(loaded->model.joints()[0].type, mt::kinematics::JointType::continuous);
+    EXPECT_EQ(loaded->model.joints()[0].limits.velocity, 2.0);
+
+    const auto description = kinemaforge::ik::UrdfModelLoader{}.load(file.path());
+    ASSERT_EQ(description.joints.size(), 1U);
+    EXPECT_EQ(description.joints[0].type, kinemaforge::ik::JointType::Continuous);
+    EXPECT_FALSE(description.joints[0].limits.hasPositionLimits);
+    EXPECT_EQ(description.joints[0].limits.velocity, 2.0);
+}
+
+TEST(UrdfModelLoaderTest, ContinuousJointNeedsNoLimitElement)
+{
+    const TemporaryUrdf file{urdfWithJoint(continuousJoint(""))};
+    const auto description = kinemaforge::ik::UrdfModelLoader{}.load(file.path());
+    ASSERT_EQ(description.joints.size(), 1U);
+    EXPECT_EQ(description.joints[0].type, kinemaforge::ik::JointType::Continuous);
+    EXPECT_FALSE(description.joints[0].limits.hasPositionLimits);
+}
+
+TEST(UrdfModelLoaderTest, ContinuousJointIgnoresLowerAndUpper)
+{
+    const TemporaryUrdf file{urdfWithJoint(
+        continuousJoint(R"(<limit lower="-1" upper="1" effort="1" velocity="1"/>)"))};
+    const auto description = kinemaforge::ik::UrdfModelLoader{}.load(file.path());
+    EXPECT_FALSE(description.joints.at(0).limits.hasPositionLimits);
+}
+
+TEST(UrdfModelLoaderTest, ContinuousJointLimitStillFollowsTheStrictProfile)
+{
+    expectRejectedWith(urdfWithJoint(continuousJoint(R"(<limit effort="1"/>)")),
+                       mt::kinematics::LoadErrorCode::missing_limit_attribute);
+    expectRejectedWith(urdfWithJoint(continuousJoint(R"(<limit effort="1" velocity="-1"/>)")),
+                       mt::kinematics::LoadErrorCode::invalid_limit_constraint);
+    expectRejectedWith(urdfWithJoint(continuousJoint(
+                           R"(<limit effort="1" velocity="1"/><limit effort="1" velocity="1"/>)")),
+                       mt::kinematics::LoadErrorCode::duplicate_limit_element);
+}
+
+TEST(UrdfModelLoaderTest, ContinuousJointStillNeedsANonZeroAxis)
+{
+    const std::string joint = std::string{R"(<joint name="j" type="continuous">)"}
+                            + R"(<parent link="base"/><child link="tool"/>)"
+                            + R"(<axis xyz="0 0 0"/></joint>)";
+    expectRejectedWith(urdfWithJoint(joint), mt::kinematics::LoadErrorCode::degenerate_axis);
+}
+
+TEST(UrdfModelLoaderTest, Kr640WithContinuousWristLoadsIntoAChainTheSolverTreatsAsUnbounded)
+{
+    // End to end: the same robot with joint_a6 continuous.
+    std::ifstream in(urdfPath("kr640.urdf"));
+    std::string text{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+    const std::string from = R"(<joint name="joint_a6" type="revolute">)";
+    const auto at = text.find(from);
+    ASSERT_NE(at, std::string::npos);
+    text.replace(at, from.size(), R"(<joint name="joint_a6" type="continuous">)");
+
+    const TemporaryUrdf file{text};
+    const auto robot = kinemaforge::ik::UrdfModelLoader{}.load(file.path());
+    const auto chain = kinemaforge::ik::KinematicChainBuilder{}.build(robot, "base_link", "tool0");
+    ASSERT_TRUE(chain);
+    const auto wrist = std::find_if(chain->joints.begin(), chain->joints.end(),
+                                    [](const auto& joint) { return joint.name == "joint_a6"; });
+    ASSERT_NE(wrist, chain->joints.end());
+    EXPECT_EQ(wrist->type, kinemaforge::ik::JointType::Continuous);
+    EXPECT_FALSE(wrist->limits.hasPositionLimits);
 }
 
 // ---------------------------------------------------------------------------
@@ -921,48 +996,120 @@ std::string mimicArmUrdf(std::string_view mimicElement)
 
 } // namespace
 
-TEST(UrdfModelLoaderTest, RejectsMimicJoint)
+// --- Mimic joints (follow-up 2026-11-16 #2) ----------------------------------
+//
+// A mimic joint is loaded with its coupling (joint = multiplier * other +
+// offset) and validated. It is rejected only where it would be misread: inside
+// a kinematic chain, where every consumer treats each joint as an independent
+// axis (KinematicChainBuilder -> MimicJointInChain). The common case -- gripper
+// fingers mimicking each other beside the arm -- now loads and works.
+
+TEST(UrdfModelLoaderTest, LoadsMimicJointWithItsCoupling)
 {
-    // A mimic joint is not an independent axis. Until coupled joints are
-    // modelled, loading one as if it were independent would let IK return
-    // configurations the robot cannot take, so the model is refused.
-    const TemporaryUrdf file{mimicArmUrdf(R"(<mimic joint="j1" multiplier="1" offset="0"/>)")};
+    const TemporaryUrdf file{mimicArmUrdf(R"(<mimic joint="j1" multiplier="-2" offset="0.5"/>)")};
     const auto result = mt::kinematics::load_urdf(file.path());
-    ASSERT_FALSE(result.has_value());
-    EXPECT_EQ(result.error().code, mt::kinematics::LoadErrorCode::unsupported_mimic_joint);
-    EXPECT_EQ(result.error().jointName, "j2");
-    EXPECT_EQ(result.error().attribute, "mimic");
+    ASSERT_TRUE(result.has_value());
+    const auto& joints = result->model.joints();
+    ASSERT_EQ(joints.size(), 2U);
+    EXPECT_FALSE(joints[0].mimic.has_value());
+    ASSERT_TRUE(joints[1].mimic.has_value());
+    EXPECT_EQ(joints[1].mimic->joint, "j1");
+    EXPECT_EQ(joints[1].mimic->multiplier, -2.0);
+    EXPECT_EQ(joints[1].mimic->offset, 0.5);
+
+    const auto description = kinemaforge::ik::UrdfModelLoader{}.load(file.path());
+    ASSERT_TRUE(description.joints.at(1).mimic.has_value());
+    EXPECT_EQ(description.joints[1].mimic->joint, "j1");
+    EXPECT_EQ(description.joints[1].mimic->multiplier, -2.0);
+    EXPECT_EQ(description.joints[1].mimic->offset, 0.5);
 }
 
-TEST(UrdfModelLoaderTest, RejectsMimicJointWithDefaultAttributes)
-{
-    // multiplier/offset default to 1/0 in URDF; the bare element still couples.
-    expectRejectedWith(mimicArmUrdf(R"(<mimic joint="j1"/>)"),
-                       mt::kinematics::LoadErrorCode::unsupported_mimic_joint);
-}
-
-TEST(UrdfModelLoaderTest, LoadsSameArmWithoutMimic)
-{
-    // Control: the rejection is caused by <mimic>, nothing else in the fixture.
-    const TemporaryUrdf file{mimicArmUrdf("")};
-    EXPECT_TRUE(mt::kinematics::load_urdf(file.path()).has_value());
-}
-
-TEST(UrdfModelLoaderTest, FacadeReportsMimicJointByName)
+TEST(UrdfModelLoaderTest, MimicMultiplierAndOffsetDefaultToOneAndZero)
 {
     const TemporaryUrdf file{mimicArmUrdf(R"(<mimic joint="j1"/>)")};
-    kinemaforge::ik::UrdfModelLoader loader;
-    try
-    {
-        loader.load(file.path());
-        FAIL() << "expected UrdfModelLoader::load to throw";
-    }
-    catch (const std::runtime_error& error)
-    {
-        const std::string message = error.what();
-        EXPECT_NE(message.find("mimic"), std::string::npos) << message;
-        EXPECT_NE(message.find("joint 'j2'"), std::string::npos) << message;
-    }
+    const auto result = mt::kinematics::load_urdf(file.path());
+    ASSERT_TRUE(result.has_value());
+    ASSERT_TRUE(result->model.joints()[1].mimic.has_value());
+    EXPECT_EQ(result->model.joints()[1].mimic->multiplier, 1.0);
+    EXPECT_EQ(result->model.joints()[1].mimic->offset, 0.0);
+}
+
+TEST(UrdfModelLoaderTest, RejectsInvalidMimicReferences)
+{
+    using mt::kinematics::LoadErrorCode;
+    expectRejectedWith(mimicArmUrdf(R"(<mimic joint="ghost"/>)"), LoadErrorCode::invalid_mimic_reference);
+    expectRejectedWith(mimicArmUrdf(R"(<mimic joint="j2"/>)"), LoadErrorCode::invalid_mimic_reference);
+    expectRejectedWith(mimicArmUrdf(R"(<mimic joint=""/>)"), LoadErrorCode::invalid_mimic_reference);
+    expectRejectedWith(mimicArmUrdf(R"(<mimic/>)"), LoadErrorCode::invalid_mimic_reference);
+    expectRejectedWith(mimicArmUrdf(R"(<mimic joint="j1" multiplier="abc"/>)"),
+                       LoadErrorCode::invalid_mimic_reference);
+    expectRejectedWith(mimicArmUrdf(R"(<mimic joint="j1" offset="nan"/>)"),
+                       LoadErrorCode::invalid_mimic_reference);
+    expectRejectedWith(mimicArmUrdf(R"(<mimic joint="j1"/><mimic joint="j1"/>)"),
+                       LoadErrorCode::invalid_mimic_reference);
+}
+
+TEST(UrdfModelLoaderTest, RejectsMimicOfAMimicJoint)
+{
+    // Chains of couplings are not resolved; the referenced joint must be
+    // independent.
+    const std::string urdf =
+        R"(<?xml version="1.0"?><robot name="t">)"
+        R"(<link name="a"/><link name="b"/><link name="c"/><link name="d"/>)"
+        R"(<joint name="j1" type="revolute"><parent link="a"/><child link="b"/>)"
+        R"(<axis xyz="0 0 1"/><limit lower="-1" upper="1" effort="1" velocity="1"/></joint>)"
+        R"(<joint name="j2" type="revolute"><parent link="b"/><child link="c"/>)"
+        R"(<axis xyz="0 0 1"/><limit lower="-1" upper="1" effort="1" velocity="1"/><mimic joint="j1"/></joint>)"
+        R"(<joint name="j3" type="revolute"><parent link="c"/><child link="d"/>)"
+        R"(<axis xyz="0 0 1"/><limit lower="-1" upper="1" effort="1" velocity="1"/><mimic joint="j2"/></joint>)"
+        R"(</robot>)";
+    expectRejectedWith(urdf, mt::kinematics::LoadErrorCode::invalid_mimic_reference);
+}
+
+TEST(UrdfModelLoaderTest, RejectsMimicOnAFixedJoint)
+{
+    const std::string urdf =
+        R"(<?xml version="1.0"?><robot name="t">)"
+        R"(<link name="a"/><link name="b"/><link name="c"/>)"
+        R"(<joint name="j1" type="revolute"><parent link="a"/><child link="b"/>)"
+        R"(<axis xyz="0 0 1"/><limit lower="-1" upper="1" effort="1" velocity="1"/></joint>)"
+        R"(<joint name="f" type="fixed"><parent link="b"/><child link="c"/><mimic joint="j1"/></joint>)"
+        R"(</robot>)";
+    expectRejectedWith(urdf, mt::kinematics::LoadErrorCode::unsupported_mimic_joint);
+}
+
+TEST(UrdfModelLoaderTest, ChainThroughAMimicJointIsRejected)
+{
+    // Inside a chain the coupling would be read as an independent axis.
+    const TemporaryUrdf file{mimicArmUrdf(R"(<mimic joint="j1"/>)")};
+    const auto robot = kinemaforge::ik::UrdfModelLoader{}.load(file.path());
+    const auto chain = kinemaforge::ik::KinematicChainBuilder{}.build(robot, "base", "tool");
+    ASSERT_FALSE(chain.has_value());
+    EXPECT_EQ(chain.error(), kinemaforge::ik::KinematicChainError::MimicJointInChain);
+    // The part of the chain before the mimic joint is unaffected.
+    EXPECT_TRUE(kinemaforge::ik::KinematicChainBuilder{}.build(robot, "base", "l1").has_value());
+}
+
+TEST(UrdfModelLoaderTest, ArmWithMimicGripperFingersBuildsTheArmChain)
+{
+    // The usual reason a URDF has <mimic>: two gripper fingers, one mimicking
+    // the other, beside the arm. Previously the whole model was refused.
+    const std::string urdf =
+        R"(<?xml version="1.0"?><robot name="t">)"
+        R"(<link name="base"/><link name="tool"/><link name="finger_l"/><link name="finger_r"/>)"
+        R"(<joint name="arm" type="revolute"><parent link="base"/><child link="tool"/>)"
+        R"(<axis xyz="0 0 1"/><limit lower="-1" upper="1" effort="1" velocity="1"/></joint>)"
+        R"(<joint name="left" type="prismatic"><parent link="tool"/><child link="finger_l"/>)"
+        R"(<axis xyz="0 1 0"/><limit lower="0" upper="0.04" effort="1" velocity="1"/></joint>)"
+        R"(<joint name="right" type="prismatic"><parent link="tool"/><child link="finger_r"/>)"
+        R"(<axis xyz="0 -1 0"/><limit lower="0" upper="0.04" effort="1" velocity="1"/>)"
+        R"(<mimic joint="left"/></joint>)"
+        R"(</robot>)";
+    const TemporaryUrdf file{urdf};
+    const auto robot = kinemaforge::ik::UrdfModelLoader{}.load(file.path());
+    const auto chain = kinemaforge::ik::KinematicChainBuilder{}.build(robot, "base", "tool");
+    ASSERT_TRUE(chain.has_value());
+    EXPECT_EQ(chain->joints.size(), 1U);
 }
 
 TEST(UrdfModelLoaderTest, RejectsEmptyJointName)

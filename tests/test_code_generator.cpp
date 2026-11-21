@@ -72,6 +72,31 @@ TEST(CppAnalyticIkGenerator, EmitsOnlyLightweightGeneratedRuntimeDependency)
     EXPECT_EQ(generated->find("AnalyticIkSolver"), std::string::npos);
 }
 
+TEST(CppAnalyticIkGenerator, EmitsNamedParameterFieldsForReview)
+{
+    // A reviewer of generated code must see which number is which. Positional
+    // aggregate initialisation hid that ("1.1499999999999999," -- link 1? the
+    // home angle?). Every Parameters field is emitted by name.
+    const auto chain = loadChain("kr640.urdf");
+    const auto generated = ik::CppAnalyticIkGenerator{}.generate(chain);
+    ASSERT_TRUE(generated);
+    for (const char* field : {".axes = ", ".wristCenterHome = ", ".wristInTargetFrame = ",
+                              ".targetFrameHomeRotation = ", ".planarX = ", ".planarY = ",
+                              ".link1 = ", ".link2 = ", ".link2HomeAngle = ", ".axis3Sign = ",
+                              ".wristBasis = ", ".axis6Sign = ", ".limits = ", ".point = ",
+                              ".direction = ", ".enabled = ", ".lower = ", ".upper = "})
+        EXPECT_NE(generated->find(field), std::string::npos) << field;
+}
+
+TEST(CppAnalyticIkGenerator, EmitsCompactSolveEntryPoint)
+{
+    const auto chain = loadChain("kr640.urdf");
+    const auto generated = ik::CppAnalyticIkGenerator{}.generate(chain);
+    ASSERT_TRUE(generated);
+    EXPECT_NE(generated->find("inline CompactResult solveCompact(const Pose& target)"), std::string::npos);
+    EXPECT_NE(generated->find("using CompactResult = rt::CompactResult;"), std::string::npos);
+}
+
 TEST(CppAnalyticIkGenerator, RejectsInvalidNamespaceName)
 {
     const auto result = ik::CppAnalyticIkGenerator{}.generate(loadChain("kr640.urdf"),

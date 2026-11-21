@@ -212,17 +212,32 @@ std::string emit(const Parameters& p,std::string_view ns)
     std::ostringstream o;
     o << "#pragma once\n\n#include \"ik_equations/codegen/GeneratedIkRuntime.hpp\"\n\n";
     o << "namespace " << ns << " {\n\n";
-    o << "namespace rt = kinemaforge::ik::generated;\nusing Pose = rt::Pose;\nusing Result = rt::Result;\nusing Status = rt::Status;\nusing Branch = rt::Branch;\n\n";
-    o << "inline constexpr rt::Parameters parameters{\n    {\n";
+    o << "namespace rt = kinemaforge::ik::generated;\nusing Pose = rt::Pose;\nusing Result = rt::Result;\nusing Status = rt::Status;\nusing Branch = rt::Branch;\nusing CompactResult = rt::CompactResult;\n\n";
+    // Every field by name, so a reviewer of the generated file sees which
+    // number is which. Designated initialisers must follow declaration order.
+    o << "inline constexpr rt::Parameters parameters{\n";
+    o << "    .axes = {\n";
     for(std::size_t i=0;i<6;++i)
-        o << "        rt::Axis{" << vecText(p.axes[i].point) << ", " << vecText(p.axes[i].direction) << "}" << (i+1<6?",":"") << "\n";
-    o << "    },\n    " << vecText(p.wristCenterHome) << ",\n    " << vecText(p.wristInTargetFrame) << ",\n    " << matText(p.targetFrameHomeRotation) << ",\n";
-    o << "    " << vecText(p.planarX) << ",\n    " << vecText(p.planarY) << ",\n    " << number(p.link1) << ",\n    " << number(p.link2) << ",\n    " << number(p.link2HomeAngle) << ",\n    " << number(p.axis3Sign) << ",\n";
-    o << "    " << matText(p.wristBasis) << ",\n    " << number(p.axis6Sign) << ",\n    {\n";
+        o << "        rt::Axis{.point = " << vecText(p.axes[i].point) << ", .direction = " << vecText(p.axes[i].direction) << "}" << (i+1<6?",":"") << "\n";
+    o << "    },\n";
+    o << "    .wristCenterHome = " << vecText(p.wristCenterHome) << ",\n";
+    o << "    .wristInTargetFrame = " << vecText(p.wristInTargetFrame) << ",\n";
+    o << "    .targetFrameHomeRotation = " << matText(p.targetFrameHomeRotation) << ",\n";
+    o << "    .planarX = " << vecText(p.planarX) << ",\n";
+    o << "    .planarY = " << vecText(p.planarY) << ",\n";
+    o << "    .link1 = " << number(p.link1) << ",\n";
+    o << "    .link2 = " << number(p.link2) << ",\n";
+    o << "    .link2HomeAngle = " << number(p.link2HomeAngle) << ",\n";
+    o << "    .axis3Sign = " << number(p.axis3Sign) << ",\n";
+    o << "    .wristBasis = " << matText(p.wristBasis) << ",\n";
+    o << "    .axis6Sign = " << number(p.axis6Sign) << ",\n";
+    o << "    .limits = {\n";
     for(std::size_t i=0;i<6;++i)
-        o << "        rt::JointLimit{" << (p.limits[i].enabled?"true":"false") << ", " << number(p.limits[i].lower) << ", " << number(p.limits[i].upper) << "}" << (i+1<6?",":"") << "\n";
+        o << "        rt::JointLimit{.enabled = " << (p.limits[i].enabled?"true":"false") << ", .lower = " << number(p.limits[i].lower) << ", .upper = " << number(p.limits[i].upper) << "}" << (i+1<6?",":"") << "\n";
     o << "    }\n};\n\n";
     o << "[[nodiscard]] inline Result solve(const Pose& target)\n{\n    return rt::solve(parameters, target);\n}\n\n";
+    o << "// All solutions in compact form (per joint: its in-limit full turns); no\n// branch budget. rt::expand() gives what solve() returns.\n";
+    o << "[[nodiscard]] inline CompactResult solveCompact(const Pose& target)\n{\n    return rt::solveCompact(parameters, target);\n}\n\n";
     o << "} // namespace " << ns << "\n";
     return o.str();
 }

@@ -163,6 +163,13 @@ std::expected<KinematicChain, KinematicChainError> KinematicChainBuilder::build(
     if (searchResult == PathSearchResult::NotFound)
         return std::unexpected(KinematicChainError::NoPathFound);
 
+    // A mimic joint is a function of another joint, not an axis. Every
+    // consumer of a chain (equations, solvers, code generation) would treat it
+    // as independent, so a chain through one is refused here, once.
+    for (std::size_t index : pathJointIndices)
+        if (robot.joints[index].mimic)
+            return std::unexpected(KinematicChainError::MimicJointInChain);
+
     KinematicChain chain;
     chain.baseLink = baseLink;
     chain.toolLink = toolLink;

@@ -54,6 +54,10 @@ add_executable(kinemaforge_tests
     test_primitive_solvers.cpp
     test_analytic_ik_solver.cpp
     test_analytic_ik_regressions.cpp
+    test_ik_tolerances.cpp
+    test_analytic_ik_kernels.cpp
+    test_analytic_ik_compact.cpp
+    test_analytic_ik_positional_families.cpp
     test_code_generator.cpp
     test_symbolic_matrix.cpp
     test_symbolic_transform.cpp

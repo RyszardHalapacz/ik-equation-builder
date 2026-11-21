@@ -33,7 +33,9 @@ enum class LoadErrorCode : std::uint8_t {
 
     // Joint identity and semantics.
     invalid_joint_declaration, // <joint> with an empty or duplicate name
-    unsupported_mimic_joint,   // <mimic>: the joint is not an independent axis
+    unsupported_mimic_joint,   // <mimic> on a joint that cannot move (fixed)
+    invalid_mimic_reference,   // <mimic> malformed, duplicated, or referring to
+                               // a missing, fixed, mimic, or the same joint
 };
 
 // Code plus diagnostic context. The code alone is not enough: "malformed
@@ -81,6 +83,9 @@ struct LoadResult {
 //     and a missing attribute is an error rather than a zero
 //   * lower <= upper, velocity >= 0, effort >= 0
 //   * a <limit> on a fixed joint is ignored, contents and all
+//   * a continuous joint (revolute without position limits) needs no <limit>;
+//     if one is present it must be unique with valid velocity and effort, and
+//     its lower/upper are ignored
 //
 // This is deliberately narrower than older URDF, where lower and upper default
 // to 0, and it is NOT the URDF 1.2 rule, where effort and velocity are optional.
@@ -89,9 +94,11 @@ struct LoadResult {
 // to [0, 0] cannot be told apart from a mistake, and this project derives IK
 // equations from those numbers.
 //
-// A joint carrying <mimic> is rejected (unsupported_mimic_joint): it is a
-// function of another joint, not an independent axis, and the model has no
-// representation for that coupling yet.
+// A joint carrying <mimic> is loaded with its coupling (Joint::mimic). The
+// referenced joint must exist, be movable, differ from it and not be a mimic
+// itself; multiplier/offset default to 1/0 and must be finite numbers. A
+// mimic on a fixed joint is unsupported_mimic_joint. Choosing a chain through
+// a mimic joint is refused later, by KinematicChainBuilder.
 //
 // Choosing a kinematic chain is deliberately NOT done here — that needs a base
 // and a tool link, which only the caller knows. See KinematicChainBuilder.

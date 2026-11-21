@@ -1,12 +1,14 @@
 #pragma once
 
+#include "ik_equations/model/IkTolerances.hpp"
+
 #include "ik_equations/model/AnalyticIkSolution.hpp"
 
 #include <vector>
 
 namespace kinemaforge::ik {
 
-inline constexpr double kPrimitiveSolverTolerance = 1e-12;
+inline constexpr double kPrimitiveSolverTolerance = tolerance::kRoundOff;
 
 enum class ScalarSolutionKind
 {
