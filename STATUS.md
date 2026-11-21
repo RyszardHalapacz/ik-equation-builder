@@ -1,14 +1,29 @@
 # Project Status
 
-**Last updated:** 2026-11-16
-**Working branch state:** Phase 2 complete; Phase 3 F3.1–F3.9 and F3.12 implemented in the current workspace; F3.10 is complete for joint limits and spherical-wrist singularities but still has one explicit shoulder-axis singular-family gap.  
-**Full CMake/CTest gate:** **PASS — 681/681 tests in Release, Debug, and the `KINEMAFORGE_WERROR=ON` configuration** (639 after F3.R3, 613 after F3.R2), on Windows/MinGW GCC 13.1.0. The seven defects of the 2026-11-15 audit and the eight of the 2026-11-16 audit have been corrected. The shoulder-axis singular family remains outside the supported solver scope.
+**Last updated:** 2026-11-21
+**Working branch state:** Phase 2 complete; Phase 3 F3.1–F3.9 and F3.12 implemented in the current workspace; F3.10 is complete for joint limits and spherical-wrist singularities and, with the positional families, for the single-parameter shoulder-axis and elbow-folded cases; only the two-parameter case remains unsupported.  
+**Full CMake/CTest gate:** **PASS — 710/710 tests in Release, Debug, and the `KINEMAFORGE_WERROR=ON` configuration** (681 before the MotionBridge integration response, 639 after F3.R3, 613 after F3.R2), on Windows/MinGW GCC 13.1.0. The seven defects of the 2026-11-15 audit and the eight of the 2026-11-16 audit have been corrected.
 
 > Current verification is recorded below. Component descriptions retain the
 > Phase 1–3 history; the original September standalone evidence is explicitly
 > dated and does not replace the November full-project test run.
 
 ## ▶ Where we are right now
+
+**Stage F3.M — response to the MotionBridge integration report (2026-11-21): implemented test-first, not yet committed.**
+Design record and measurements: `proposal/MotionBridge_integration_response.md`. Gate: **710/710** in Release, Debug and `KINEMAFORGE_WERROR=ON`. Every item below was written as a failing test first (red), then made green; the exception is E, which was already true and is now pinned.
+
+| Item | Result |
+|---|---|
+| Benchmark (KR640, 60 targets) | `solve` ~34 µs, `solveCompact` ~16 µs, generated runtime ~13 µs / 7 µs per call; building the chain per call is only ~10 %. Measurement code is not in the repo. |
+| A. Shoulder-axis family | Already implemented (positional families, both solvers); the Known-gaps text was stale and is corrected. Only the two-parameter case (shoulder axis AND folded elbow) remains unsupported. |
+| B. Near-singular band | Measured: family at or below 1e-10 m from the joint-1 axis, ordinary branches from 1e-9 m, the generating configuration recovered on both sides. Pinned by `NearTheShoulderAxisTheGeneratingConfigurationIsAlwaysRecovered`. New `shoulderAxisDistance` (result of both solvers and both compact forms, m) and `wristPitchSine(branch)` (|sin q5|, exactly 0 for a wrist family). |
+| E. Branch order | Contract written in `AnalyticIkSolver.hpp` and pinned by `test_analytic_ik_ordering.cpp`: sorted by (shoulder, elbow, wrist) then joint values; identical for `solve`, `expand(solveCompact)` and the generated runtime; the index of a branch is NOT stable between targets. No code change was needed. |
+| D. Solver core target | `kinemaforge_ik_core` (alias `kinemaforge::ik_core`): the nine solver translation units, no pugixml, no symbolic layer, no legacy classes. `src/common`, `src/kinematics`, `src/Kinematics.*` moved to `src/legacy/` and included as `legacy/...`, so a host's own `common/` or `kinematics/` headers are never shadowed. `kinemaforge_ik` is the core plus everything else. CTest `cmake_core_target_isolation` builds a consumer that defines its own `mt::kinematics` types. Public headers stay under `ik_equations/...` (no `include/kinemaforge/` move). |
+| C. Prepared solver | `PreparedAnalyticIk` (`solver/PreparedAnalyticIk.hpp`): chain, geometry, pattern and home transform computed once; `solve`/`solveCompact` identical to the one-shot solver; immutable, usable from many threads (tested with 4). Copies are deep copies: a `shared_ptr` control block made the Debug link fail on MinGW (duplicate `std::type_info::operator==`). Gain is modest (~8 % over a prebuilt chain, ~20 % over the adapter's per-call build). |
+| F. Jacobian | `PreparedAnalyticIk::jacobian(q)`: 6x6 geometric Jacobian at the tool frame (TCP if given), singular values from a one-sided Jacobi SVD (accurate near zero), `minSingularValue`, `condition`. Checked against central differences of the quaternion FK and against the determinant; ~3 µs per call. |
+
+Not done on purpose: elbow-folded stays a documented boundary; public headers were not moved to `include/kinemaforge/`.
 
 **Stage F3.R4 — follow-up list of 2026-11-16 (eight points): implemented test-first, not yet committed.**
 Gate: **681/681** in Release, Debug and `KINEMAFORGE_WERROR=ON`; the near-limit/singularity invariant also passes on 8 extra seeds.
@@ -39,7 +54,7 @@ Gate: **639/639** in Release, Debug and `KINEMAFORGE_WERROR=ON` (613 before), Wi
 | 4 | Nearly straight elbow on a limit: angle ~1e-9 outside, target rejected | Elbow angle within `kElbowLimitSnapMargin` (1e-7) of a limit is put on it and q2 re-solved for it; FK check (2e-9) decides. The ill-conditioning is inherent (~sqrt(eps)), so replacing `acos` alone would not fix it. |
 | 2 | Equal links, wrist on joint-2 axis: one arbitrary q2, rest of family lost | Reported as unsupported (general: `UnsupportedKinematicStructure`, generated: `UnsupportedSingularity`). Test robot `tests/data/equal_links_6r.urdf`. |
 
-Still open: parameterising the shoulder-axis and elbow-folded families, and real mimic support.
+Still open: real mimic support. (The shoulder-axis and elbow-folded families were parameterised in follow-up 2026-11-16 #1: `PositionalFamily`.)
 
 **Stage F3.R2 — follow-up to the second audit (2026-11-15): implemented, not yet committed.**
 Design record: `proposal/F3.R2-audit-followup/proposal-audit-followup-architecture.md`.
@@ -60,7 +75,7 @@ that pass validation are all solved (KR640 763/763, KR4 766/766; previously 8 an
 5); the symbolic fuzzer finds 0 non-idempotent results in 300 000 expressions
 (previously 22); no returned joint value lies outside its limits.
 
-Still open, unchanged: the shoulder-axis singular family, `continuous` URDF
+Still open, unchanged: `continuous` URDF
 loading, and a "base branch + turn ranges" result API that would remove the
 branch product at its source. `ConstraintBuilder` still receives the target
 matrix exactly as written (call `nearestRotation()` first for an exactly
@@ -393,7 +408,7 @@ KR640 with translated/rotated TCP: 500/500
 
 | Gap | Current behavior | Why it matters |
 |---|---|---|
-| Shoulder-axis singular family | Main solver returns `UnsupportedKinematicStructure`; generated runtime produces no shoulder branch | `q1` is genuinely free and the remaining position problem must be parameterized rather than assigned an arbitrary representative. |
+| Two-parameter singular family | Wrist centre on the joint-1 axis AND equal links folded onto the joint-2 axis: main solver returns `UnsupportedKinematicStructure`, generated runtime `UnsupportedSingularity` | q1 and q2 are both free. The single-parameter shoulder-axis and elbow-folded families ARE supported (`PositionalFamily`, `AnalyticIkSolution::positionalFamilies`, status `InfiniteFamily`; MotionBridge report 2026-11-21 items 5.2/5.3 read an out-of-date gap). Near-axis band measured and pinned by test: ordinary branches from 1e-9 m on, family at or below it. |
 | Analytic family is intentionally narrow | Unsupported geometry returns typed failure | No false claim that arbitrary 6R/arbitrary URDF has closed-form IK. |
 | Generated code uses `GeneratedIkRuntime.hpp` and its numeric helper | Generated file is specialized but not literally one-file standalone | Deploy both headers on the include path; the runtime remains symbolic/URDF-free. |
 | Generated singular metadata is leaner than the general IR | Supports wrist free relation, not the full future solution-condition language | Sufficient for the first family, not a universal solver IR. |
@@ -416,14 +431,15 @@ ctest --test-dir build --output-on-failure
 For a strict warning gate configure with the project's `KINEMAFORGE_WERROR` option as documented by CMake/CI.
 
 The full Windows/MinGW CMake/CTest gate is green. The workspace remains a
-**v1.0 analytic-IK release candidate** while complete handling of the shoulder-axis
-singular family is still an open support requirement.
+**v1.0 analytic-IK release candidate**. The single-parameter positional families are
+supported; the two-parameter case (shoulder axis and folded elbow at once) is the
+remaining singular boundary.
 
 # Next engineering step
 
 Before extending the supported robot families:
 
-1. close the shoulder-axis singular family if v1.0 promises complete singular handling for the supported family;
+1. decide whether the two-parameter singular case must be supported in v1.0 or stays a documented boundary;
 2. validate any additional deployment toolchains and an external FK oracle;
 3. move the verified F3 proposals into `proposal/done/` and tag/release when that scope is complete;
 4. then add another geometric family or a more general condition-bearing solver IR.

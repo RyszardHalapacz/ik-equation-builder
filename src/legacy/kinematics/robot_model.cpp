@@ -1,4 +1,4 @@
-#include "kinematics/robot_model.hpp"
+#include "legacy/kinematics/robot_model.hpp"
 
 #include <utility>  // std::move
 

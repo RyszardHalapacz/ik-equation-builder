@@ -1,6 +1,6 @@
 #include "ik_equations/UrdfModelLoader.hpp"
 
-#include "kinematics/robot_model_loader.hpp"
+#include "legacy/kinematics/robot_model_loader.hpp"
 
 #include <stdexcept>
 #include <string>

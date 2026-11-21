@@ -58,6 +58,10 @@ add_executable(kinemaforge_tests
     test_analytic_ik_kernels.cpp
     test_analytic_ik_compact.cpp
     test_analytic_ik_positional_families.cpp
+    test_analytic_ik_ordering.cpp
+    test_analytic_ik_proximity.cpp
+    test_analytic_ik_prepared.cpp
+    test_analytic_ik_jacobian.cpp
     test_code_generator.cpp
     test_symbolic_matrix.cpp
     test_symbolic_transform.cpp
@@ -89,4 +93,14 @@ if(CMAKE_GENERATOR MATCHES "Ninja")
             "-DPUGIXML_SOURCE_DIR=${pugixml_SOURCE_DIR}"
             "-DGOOGLETEST_SOURCE_DIR=${googletest_SOURCE_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/check_subproject_consumer.cmake")
+    add_test(NAME cmake_core_target_isolation
+        COMMAND "${CMAKE_COMMAND}"
+            "-DKINEMAFORGE_SOURCE_DIR=${PROJECT_SOURCE_DIR}"
+            "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/core_target_consumer"
+            "-DGENERATOR=${CMAKE_GENERATOR}"
+            "-DMAKE_PROGRAM=${CMAKE_MAKE_PROGRAM}"
+            "-DCXX_COMPILER=${CMAKE_CXX_COMPILER}"
+            "-DPUGIXML_SOURCE_DIR=${pugixml_SOURCE_DIR}"
+            "-DGOOGLETEST_SOURCE_DIR=${googletest_SOURCE_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/check_core_target.cmake")
 endif()

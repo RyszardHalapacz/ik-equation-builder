@@ -57,6 +57,20 @@ struct AnalyticIkSolverOptions
 // The solver consumes a PoseTarget because decoupling the wrist centre from a
 // non-zero tool/flange offset requires target orientation.  Position-only IK is
 // under-constrained and is deliberately not guessed here.
+//
+// Order of the result (a contract; tests/test_analytic_ik_ordering.cpp):
+//   * solve(), expand(solveCompact()) and the generated runtime return the
+//     same branches in the same sequence for the same target and limits;
+//   * branches are sorted by (shoulder, elbow, wrist) in the enum order of
+//     ShoulderBranch, ElbowBranch and WristBranch, then by the joint values in
+//     joint order q1..q6, ascending (so full turns of one geometric branch come
+//     out ascending, last joint fastest); a wrist family sorts after its
+//     regular siblings and, among families, by its free interval;
+//   * the order is a pure function of the target, the chain and the options:
+//     repeated calls are identical.
+// The INDEX of a branch is not stable between targets: a branch dropped by a
+// joint limit shifts the ones after it. A caller that stores a branch should
+// store its (shoulder, elbow, wrist) labels and joint values, not its position.
 class AnalyticIkSolver
 {
 public:

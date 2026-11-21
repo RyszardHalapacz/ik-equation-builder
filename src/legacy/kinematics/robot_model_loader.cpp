@@ -1,4 +1,4 @@
-#include "kinematics/robot_model_loader.hpp"
+#include "legacy/kinematics/robot_model_loader.hpp"
 #include <pugixml.hpp>
 #include <algorithm>
 #include <charconv>

@@ -3,6 +3,7 @@
 #include "ik_equations/builders/KinematicGeometryBuilder.hpp"
 #include "ik_equations/model/IkPattern.hpp"
 #include "ik_equations/solver/IkPatternDetector.hpp"
+#include "ik_equations/solver/PreparedAnalyticIk.hpp"
 #include "ik_equations/solver/PrimitiveSolvers.hpp"
 #include "ik_equations/solver/detail/AnalyticIkKernels.hpp"
 #include "ik_equations/solver/detail/AnalyticIkNumerics.hpp"
@@ -10,7 +11,9 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <functional>
 #include <limits>
+#include <memory>
 #include <numbers>
 #include <numeric>
 #include <optional>
@@ -587,9 +590,15 @@ JointTurns jointTurns(std::size_t position, const KinematicJoint& joint, double 
             set.limit.enabled, set.limit.lower, set.limit.upper};
 }
 
-std::expected<CoreResult, AnalyticIkSolverError>
-solveCore(const KinematicChain& chain, const PoseTarget& requestedTarget,
-          const std::optional<FixedRigidTransform>& tcp)
+// The target after validation: the rotation nearest to what the caller wrote
+// and the distance to it.
+struct Projected
+{
+    PoseTarget target;
+    double correction{};
+};
+
+std::expected<Projected, AnalyticIkSolverError> projectTarget(const PoseTarget& requestedTarget)
 {
     if (const auto checked = validate(requestedTarget); !checked)
         return std::unexpected(AnalyticIkSolverError{
@@ -612,13 +621,27 @@ solveCore(const KinematicChain& chain, const PoseTarget& requestedTarget,
     if (projection->correction > kMaxOrientationCorrection)
         return error(AnalyticIkSolverErrorCode::InvalidTarget,
                      "target orientation is further from a rotation than the solver may correct");
-    const PoseTarget target{requestedTarget.position, projection->rotation};
-    CoreResult core;
-    core.target = target;
-    core.compact.orientationCorrection = projection->correction;
+    return Projected{PoseTarget{requestedTarget.position, projection->rotation}, projection->correction};
+}
 
-    core.joints = actuatedJoints(chain);
-    const auto& joints = core.joints;
+// Everything that depends on the robot and not on the target: the validated
+// geometry, the detected pattern's wrist centre, and the home transform. Built
+// once by a PreparedAnalyticIk, per call by the one-shot solver. `chain` is not
+// owned; whoever owns this keeps it alive.
+struct Prepared
+{
+    const KinematicChain* chain{};
+    std::optional<FixedRigidTransform> tcp;
+    KinematicGeometry geometry;
+    NumericTransform home;
+    Vector3 homeWrist;
+    Vector3 wristInTarget;
+};
+
+std::expected<Prepared, AnalyticIkSolverError>
+prepareRobot(const KinematicChain& chain, const std::optional<FixedRigidTransform>& tcp)
+{
+    const auto joints = actuatedJoints(chain);
     if (joints.size() != 6 ||
         !std::all_of(joints.begin(), joints.end(), [](const KinematicJoint* joint) {
             return rotary(joint->type);
@@ -626,13 +649,12 @@ solveCore(const KinematicChain& chain, const PoseTarget& requestedTarget,
         return error(AnalyticIkSolverErrorCode::UnsupportedKinematicStructure,
                      "analytic solver currently supports exactly six rotary joints");
 
-    const auto geometryResult = KinematicGeometryBuilder{}.build(chain);
+    auto geometryResult = KinematicGeometryBuilder{}.build(chain);
     if (!geometryResult)
         return error(AnalyticIkSolverErrorCode::InvalidKinematicGeometry,
                      geometryResult.error().message);
-    const KinematicGeometry& geometry = *geometryResult;
 
-    const auto patterns = IkPatternDetector{}.detect(geometry);
+    const auto patterns = IkPatternDetector{}.detect(*geometryResult);
     const DetectedIkPattern* pattern = supportedPattern(patterns);
     if (pattern == nullptr || !pattern->evidence.wristCenter)
         return error(AnalyticIkSolverErrorCode::UnsupportedKinematicStructure,
@@ -644,13 +666,38 @@ solveCore(const KinematicChain& chain, const PoseTarget& requestedTarget,
                      "home transform is not finite");
 
     const Vector3 homeWrist = *pattern->evidence.wristCenter;
-    const Vector3 wristInTarget = multiply(transpose(home.rotation),
-                                           subtract(homeWrist, home.translation));
+    return Prepared{&chain, tcp, std::move(*geometryResult), home, homeWrist,
+                    multiply(transpose(home.rotation), subtract(homeWrist, home.translation))};
+}
+
+std::expected<CoreResult, AnalyticIkSolverError>
+solveCore(const Prepared& prepared, const Projected& projected)
+{
+    const KinematicChain& chain = *prepared.chain;
+    const std::optional<FixedRigidTransform>& tcp = prepared.tcp;
+    const KinematicGeometry& geometry = prepared.geometry;
+    const NumericTransform& home = prepared.home;
+    const Vector3& homeWrist = prepared.homeWrist;
+    const PoseTarget& target = projected.target;
+
+    CoreResult core;
+    core.target = target;
+    core.compact.orientationCorrection = projected.correction;
+    core.joints = actuatedJoints(chain);
+    const auto& joints = core.joints;
+
     const Vector3 targetWrist = add(target.position,
-                                    multiply(targetRotation(target.orientation), wristInTarget));
+                                    multiply(targetRotation(target.orientation), prepared.wristInTarget));
     if (!finite(targetWrist))
         return error(AnalyticIkSolverErrorCode::NonFiniteComputation,
                      "target wrist centre is not finite");
+    {
+        // |axis x v|, not sqrt(|v|^2 - (axis.v)^2): the latter loses every digit
+        // of a millimetre-scale distance next to a metre-scale v.
+        const AxisLine& shoulderAxis = geometry.actuatedJoints[0].axis;
+        const Vector3 offset = cross(shoulderAxis.direction, subtract(targetWrist, shoulderAxis.point));
+        core.compact.shoulderAxisDistance = norm(offset);
+    }
 
     const auto positionResult = solvePosition(geometry, targetWrist, homeWrist, *joints[2]);
     if (!positionResult)
@@ -810,21 +857,100 @@ solveCore(const KinematicChain& chain, const PoseTarget& requestedTarget,
 
 } // namespace
 
-std::expected<CompactAnalyticIkSolution, AnalyticIkSolverError>
-AnalyticIkSolver::solveCompact(const KinematicChain& chain,
-                               const PoseTarget& requestedTarget,
-                               const std::optional<FixedRigidTransform>& tcp) const
+namespace {
+
+std::expected<CoreResult, AnalyticIkSolverError>
+solveOnce(const KinematicChain& chain, const PoseTarget& requestedTarget,
+          const std::optional<FixedRigidTransform>& tcp)
 {
-    auto core = solveCore(chain, requestedTarget, tcp);
-    if (!core)
-        return std::unexpected(core.error());
-    if (core->saturated)
+    // Target errors come before chain errors, as they always did.
+    const auto projected = projectTarget(requestedTarget);
+    if (!projected)
+        return std::unexpected(projected.error());
+    const auto prepared = prepareRobot(chain, tcp);
+    if (!prepared)
+        return std::unexpected(prepared.error());
+    return solveCore(*prepared, *projected);
+}
+
+std::expected<CompactAnalyticIkSolution, AnalyticIkSolverError> finishCompact(CoreResult core)
+{
+    if (core.saturated)
         return std::unexpected(AnalyticIkSolverError{
             AnalyticIkSolverErrorCode::ResourceLimitExceeded,
             "joint limits span more full turns than an int64_t can number",
             std::nullopt,
             std::numeric_limits<std::size_t>::max()});
-    return std::move(core->compact);
+    return std::move(core.compact);
+}
+
+std::expected<AnalyticIkSolution, AnalyticIkSolverError>
+finishSolve(CoreResult core, const KinematicChain& chain, const std::optional<FixedRigidTransform>& tcp,
+            const AnalyticIkSolverOptions& options)
+{
+    const double correction = core.compact.orientationCorrection;
+    if (core.compact.branches.empty())
+    {
+        if (core.compact.positionalFamilies.empty())
+            return AnalyticIkSolution{AnalyticIkStatus::NoSolution, {}, core.compact.message, correction, {},
+                                      core.compact.shoulderAxisDistance};
+        return AnalyticIkSolution{AnalyticIkStatus::InfiniteFamily, {}, {}, correction,
+                                  std::move(core.compact.positionalFamilies),
+                                  core.compact.shoulderAxisDistance};
+    }
+
+    // Count before allocating. The number of in-limit full turns is a product
+    // over joints, so whether the result fits the budget is decided from the
+    // compact form alone. Exceeding it is an error, never a shortened list.
+    const std::size_t required = core.saturated ? std::numeric_limits<std::size_t>::max()
+                                                 : core.compact.expandedBranchCount();
+    if (detail::branchBudgetExceeded(required, options.maxBranches))
+        return std::unexpected(AnalyticIkSolverError{
+            AnalyticIkSolverErrorCode::ResourceLimitExceeded,
+            "the solution needs " +
+                (required == std::numeric_limits<std::size_t>::max()
+                     ? std::string{"more branches than can be counted"}
+                     : std::to_string(required) + " branches") +
+                ", more than the allowed " + std::to_string(options.maxBranches) +
+                "; narrow the joint limits, raise AnalyticIkSolverOptions::maxBranches, "
+                "or use solveCompact()",
+            std::nullopt,
+            required});
+
+    // Expand, then verify every branch that will be returned.
+    std::vector<SolutionBranch> verified;
+    verified.reserve(required);
+    for (auto& branch : expand(core.compact))
+        if (branchMatches(branch, chain, core.target, tcp, core.joints))
+            verified.push_back(std::move(branch));
+
+    auto& families = core.compact.positionalFamilies;
+    if (verified.empty() && families.empty())
+        return AnalyticIkSolution{AnalyticIkStatus::NoSolution, {},
+                                  "geometric branches exist but none satisfies joint limits and pose round-trip",
+                                  correction, {}, core.compact.shoulderAxisDistance};
+
+    const bool infinite = !families.empty() ||
+                          std::any_of(verified.begin(), verified.end(), [](const auto& branch) {
+                              return !branch.freeParameters.empty() || !branch.coupledFreeParameters.empty();
+                          });
+    return AnalyticIkSolution{infinite ? AnalyticIkStatus::InfiniteFamily
+                                      : AnalyticIkStatus::Solutions,
+                              std::move(verified), {}, correction, std::move(families),
+                              core.compact.shoulderAxisDistance};
+}
+
+} // namespace
+
+std::expected<CompactAnalyticIkSolution, AnalyticIkSolverError>
+AnalyticIkSolver::solveCompact(const KinematicChain& chain,
+                               const PoseTarget& requestedTarget,
+                               const std::optional<FixedRigidTransform>& tcp) const
+{
+    auto core = solveOnce(chain, requestedTarget, tcp);
+    if (!core)
+        return std::unexpected(core.error());
+    return finishCompact(std::move(*core));
 }
 
 std::optional<std::array<double, 6>> evaluate(const PositionalFamily& family, double value)
@@ -909,56 +1035,178 @@ AnalyticIkSolver::solve(const KinematicChain& chain,
                         const std::optional<FixedRigidTransform>& tcp,
                         const AnalyticIkSolverOptions& options) const
 {
-    auto core = solveCore(chain, requestedTarget, tcp);
+    auto core = solveOnce(chain, requestedTarget, tcp);
     if (!core)
         return std::unexpected(core.error());
-    const double correction = core->compact.orientationCorrection;
-    if (core->compact.branches.empty())
+    return finishSolve(std::move(*core), chain, tcp, options);
+}
+
+double wristPitchSine(const SolutionBranch& branch)
+{
+    if (branch.wrist == WristBranch::Singular)
+        return 0.0;
+    for (const JointSolutionValue& joint : branch.joints)
+        if (joint.actuatedJointPosition == 4)
+            return std::abs(std::sin(joint.value));
+    return 0.0;
+}
+
+struct PreparedAnalyticIk::Impl
+{
+    KinematicChain chain; // Prepared::chain points here
+    Prepared prepared;
+
+    Impl() = default;
+    Impl(const Impl& other) : chain(other.chain), prepared(other.prepared)
     {
-        if (core->compact.positionalFamilies.empty())
-            return AnalyticIkSolution{AnalyticIkStatus::NoSolution, {}, core->compact.message, correction, {}};
-        return AnalyticIkSolution{AnalyticIkStatus::InfiniteFamily, {}, {}, correction,
-                                  std::move(core->compact.positionalFamilies)};
+        prepared.chain = &chain; // never the other object's chain
+    }
+};
+
+PreparedAnalyticIk::PreparedAnalyticIk(const PreparedAnalyticIk& other)
+    : impl_(other.impl_ ? std::make_unique<Impl>(*other.impl_) : nullptr)
+{
+}
+
+PreparedAnalyticIk& PreparedAnalyticIk::operator=(const PreparedAnalyticIk& other)
+{
+    if (this != &other)
+        impl_ = other.impl_ ? std::make_unique<Impl>(*other.impl_) : nullptr;
+    return *this;
+}
+
+PreparedAnalyticIk::PreparedAnalyticIk(PreparedAnalyticIk&&) noexcept = default;
+PreparedAnalyticIk& PreparedAnalyticIk::operator=(PreparedAnalyticIk&&) noexcept = default;
+PreparedAnalyticIk::~PreparedAnalyticIk() = default;
+
+std::expected<PreparedAnalyticIk, AnalyticIkSolverError>
+PreparedAnalyticIk::create(const KinematicChain& chain, const std::optional<FixedRigidTransform>& tcp)
+{
+    auto impl = std::make_unique<Impl>();
+    impl->chain = chain;
+    auto prepared = prepareRobot(impl->chain, tcp);
+    if (!prepared)
+        return std::unexpected(prepared.error());
+    impl->prepared = std::move(*prepared);
+    PreparedAnalyticIk result;
+    result.impl_ = std::move(impl);
+    return result;
+}
+
+std::expected<AnalyticIkSolution, AnalyticIkSolverError>
+PreparedAnalyticIk::solve(const PoseTarget& requestedTarget, const AnalyticIkSolverOptions& options) const
+{
+    const auto projected = projectTarget(requestedTarget);
+    if (!projected)
+        return std::unexpected(projected.error());
+    auto core = solveCore(impl_->prepared, *projected);
+    if (!core)
+        return std::unexpected(core.error());
+    return finishSolve(std::move(*core), impl_->chain, impl_->prepared.tcp, options);
+}
+
+std::expected<CompactAnalyticIkSolution, AnalyticIkSolverError>
+PreparedAnalyticIk::solveCompact(const PoseTarget& requestedTarget) const
+{
+    const auto projected = projectTarget(requestedTarget);
+    if (!projected)
+        return std::unexpected(projected.error());
+    auto core = solveCore(impl_->prepared, *projected);
+    if (!core)
+        return std::unexpected(core.error());
+    return finishCompact(std::move(*core));
+}
+
+std::expected<JacobianAnalysis, AnalyticIkSolverError>
+PreparedAnalyticIk::jacobian(const std::array<double, 6>& q) const
+{
+    for (const double value : q)
+        if (!std::isfinite(value))
+            return error(AnalyticIkSolverErrorCode::NonFiniteComputation,
+                         "joint configuration is not finite");
+
+    // Every joint rotates everything downstream of it about its own axis, which
+    // earlier joints have already moved. Doing that in order puts each axis in
+    // its place for this configuration; the tool point is carried along.
+    const Prepared& prepared = impl_->prepared;
+    std::array<AxisLine, 6> axes;
+    for (std::size_t i = 0; i < 6; ++i)
+        axes[i] = prepared.geometry.actuatedJoints[i].axis;
+    Vector3 tool = prepared.home.translation;
+    for (std::size_t i = 0; i < 6; ++i)
+    {
+        const Matrix3 rotation = axisRotation(axes[i].direction, q[i]);
+        const AxisLine moving = axes[i];
+        for (std::size_t j = i + 1; j < 6; ++j)
+        {
+            axes[j].point = rotatePointAroundLine(axes[j].point, moving, q[i]);
+            axes[j].direction = multiply(rotation, axes[j].direction);
+        }
+        tool = rotatePointAroundLine(tool, moving, q[i]);
     }
 
-    // Count before allocating. The number of in-limit full turns is a product
-    // over joints, so whether the result fits the budget is decided from the
-    // compact form alone. Exceeding it is an error, never a shortened list.
-    const std::size_t required = core->saturated ? std::numeric_limits<std::size_t>::max()
-                                                 : core->compact.expandedBranchCount();
-    if (detail::branchBudgetExceeded(required, options.maxBranches))
-        return std::unexpected(AnalyticIkSolverError{
-            AnalyticIkSolverErrorCode::ResourceLimitExceeded,
-            "the solution needs " +
-                (required == std::numeric_limits<std::size_t>::max()
-                     ? std::string{"more branches than can be counted"}
-                     : std::to_string(required) + " branches") +
-                ", more than the allowed " + std::to_string(options.maxBranches) +
-                "; narrow the joint limits, raise AnalyticIkSolverOptions::maxBranches, "
-                "or use solveCompact()",
-            std::nullopt,
-            required});
+    JacobianAnalysis analysis;
+    for (std::size_t joint = 0; joint < 6; ++joint)
+    {
+        const Vector3 d = axes[joint].direction;
+        const Vector3 linear = cross(d, subtract(tool, axes[joint].point));
+        analysis.jacobian[0][joint] = linear.x;
+        analysis.jacobian[1][joint] = linear.y;
+        analysis.jacobian[2][joint] = linear.z;
+        analysis.jacobian[3][joint] = d.x;
+        analysis.jacobian[4][joint] = d.y;
+        analysis.jacobian[5][joint] = d.z;
+    }
 
-    // Expand, then verify every branch that will be returned.
-    std::vector<SolutionBranch> verified;
-    verified.reserve(required);
-    for (auto& branch : expand(core->compact))
-        if (branchMatches(branch, chain, core->target, tcp, core->joints))
-            verified.push_back(std::move(branch));
-
-    auto& families = core->compact.positionalFamilies;
-    if (verified.empty() && families.empty())
-        return AnalyticIkSolution{AnalyticIkStatus::NoSolution, {},
-                                  "geometric branches exist but none satisfies joint limits and pose round-trip",
-                                  correction, {}};
-
-    const bool infinite = !families.empty() ||
-                          std::any_of(verified.begin(), verified.end(), [](const auto& branch) {
-                              return !branch.freeParameters.empty() || !branch.coupledFreeParameters.empty();
-                          });
-    return AnalyticIkSolution{infinite ? AnalyticIkStatus::InfiniteFamily
-                                      : AnalyticIkStatus::Solutions,
-                              std::move(verified), {}, correction, std::move(families)};
+    // One-sided Jacobi (Hestenes) SVD: rotate pairs of columns until all are
+    // mutually orthogonal; the singular values are then the column norms.
+    std::array<std::array<double, 6>, 6> u = analysis.jacobian;
+    for (int sweep = 0; sweep < 60; ++sweep)
+    {
+        bool rotated = false;
+        for (std::size_t p = 0; p + 1 < 6; ++p)
+            for (std::size_t r = p + 1; r < 6; ++r)
+            {
+                double alpha = 0.0;
+                double beta = 0.0;
+                double gamma = 0.0;
+                for (std::size_t row = 0; row < 6; ++row)
+                {
+                    alpha += u[row][p] * u[row][p];
+                    beta += u[row][r] * u[row][r];
+                    gamma += u[row][p] * u[row][r];
+                }
+                if (gamma == 0.0 || std::abs(gamma) <= 1e-15 * std::sqrt(alpha * beta))
+                    continue;
+                rotated = true;
+                const double zeta = (beta - alpha) / (2.0 * gamma);
+                const double t = std::copysign(1.0, zeta) / (std::abs(zeta) + std::sqrt(1.0 + zeta * zeta));
+                const double c = 1.0 / std::sqrt(1.0 + t * t);
+                const double s = c * t;
+                for (std::size_t row = 0; row < 6; ++row)
+                {
+                    const double a = u[row][p];
+                    const double b = u[row][r];
+                    u[row][p] = c * a - s * b;
+                    u[row][r] = s * a + c * b;
+                }
+            }
+        if (!rotated)
+            break;
+    }
+    for (std::size_t column = 0; column < 6; ++column)
+    {
+        double sum = 0.0;
+        for (std::size_t row = 0; row < 6; ++row)
+            sum += u[row][column] * u[row][column];
+        analysis.singularValues[column] = std::sqrt(sum);
+    }
+    std::sort(analysis.singularValues.begin(), analysis.singularValues.end(), std::greater<>{});
+    analysis.minSingularValue = analysis.singularValues.back();
+    analysis.condition = analysis.minSingularValue == 0.0
+                             ? std::numeric_limits<double>::infinity()
+                             : analysis.singularValues.front() / analysis.minSingularValue;
+    return analysis;
 }
 
 } // namespace kinemaforge::ik

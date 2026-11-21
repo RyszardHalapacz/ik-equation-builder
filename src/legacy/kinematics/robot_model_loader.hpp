@@ -4,8 +4,8 @@
 #include <filesystem>
 #include <optional>
 #include <string>
-#include "common/diagnostic_bag.hpp"
-#include "kinematics/robot_model.hpp"
+#include "legacy/common/diagnostic_bag.hpp"
+#include "legacy/kinematics/robot_model.hpp"
 
 namespace mt::kinematics {
 

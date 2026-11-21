@@ -5,7 +5,7 @@
 
 #include <filesystem>
 #include <numbers>
-#include "kinematics/robot_model_loader.hpp"   // dla testów kodu błędu
+#include "legacy/kinematics/robot_model_loader.hpp"   // dla testów kodu błędu
 
 #include <algorithm>
 #include <atomic>

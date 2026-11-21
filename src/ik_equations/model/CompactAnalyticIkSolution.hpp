@@ -118,6 +118,8 @@ struct CompactAnalyticIkSolution
     std::vector<CompactSolutionBranch> branches;
     std::string message;
     double orientationCorrection{};
+    // As AnalyticIkSolution::shoulderAxisDistance.
+    double shoulderAxisDistance{};
     // As AnalyticIkSolution::positionalFamilies; not counted by
     // expandedBranchCount() and not produced by expand().
     std::vector<PositionalFamilyBranch> positionalFamilies;

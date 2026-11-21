@@ -265,3 +265,96 @@ TEST(AnalyticIkPositionalFamilies, RegularTargetsHaveNoPositionalFamilies)
     EXPECT_TRUE(solved->positionalFamilies.empty());
     EXPECT_TRUE(gen::solve(robot.parameters, generatedPose(target)).positionalFamilies.empty());
 }
+
+// The band between "ordinary" and "exactly on the axis" (MotionBridge report
+// 2026-11-21, 5.3). A work-space map has cells at millimetres from the joint-1
+// axis, not only on it. Measured on KR640: the switch to a family happens at
+// kSingularLinear (1e-9 m); on either side the generating configuration is
+// recovered, so the result is continuous in what it represents and there is no
+// band in which a branch drops out.
+namespace {
+
+// Signed distance of the wrist centre from the joint-1 axis along x.
+double wristOffsetX(const Robot& robot, const Configuration& q)
+{
+    const auto& p = robot.parameters;
+    const auto target = robot.pose(q);
+    const auto& r = target.orientation.values;
+    const auto& w = p.wristInTargetFrame;
+    return target.position.x + r[0][0] * w.x + r[0][1] * w.y + r[0][2] * w.z - p.axes[0].point.x;
+}
+
+// The singular configuration moved along q3 until the wrist centre is `distance` from the axis.
+Configuration atDistanceFromAxis(const Robot& robot, const Configuration& singular, double distance)
+{
+    double lo = 0.0;
+    double hi = 0.2;
+    for (int i = 0; i < 200; ++i)
+    {
+        const double mid = 0.5 * (lo + hi);
+        Configuration q = singular;
+        q[2] += mid;
+        (std::abs(wristOffsetX(robot, q)) < distance ? lo : hi) = mid;
+    }
+    Configuration q = singular;
+    q[2] += hi;
+    return q;
+}
+
+bool regularBranchesContain(const ik::AnalyticIkSolution& solved, const Configuration& q, double tolerance)
+{
+    for (const auto& branch : solved.branches)
+    {
+        double worst = 0.0;
+        for (const auto& joint : branch.joints)
+            worst = std::max(worst, angularDistance(joint.value, q[joint.actuatedJointPosition]));
+        if (worst <= tolerance)
+            return true;
+    }
+    return false;
+}
+
+} // namespace
+
+TEST(AnalyticIkPositionalFamilies, NearTheShoulderAxisTheGeneratingConfigurationIsAlwaysRecovered)
+{
+    Robot robot = kr640();
+    const Configuration singular = shoulderSingularConfiguration(robot);
+
+    // Millimetres from the axis, as in a work-space map: ordinary branches, no
+    // family, and the generating configuration among them (q1 is defined by the
+    // target, so it is accurate to well below 1e-6).
+    for (const double distance : {1e-6, 1e-4, 1e-3, 5e-3, 2e-2})
+    {
+        const Configuration q = atDistanceFromAxis(robot, singular, distance);
+        const auto target = robot.pose(q);
+        const auto solved = ik::AnalyticIkSolver{}.solve(robot.chain, target);
+        ASSERT_TRUE(solved) << distance << ": " << solved.error().message;
+        EXPECT_EQ(solved->status, ik::AnalyticIkStatus::Solutions) << distance;
+        EXPECT_TRUE(solved->positionalFamilies.empty()) << distance;
+        EXPECT_TRUE(regularBranchesContain(*solved, q, 1e-6)) << distance;
+        const auto compiled = gen::solve(robot.parameters, generatedPose(target));
+        EXPECT_EQ(compiled.status, gen::Status::Solutions) << distance;
+        EXPECT_TRUE(compiled.positionalFamilies.empty()) << distance;
+    }
+
+    // At and below the singularity tolerance: a family, containing the same configuration.
+    for (const double distance : {0.0, 1e-12, 1e-10})
+    {
+        const Configuration q = distance == 0.0 ? singular : atDistanceFromAxis(robot, singular, distance);
+        const auto target = robot.pose(q);
+        const auto solved = ik::AnalyticIkSolver{}.solve(robot.chain, target);
+        ASSERT_TRUE(solved) << distance << ": " << solved.error().message;
+        EXPECT_EQ(solved->status, ik::AnalyticIkStatus::InfiniteFamily) << distance;
+        std::vector<ik::PositionalFamily> families;
+        for (const auto& branch : solved->positionalFamilies)
+            families.push_back(branch.family);
+        bool contained = false;
+        for (const auto& family : families)
+            if (const auto member = ik::evaluate(family, q[0]))
+                contained = contained || sameConfiguration(*member, q, 1e-6);
+        EXPECT_TRUE(contained) << distance;
+        EXPECT_EQ(gen::solve(robot.parameters, generatedPose(target)).status, gen::Status::InfiniteFamily)
+            << distance;
+    }
+}

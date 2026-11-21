@@ -113,6 +113,15 @@ struct AnalyticIkSolution
     // equal links with the elbow folded). status is InfiniteFamily when any
     // exist; `branches` may then be empty.
     std::vector<PositionalFamilyBranch> positionalFamilies;
+    // Distance of the wrist centre from the joint-1 axis, metres: a property of
+    // the target, the same for every branch. 0 is the shoulder-axis singularity
+    // (q1 free, see positionalFamilies); the solver switches to a family at
+    // kSingularLinear. A caller that wants a wider safety band reads this.
+    double shoulderAxisDistance{};
 };
+
+// |sin q5| of a branch: how far its wrist is from the wrist singularity.
+// Exactly 0 for a wrist family (q4 and q6 coupled).
+[[nodiscard]] double wristPitchSine(const SolutionBranch& branch);
 
 } // namespace kinemaforge::ik

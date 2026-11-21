@@ -1,5 +1,5 @@
 #pragma once
-#include "common/source_location.hpp"
+#include "legacy/common/source_location.hpp"
 #include <cstdint>
 #include <string>
 #include <type_traits>

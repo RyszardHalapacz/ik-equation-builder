@@ -83,27 +83,44 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(pugixml)
 
+# The solver core: the analytic IK pipeline and nothing else. No URDF parsing
+# (pugixml), no symbolic layer, no code generator, and none of the legacy
+# mt::kinematics / mt::common classes, whose names and header paths a host
+# project is likely to use for its own types (MotionBridge does). Those live
+# under src/legacy/ and are included as "legacy/...", so a host's own
+# common/diagnostic.hpp or kinematics/robot_model.hpp can never be shadowed by
+# ours.
+add_library(kinemaforge_ik_core STATIC
+    src/ik_equations/builders/KinematicChainBuilder.cpp
+    src/ik_equations/builders/KinematicGeometryBuilder.cpp
+    src/ik_equations/builders/RigidTransformConstruction.cpp
+    src/ik_equations/builders/detail/PrincipalRotation.cpp
+    src/ik_equations/solver/IkPatternDetector.cpp
+    src/ik_equations/solver/AnalyticIkSolver.cpp
+    src/ik_equations/solver/PrimitiveSolvers.cpp
+    src/ik_equations/model/TargetValidation.cpp
+    src/ik_equations/model/QuaternionTarget.cpp
+)
+add_library(kinemaforge::ik_core ALIAS kinemaforge_ik_core)
+target_include_directories(kinemaforge_ik_core PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>)
+# PRIVATE: our warning policy is not part of this library's contract. A consumer
+# such as MotionBridge brings its own.
+target_link_libraries(kinemaforge_ik_core PRIVATE kinemaforge_warnings)
+
+# Everything: the core plus URDF loading, the symbolic layer, the code
+# generator, the facade and the legacy classes.
 add_library(kinemaforge_ik STATIC
-    src/Kinematics.cpp
-    src/kinematics/robot_model.cpp
-    src/kinematics/robot_model_loader.cpp
+    src/legacy/Kinematics.cpp
+    src/legacy/kinematics/robot_model.cpp
+    src/legacy/kinematics/robot_model_loader.cpp
     src/ik_equations/IkEquationBuilder.cpp
     src/ik_equations/UrdfModelLoader.cpp
-    src/ik_equations/builders/KinematicChainBuilder.cpp
     src/ik_equations/builders/JointTransformBuilder.cpp
     src/ik_equations/builders/ForwardKinematicsBuilder.cpp
     src/ik_equations/builders/ConstraintBuilder.cpp
     src/ik_equations/builders/EquationSimplifier.cpp
-    src/ik_equations/builders/KinematicGeometryBuilder.cpp
-    src/ik_equations/solver/IkPatternDetector.cpp
-    src/ik_equations/solver/AnalyticIkSolver.cpp
-    src/ik_equations/solver/PrimitiveSolvers.cpp
     src/ik_equations/codegen/CppAnalyticIkGenerator.cpp
-    src/ik_equations/builders/RigidTransformConstruction.cpp
-    src/ik_equations/builders/detail/PrincipalRotation.cpp
     src/ik_equations/model/IkEquationSystem.cpp
-    src/ik_equations/model/TargetValidation.cpp
-    src/ik_equations/model/QuaternionTarget.cpp
     src/ik_equations/symbolic/Expression.cpp
     src/ik_equations/symbolic/ExpressionFactory.cpp
     src/ik_equations/symbolic/ExpressionCanonicalizer.cpp
@@ -112,10 +129,9 @@ add_library(kinemaforge_ik STATIC
     src/ik_equations/symbolic/SymbolicTransform.cpp
     src/ik_equations/symbolic/TrigonometricSimplifier.cpp
 )
-target_include_directories(kinemaforge_ik PUBLIC src)
-target_link_libraries(kinemaforge_ik PUBLIC pugixml::pugixml)
-# PRIVATE: our warning policy is not part of this library's contract. A consumer
-# such as MotionBridge brings its own.
+add_library(kinemaforge::ik ALIAS kinemaforge_ik)
+target_include_directories(kinemaforge_ik PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>)
+target_link_libraries(kinemaforge_ik PUBLIC kinemaforge_ik_core pugixml::pugixml)
 target_link_libraries(kinemaforge_ik PRIVATE kinemaforge_warnings)
 
 add_executable(${PROJECT_NAME} src/main.cpp)

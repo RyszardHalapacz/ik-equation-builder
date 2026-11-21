@@ -1,5 +1,5 @@
 #pragma once
-#include "common/diagnostic.hpp"
+#include "legacy/common/diagnostic.hpp"
 #include <vector>
 #include <type_traits>
 

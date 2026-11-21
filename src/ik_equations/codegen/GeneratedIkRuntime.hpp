@@ -118,7 +118,17 @@ struct Result
     // equal links with the elbow folded); members via evaluate(). status is
     // InfiniteFamily when any exist; `branches` may then be empty.
     std::vector<kinemaforge::ik::PositionalFamily> positionalFamilies;
+    // Distance of the wrist centre from the joint-1 axis, metres; a property of
+    // the target. 0 is the shoulder-axis singularity (q1 free).
+    double shoulderAxisDistance{};
 };
+
+// |sin q5| of a branch: how far the wrist is from its singularity. Exactly 0
+// for a wrist family (q4 and q6 coupled).
+[[nodiscard]] inline double wristPitchSine(const Branch& branch)
+{
+    return branch.singular ? 0.0 : std::abs(std::sin(branch.q[4]));
+}
 
 // The member of a positional family at the given value of its free joint,
 // every joint on an in-limit turn; nothing where it leaves a joint limit.
@@ -301,6 +311,8 @@ struct CompactResult
     double orientationCorrection{};
     // As Result::positionalFamilies; not counted by expandedBranchCount().
     std::vector<kinemaforge::ik::PositionalFamily> positionalFamilies;
+    // As Result::shoulderAxisDistance.
+    double shoulderAxisDistance{};
 
     [[nodiscard]] std::size_t expandedBranchCount() const noexcept
     {
@@ -484,6 +496,12 @@ inline Core solveCore(const Parameters& p, const Pose& requestedTarget)
     const Vec3 v = sub(targetWrist, axis1.point);
     const double d1d2 = dot(axis1.direction, axis2Direction);
     const double d1v = dot(axis1.direction, v);
+    {
+        // |axis x v| and not sqrt(|v|^2 - (axis.v)^2): the latter loses every
+        // digit of a millimetre-scale distance next to a metre-scale v.
+        const Vec3 perpendicular = cross(axis1.direction, v);
+        result.shoulderAxisDistance = std::sqrt(dot(perpendicular, perpendicular));
+    }
     const double cosCoefficient = dot(v, axis2Direction) - d1d2 * d1v;
     const double sinCoefficient = -dot(cross(axis1.direction, v), axis2Direction);
     const double constant = dot(axis1.point, axis2Direction) + d1d2 * d1v - dot(p.wristCenterHome, axis2Direction);
@@ -680,6 +698,7 @@ inline Result solve(const Parameters& p, const Pose& requestedTarget, std::size_
     const Core core = solveCore(p, requestedTarget);
     Result result;
     result.orientationCorrection = core.compact.orientationCorrection;
+    result.shoulderAxisDistance = core.compact.shoulderAxisDistance;
     result.status = core.compact.status;
     result.positionalFamilies = core.compact.positionalFamilies;
     if (core.compact.branches.empty())
